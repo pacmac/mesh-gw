@@ -4,6 +4,7 @@
 Each method is `async def fn(bridge: MeshBridge, params: dict) -> dict`.
 """
 from .bridge import MeshBridge
+from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, config_kind
 
 METHODS = {}
 
@@ -15,6 +16,8 @@ def method(name):
     return deco
 
 
+# -- read-only, served from cached state (populated on connect + live) -----
+
 @method("get_info")
 async def get_info(bridge: MeshBridge, params: dict):
     return {"my_info": bridge.state.my_info, "metadata": bridge.state.metadata}
@@ -22,6 +25,11 @@ async def get_info(bridge: MeshBridge, params: dict):
 
 @method("get_nodes")
 async def get_nodes(bridge: MeshBridge, params: dict):
+    if "num" in params:
+        node = bridge.state.nodes.get(str(params["num"]))
+        if node is None:
+            raise KeyError(f"unknown node: {params['num']}")
+        return {"node": node}
     return {"nodes": bridge.state.nodes}
 
 
@@ -37,12 +45,68 @@ async def get_config(bridge: MeshBridge, params: dict):
 
 @method("get_status")
 async def get_status(bridge: MeshBridge, params: dict):
-    stats = bridge.state
+    state = bridge.state
     return {
         "ble_connected": bridge.ble.client.is_connected if bridge.ble.client else False,
-        "config_complete": stats.config_complete,
-        "node_count": len(stats.nodes),
+        "config_complete": state.config_complete,
+        "node_count": len(state.nodes),
     }
+
+
+# -- live admin reads (round-trip to the radio) ------------------------------
+
+@method("get_config_live")
+async def get_config_live(bridge: MeshBridge, params: dict):
+    """Live admin fetch of a config or module_config section by name,
+    e.g. params={"section": "lora"} or {"section": "mqtt"}."""
+    section = params["section"]
+    kind = config_kind(section)
+    if kind == "config":
+        resp = await bridge.send_admin({"get_config_request": CONFIG_SECTIONS[section]})
+        return resp.get("get_config_response", {})
+    resp = await bridge.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS[section]})
+    return resp.get("get_module_config_response", {})
+
+
+@method("get_channel_live")
+async def get_channel_live(bridge: MeshBridge, params: dict):
+    resp = await bridge.send_admin({"get_channel_request": int(params["index"]) + 1})
+    return resp.get("get_channel_response", {})
+
+
+@method("get_owner_live")
+async def get_owner_live(bridge: MeshBridge, params: dict):
+    resp = await bridge.send_admin({"get_owner_request": True})
+    return resp.get("get_owner_response", {})
+
+
+# -- writes -------------------------------------------------------------------
+
+@method("set_config")
+async def set_config(bridge: MeshBridge, params: dict):
+    """params: {"section": "lora", "values": {...}}"""
+    section = params["section"]
+    kind = config_kind(section)
+    key = "set_config" if kind == "config" else "set_module_config"
+    return await bridge.send_admin({key: {section: params["values"]}})
+
+
+@method("set_channel")
+async def set_channel(bridge: MeshBridge, params: dict):
+    """params: {"index": int, "settings": {...}, "role": "..."?}"""
+    channel = {"index": int(params["index"])}
+    if "settings" in params:
+        channel["settings"] = params["settings"]
+    if "role" in params:
+        channel["role"] = params["role"]
+    return await bridge.send_admin({"set_channel": channel})
+
+
+@method("set_owner")
+async def set_owner(bridge: MeshBridge, params: dict):
+    """params: {long_name?, short_name?, is_licensed?}"""
+    owner = {k: v for k, v in params.items() if k in ("long_name", "short_name", "is_licensed")}
+    return await bridge.send_admin({"set_owner": owner})
 
 
 @method("send_text")
@@ -62,17 +126,3 @@ async def admin(bridge: MeshBridge, params: dict):
         to=params.get("to"),
         want_response=params.get("want_response", True),
     )
-
-
-@method("get_radio_config")
-async def get_radio_config(bridge: MeshBridge, params: dict):
-    """Convenience wrapper: admin get_config_request for a named section,
-    e.g. params={"section": "LORA_CONFIG"}"""
-    return await bridge.send_admin({"get_config_request": params["section"]})
-
-
-@method("set_owner")
-async def set_owner(bridge: MeshBridge, params: dict):
-    """params: {long_name?, short_name?, is_licensed?}"""
-    owner = {k: v for k, v in params.items() if k in ("long_name", "short_name", "is_licensed")}
-    return await bridge.send_admin({"set_owner": owner})
