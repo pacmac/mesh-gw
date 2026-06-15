@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import sys
 
 import uvicorn
@@ -40,10 +41,24 @@ async def run(address: str, http_port: int):
     config = uvicorn.Config(app, host="0.0.0.0", port=http_port, log_level="info")
     server = uvicorn.Server(config)
 
+    loop = asyncio.get_running_loop()
+
+    def handle_signal():
+        logger.info("Received shutdown signal")
+        server.should_exit = True
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, handle_signal)
+
     try:
         await server.serve()
     finally:
-        await bridge.stop()
+        logger.info("Disconnecting from BLE device...")
+        try:
+            await asyncio.wait_for(bridge.stop(), timeout=10.0)
+        except asyncio.TimeoutError:
+            logger.warning("BLE disconnect timed out")
+        logger.info("Shutdown complete")
 
 
 def main():

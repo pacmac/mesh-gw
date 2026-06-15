@@ -8,6 +8,7 @@ from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 
 from .ble_handler import BLEHandler
+from .mqtt_proxy import MqttProxy
 from .stats import StatsCollector
 from .state import MeshState
 
@@ -30,16 +31,24 @@ class MeshBridge:
 
         self.ble.on_packet_received = self._on_packet
         self.ble.on_disconnected = self._on_disconnected
+        self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
+
+        self.mqtt_proxy: MqttProxy | None = None
 
     async def start(self):
         await self.ble.connect()
         await self._request_config()
 
     async def stop(self):
+        if self.mqtt_proxy:
+            self.mqtt_proxy.stop()
+            self.mqtt_proxy = None
         await self.ble.disconnect()
 
     async def _on_packet(self, data: bytes):
         await self.state.handle_from_radio_bytes(data)
+        if self.state.config_complete and not self.mqtt_proxy:
+            self._maybe_start_mqtt_proxy()
 
     async def _on_disconnected(self):
         for attempt in range(1, self.ble.MAX_RECONNECT_ATTEMPTS + 1):
@@ -57,6 +66,42 @@ class MeshBridge:
     @property
     def my_node_num(self):
         return self.state.my_info.get("my_node_num")
+
+    # -- MQTT proxy -----------------------------------------------------------
+
+    def _maybe_start_mqtt_proxy(self):
+        cfg = self.state.module_config.get("mqtt", {})
+        if not (cfg.get("enabled") and cfg.get("proxy_to_client_enabled")):
+            return
+        try:
+            self.mqtt_proxy = MqttProxy(
+                address=cfg["address"],
+                username=cfg.get("username", ""),
+                password=cfg.get("password", ""),
+                root=cfg.get("root", "msh"),
+                use_tls=cfg.get("tls_enabled", False),
+                on_downlink=self._on_mqtt_downlink,
+            )
+            logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')}")
+        except Exception as e:
+            logger.error(f"Failed to start MQTT proxy: {e}")
+
+    async def _on_mqtt_proxy_from_radio(self, msg):
+        if not self.mqtt_proxy:
+            return
+        payload = msg.data if msg.data else msg.text.encode("utf-8")
+        self.mqtt_proxy.publish(msg.topic, payload, retained=msg.retained)
+
+    async def _on_mqtt_downlink(self, topic: str, payload: bytes):
+        msg = mesh_pb2.MqttClientProxyMessage()
+        msg.topic = topic
+        msg.data = payload
+        to_radio = mesh_pb2.ToRadio()
+        to_radio.mqttClientProxyMessage.CopyFrom(msg)
+        try:
+            await self.ble.send(to_radio.SerializeToString())
+        except RuntimeError as e:
+            logger.debug(f"Dropping MQTT downlink, BLE not ready: {e}")
 
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 

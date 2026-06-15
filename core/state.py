@@ -36,6 +36,10 @@ class MeshState:
         # async queues for websocket subscribers
         self._subscribers = set()
 
+        # called with fr.mqttClientProxyMessage when the radio asks us to
+        # publish onto its configured MQTT broker (proxy_to_client_enabled)
+        self.on_mqtt_proxy_from_radio = None
+
     # -- subscriber management ------------------------------------------------
     def subscribe(self) -> asyncio.Queue:
         q = asyncio.Queue(maxsize=100)
@@ -87,6 +91,9 @@ class MeshState:
             self._merge_module_config(fr.moduleConfig)
         elif which == "config_complete_id":
             self.config_complete = True
+        elif which == "mqttClientProxyMessage":
+            if self.on_mqtt_proxy_from_radio:
+                await self.on_mqtt_proxy_from_radio(fr.mqttClientProxyMessage)
         elif which == "packet":
             await self._handle_mesh_packet(fr.packet)
 
