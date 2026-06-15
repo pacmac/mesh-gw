@@ -89,10 +89,12 @@ class BLEHandler:
             # Use discovered device object if available (fresher than cached MAC address)
             if discovered_device:
                 logger.debug("Creating client from discovered device object")
-                self.client = BleakClient(discovered_device, timeout=20.0)
+                self.client = BleakClient(discovered_device, timeout=20.0,
+                                           disconnected_callback=self._on_ble_disconnect)
             else:
                 logger.debug("Creating client from MAC address")
-                self.client = BleakClient(self.ble_address, timeout=20.0)
+                self.client = BleakClient(self.ble_address, timeout=20.0,
+                                           disconnected_callback=self._on_ble_disconnect)
 
             # Connect (with timeout to fail fast during device reboot)
             try:
@@ -156,9 +158,6 @@ class BLEHandler:
                 # During reconnection, fail fast so next attempt can try
                 if not self._initial_connect:
                     raise RuntimeError(error_msg)
-
-            # Register disconnect callback
-            self.client.set_disconnected_callback(self._on_ble_disconnect)
 
             # Reset reconnection state
             self.reconnect_attempts = 0
