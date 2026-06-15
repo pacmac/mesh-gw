@@ -108,6 +108,25 @@
         </div>
       </div>
 
+      <!-- Environment sensor stats -->
+      <div class="stats stats-vertical sm:stats-horizontal shadow lg:col-span-3 bg-base-100" x-show="nodeSelf.environment_metrics">
+        <div class="stat">
+          <div class="stat-title">Temperature</div>
+          <div class="stat-value text-lg" x-text="nodeSelf.environment_metrics?.temperature != null ? nodeSelf.environment_metrics.temperature.toFixed(1) + ' °C' : '–'"></div>
+          <div class="stat-desc">onboard sensor</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Humidity</div>
+          <div class="stat-value text-lg" x-text="nodeSelf.environment_metrics?.relative_humidity != null ? nodeSelf.environment_metrics.relative_humidity.toFixed(1) + ' %' : '–'"></div>
+          <div class="stat-desc">relative</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Dew Point</div>
+          <div class="stat-value text-lg" x-text="dewPoint(nodeSelf.environment_metrics?.temperature, nodeSelf.environment_metrics?.relative_humidity) != null ? dewPoint(nodeSelf.environment_metrics.temperature, nodeSelf.environment_metrics.relative_humidity).toFixed(1) + ' °C' : '–'"></div>
+          <div class="stat-desc">calculated</div>
+        </div>
+      </div>
+
       <!-- BLE Setup card -->
       <div class="card bg-base-100 shadow lg:col-span-3">
         <div class="card-body py-4">
@@ -361,6 +380,31 @@
               <button class="btn btn-sm btn-primary" @click="saveSection(sec)">Save</button>
               <span class="text-success text-sm" x-show="sec.saved" x-transition>Saved ✓</span>
               <span class="text-error text-sm" x-show="sec.error" x-text="sec.error"></span>
+            </div>
+
+            <!-- Fixed position (lat/lon/alt) — not part of PositionConfig, set via AdminMessage.set_fixed_position -->
+            <div x-show="sec.name === 'position' && sec.loaded" class="col-span-1 sm:col-span-2 border border-base-300 rounded-lg p-3 mt-3">
+              <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Fixed Position (lat / lon / alt)</div>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Latitude</span></div>
+                  <input type="number" step="any" class="input input-bordered input-sm" x-model.number="fixedPosition.lat" placeholder="e.g. 51.50735">
+                </label>
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Longitude</span></div>
+                  <input type="number" step="any" class="input input-bordered input-sm" x-model.number="fixedPosition.lon" placeholder="e.g. -0.12776">
+                </label>
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Altitude (m)</span></div>
+                  <input type="number" step="1" class="input input-bordered input-sm" x-model.number="fixedPosition.alt" placeholder="e.g. 35">
+                </label>
+              </div>
+              <div class="flex items-center gap-2 mt-3">
+                <button class="btn btn-sm btn-primary" @click="saveFixedPosition()">Save Position</button>
+                <button class="btn btn-sm btn-outline" @click="clearFixedPosition()">Clear</button>
+                <span class="text-success text-sm" x-show="fixedPosition.saved" x-transition>Saved ✓</span>
+                <span class="text-error text-sm" x-show="fixedPosition.error" x-text="fixedPosition.error"></span>
+              </div>
             </div>
           </div>
         </div>

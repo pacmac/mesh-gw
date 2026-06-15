@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from .bridge import MeshBridge
 from .methods import METHODS
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
-from .schema import get_section_schema, get_channel_schema, get_owner_schema
+from .schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,18 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     async def put_owner(body: dict = Body(...)):
         return await call("set_owner", body)
 
+    @app.get("/fixed_position")
+    async def get_fixed_position():
+        return await call("get_fixed_position", {})
+
+    @app.put("/fixed_position")
+    async def put_fixed_position(body: dict = Body(...)):
+        return await call("set_fixed_position", body)
+
+    @app.delete("/fixed_position")
+    async def delete_fixed_position():
+        return await call("remove_fixed_position", {})
+
     # -- REST: writes ---------------------------------------------------------
     @app.post("/messages")
     async def post_message(body: dict = Body(...)):
@@ -129,6 +141,10 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     @app.get("/schema/owner")
     async def schema_owner():
         return get_owner_schema()
+
+    @app.get("/schema/fixed_position")
+    async def schema_fixed_position():
+        return get_fixed_position_schema()
 
     @app.get("/schema/{section}")
     async def schema_section(section: str):

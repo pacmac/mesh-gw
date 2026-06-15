@@ -120,6 +120,27 @@ async def set_owner(bridge: MeshBridge, params: dict):
     return await bridge.send_admin({"set_owner": owner}, want_response=False)
 
 
+@method("get_fixed_position")
+async def get_fixed_position(bridge: MeshBridge, params: dict):
+    """Returns the device's own last-known position, which reflects the
+    fixed position once Config.PositionConfig.fixed_position is set."""
+    num = bridge.my_node_num
+    node = bridge.state.nodes.get(str(num), {}) if num is not None else {}
+    return {"position": node.get("position", {})}
+
+
+@method("set_fixed_position")
+async def set_fixed_position(bridge: MeshBridge, params: dict):
+    """params: {latitude_i, longitude_i, altitude?}"""
+    position = {k: v for k, v in params.items() if k in ("latitude_i", "longitude_i", "altitude")}
+    return await bridge.send_admin({"set_fixed_position": position}, want_response=False)
+
+
+@method("remove_fixed_position")
+async def remove_fixed_position(bridge: MeshBridge, params: dict):
+    return await bridge.send_admin({"remove_fixed_position": True}, want_response=False)
+
+
 @method("send_text")
 async def send_text(bridge: MeshBridge, params: dict):
     return await bridge.send_text(

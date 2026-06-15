@@ -70,3 +70,16 @@ def get_owner_schema() -> dict:
     from meshtastic import mesh_pb2
     msg_type = mesh_pb2.User.DESCRIPTOR
     return {"section": "owner", "fields": [_field_schema(f) for f in msg_type.fields]}
+
+
+def get_fixed_position_schema() -> dict:
+    """The fixed-position lat/lon/alt live in mesh_pb2.Position, set via
+    AdminMessage.set_fixed_position -- not part of Config.PositionConfig
+    (which only has the fixed_position enable flag)."""
+    from meshtastic import mesh_pb2
+    msg_type = mesh_pb2.Position.DESCRIPTOR
+    names = ["latitude_i", "longitude_i", "altitude"]
+    return {
+        "section": "fixed_position",
+        "fields": [_field_schema(msg_type.fields_by_name[name]) for name in names],
+    }

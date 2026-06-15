@@ -25,6 +25,7 @@ function dashboard() {
     ownerData: {},
     ownerSaved: false,
     ownerError: "",
+    fixedPosition: { lat: null, lon: null, alt: null, loaded: false, saved: false, error: "" },
     msgChannel: "0",
     msgText: "",
     msgSent: false,
@@ -237,10 +238,66 @@ function dashboard() {
         el.innerHTML = "";
         el.appendChild(buildForm(schema.fields, sec.data, []));
         sec.loaded = true;
+        if (sec.name === "position" && !this.fixedPosition.loaded) await this.loadFixedPosition();
       } catch (e) {
         sec.error = "Failed to load: " + e;
       } finally {
         sec.loading = false;
+      }
+    },
+
+    // -- Fixed position (lat/lon/alt, set via AdminMessage.set_fixed_position) ----
+    async loadFixedPosition() {
+      this.fixedPosition.error = "";
+      try {
+        const res = await fetchJSON("/fixed_position");
+        const pos = res.position || {};
+        this.fixedPosition.lat = pos.latitude_i != null ? pos.latitude_i / 1e7 : null;
+        this.fixedPosition.lon = pos.longitude_i != null ? pos.longitude_i / 1e7 : null;
+        this.fixedPosition.alt = pos.altitude ?? null;
+        this.fixedPosition.loaded = true;
+      } catch (e) {
+        this.fixedPosition.error = "Failed to load: " + e;
+      }
+    },
+
+    async saveFixedPosition() {
+      this.fixedPosition.saved = false;
+      this.fixedPosition.error = "";
+      if (this.fixedPosition.lat == null || this.fixedPosition.lon == null) {
+        this.fixedPosition.error = "Latitude and longitude are required";
+        return;
+      }
+      const body = {
+        latitude_i: Math.round(this.fixedPosition.lat * 1e7),
+        longitude_i: Math.round(this.fixedPosition.lon * 1e7),
+      };
+      if (this.fixedPosition.alt != null && this.fixedPosition.alt !== "") {
+        body.altitude = Math.round(this.fixedPosition.alt);
+      }
+      try {
+        const res = await fetchJSON("/fixed_position", "PUT", body);
+        if (res.error) throw new Error(res.error.message);
+        this.fixedPosition.saved = true;
+        setTimeout(() => (this.fixedPosition.saved = false), 2500);
+      } catch (e) {
+        this.fixedPosition.error = "Save failed: " + e;
+      }
+    },
+
+    async clearFixedPosition() {
+      this.fixedPosition.saved = false;
+      this.fixedPosition.error = "";
+      try {
+        const res = await fetchJSON("/fixed_position", "DELETE");
+        if (res.error) throw new Error(res.error.message);
+        this.fixedPosition.lat = null;
+        this.fixedPosition.lon = null;
+        this.fixedPosition.alt = null;
+        this.fixedPosition.saved = true;
+        setTimeout(() => (this.fixedPosition.saved = false), 2500);
+      } catch (e) {
+        this.fixedPosition.error = "Clear failed: " + e;
       }
     },
 
@@ -450,6 +507,12 @@ function dashboard() {
       if (b == null) return "–";
       if (b > 1024) return (b / 1024).toFixed(1) + " KB";
       return b + " B";
+    },
+    dewPoint(tempC, rh) {
+      if (tempC == null || rh == null || rh <= 0) return null;
+      const a = 17.27, b = 237.7;
+      const alpha = (a * tempC) / (b + tempC) + Math.log(rh / 100);
+      return (b * alpha) / (a - alpha);
     },
     fmtAge(ts) {
       if (!ts) return "–";
