@@ -14,6 +14,9 @@ MESHTASTIC_SERVICE_UUID = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
 TORADIO_UUID = "f75c76d2-129e-4dad-a1dd-7866124401e7"  # Write to device
 FROMRADIO_UUID = "2c55e69e-4993-11ed-b878-0242ac120002"  # Read from device
 
+# Meshtastic devices use a fixed BLE pairing passkey (not shown on screen)
+DEFAULT_BLE_PIN = "123456"
+
 
 class BLEHandler:
     """Handles BLE connectivity and communication with Meshtastic device"""
@@ -52,6 +55,7 @@ class BLEHandler:
 
     async def _ensure_paired(self, pin: str = ""):
         """Check BlueZ pairing/trust state and pair if needed."""
+        pin = pin or DEFAULT_BLE_PIN
         try:
             info = subprocess.run(
                 ["bluetoothctl", "info", self.ble_address],
@@ -66,31 +70,9 @@ class BLEHandler:
                 return
 
             if not paired:
-                if not pin:
-                    raise RuntimeError(
-                        f"Device {self.ble_address} is not paired. "
-                        "Enter the PIN shown on the device screen, or pair manually: "
-                        f"bluetoothctl pair {self.ble_address}"
-                    )
-                logger.info(f"Pairing {self.ble_address} (PIN supplied)…")
-                proc = await asyncio.create_subprocess_exec(
-                    "bluetoothctl",
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                cmds = f"pair {self.ble_address}\n{pin}\nquit\n".encode()
-                try:
-                    stdout, _ = await asyncio.wait_for(proc.communicate(cmds), timeout=30.0)
-                    out2 = stdout.decode()
-                    logger.debug(f"bluetoothctl pair output: {out2.strip()}")
-                    if "Failed" in out2 and "AlreadyExists" not in out2:
-                        raise RuntimeError(f"Pairing failed: {out2.strip()}")
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    raise RuntimeError(
-                        "Pairing timed out — confirm on device screen if required"
-                    )
+                await self._discover_device()
+                logger.info(f"Pairing {self.ble_address} (PIN {pin})…")
+                await self._bluetoothctl_pair(pin)
 
             # Trust so BlueZ allows reconnects without prompting
             logger.info(f"Trusting device {self.ble_address}…")
@@ -104,6 +86,160 @@ class BLEHandler:
             raise
         except Exception as e:
             logger.warning(f"Pairing check error (will attempt connect anyway): {e}")
+
+    async def _bluetoothctl_pair(self, pin: str, _retry: bool = True):
+        """
+        Run `bluetoothctl pair <addr>`, answering the passkey prompt when it
+        appears (it shows up only after the BLE link is established, several
+        seconds after `pair` is issued — so we read stdout incrementally
+        rather than piping all input up front).
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        async def _interact():
+            proc.stdin.write(f"pair {self.ble_address}\n".encode())
+            await proc.stdin.drain()
+
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    return False
+                text = line.decode(errors="ignore")
+                logger.debug(f"bluetoothctl: {text.strip()}")
+                lower = text.lower()
+
+                if "enter passkey" in lower or "request passkey" in lower:
+                    proc.stdin.write(f"{pin}\n".encode())
+                    await proc.stdin.drain()
+                elif "confirm passkey" in lower or "(yes/no)" in lower:
+                    proc.stdin.write(b"yes\n")
+                    await proc.stdin.drain()
+                elif "pairing successful" in lower or "alreadyexists" in lower:
+                    return "ok"
+                elif "org.bluez.error.inprogress" in lower:
+                    return "inprogress"
+                elif "failed" in lower:
+                    raise RuntimeError(f"Pairing failed: {text.strip()}")
+
+        try:
+            result = await asyncio.wait_for(_interact(), timeout=30.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError("Pairing timed out — confirm on device screen if required")
+        finally:
+            if proc.returncode is None:
+                try:
+                    proc.stdin.write(b"quit\n")
+                    await proc.stdin.drain()
+                except Exception:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    proc.kill()
+
+        if result == "inprogress":
+            if not _retry:
+                raise RuntimeError("Pairing failed: org.bluez.Error.InProgress")
+            logger.warning("bluetoothctl pair hit InProgress — recovering adapter and retrying")
+            await self._recover_bluez_discovery()
+            await self._bluetoothctl_pair(pin, _retry=False)
+        elif result is False:
+            raise RuntimeError("bluetoothctl exited before pairing completed")
+
+    async def _discover_device(self, timeout: float = 10.0, _retry: bool = True):
+        """
+        Ensure the target address is in BlueZ's device cache — `bluetoothctl
+        pair` fails with "not available" otherwise, and bleak's scanner does
+        not reliably populate this cache.
+        """
+        devices = subprocess.run(
+            ["bluetoothctl", "devices"], capture_output=True, text=True, timeout=5,
+        ).stdout
+        if self.ble_address.upper() in devices.upper():
+            return
+
+        logger.info(f"Device {self.ble_address} not yet known to BlueZ — scanning…")
+        proc = await asyncio.create_subprocess_exec(
+            "bluetoothctl",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        found = False
+        inprogress = False
+        try:
+            proc.stdin.write(b"scan on\n")
+            await proc.stdin.drain()
+
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + timeout
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                if not line:
+                    break
+                text = line.decode(errors="ignore")
+                if self.ble_address.upper() in text.upper():
+                    found = True
+                    break
+                if "org.bluez.error.inprogress" in text.lower():
+                    inprogress = True
+                    break
+        finally:
+            try:
+                proc.stdin.write(b"scan off\nquit\n")
+                await proc.stdin.drain()
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+
+        if inprogress:
+            if not _retry:
+                raise RuntimeError("Discovery failed: org.bluez.Error.InProgress")
+            await self._recover_bluez_discovery()
+            await self._discover_device(timeout=timeout, _retry=False)
+            return
+
+        if not found:
+            raise RuntimeError(
+                f"Device {self.ble_address} not found during discovery — "
+                "ensure it's powered on and in range"
+            )
+
+    async def _recover_bluez_discovery(self):
+        """Clear a stuck BlueZ adapter (org.bluez.Error.InProgress)."""
+        logger.warning("Recovering BlueZ adapter from stuck discovery state…")
+        subprocess.run(["bluetoothctl", "scan", "off"], capture_output=True, timeout=5)
+        await asyncio.sleep(1)
+
+        show = subprocess.run(
+            ["bluetoothctl", "show"], capture_output=True, text=True, timeout=5
+        ).stdout
+        if "Discovering: yes" in show:
+            logger.warning("Adapter still discovering — restarting bluetooth service")
+            subprocess.run(["systemctl", "restart", "bluetooth"], capture_output=True, timeout=15)
+            for _ in range(10):
+                await asyncio.sleep(1)
+                show = subprocess.run(
+                    ["bluetoothctl", "show"], capture_output=True, text=True, timeout=5
+                ).stdout
+                if "Discovering: no" in show:
+                    break
 
     async def connect(self, pin: str = ""):
         """Connect to BLE device"""
