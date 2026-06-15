@@ -82,10 +82,7 @@ function dashboard() {
       try {
         const data = await fetchJSON("/ble/scan");
         this.bleDevices = data.devices || [];
-        if (this.bleDevices.length === 0) this.bleError = "No BLE devices found. Make sure the device is powered on and advertising.";
-        // auto-select first Meshtastic device
-        const mesh = this.bleDevices.find((d) => d.meshtastic);
-        if (mesh && !this.bleAddress) this.bleAddress = mesh.address;
+        if (this.bleDevices.length === 0) this.bleError = "No Meshtastic devices found. Make sure the device is powered on and advertising.";
       } catch (e) {
         this.bleError = "Scan failed: " + (e.message || e);
       } finally {
@@ -93,20 +90,29 @@ function dashboard() {
       }
     },
 
-    async bleConnect() {
-      if (!this.bleAddress) return;
+    async bleConnect(address) {
+      const addr = address || this.bleAddress;
+      if (!addr) return;
+      this.bleAddress = addr;
       this.bleConnecting = true;
       this.bleError = "";
       try {
-        await fetchJSON("/ble/connect", "POST", { address: this.bleAddress });
-        // Poll status until connected or 30s timeout
-        const start = Date.now();
-        while (Date.now() - start < 30000) {
-          await new Promise((r) => setTimeout(r, 1500));
+        await fetch("/ble/connect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ address: addr, pin: this.blePin || "" }),
+        });
+        // Poll ble_state until it leaves "connecting"
+        const deadline = Date.now() + 60000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2000));
           await this.refreshStatus();
-          if (this.status.ble_connected) break;
+          const s = this.status.ble_state;
+          if (s !== "connecting") break;
         }
-        if (!this.status.ble_connected) this.bleError = "Connection timed out. Check address and that the device is advertising.";
+        if (this.status.ble_state === "error") {
+          this.bleError = this.status.ble_error || "Connection failed";
+        }
       } catch (e) {
         this.bleError = "Connect failed: " + (e.message || e);
       } finally {
@@ -117,9 +123,16 @@ function dashboard() {
     async bleDisconnect() {
       this.bleError = "";
       try {
-        await fetchJSON("/ble/disconnect", "POST", {});
-        await new Promise((r) => setTimeout(r, 1000));
-        await this.refreshStatus();
+        await fetch("/ble/disconnect", { method: "POST" });
+        // Poll until idle
+        const deadline = Date.now() + 15000;
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 1000));
+          await this.refreshStatus();
+          if (this.status.ble_state === "idle") break;
+        }
+        this.bleDevices = [];
+        this.bleAddress = "";
       } catch (e) {
         this.bleError = "Disconnect failed: " + (e.message || e);
       }

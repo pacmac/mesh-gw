@@ -1,6 +1,8 @@
 """BLE connection handling for Meshtastic devices"""
 import asyncio
 import logging
+import subprocess
+import time
 from typing import Optional, Callable
 from bleak import BleakClient, BleakScanner
 from .stats import StatsCollector
@@ -48,83 +50,96 @@ class BLEHandler:
         # Track initial vs reconnect
         self._initial_connect = True
 
-    async def connect(self):
+    async def _ensure_paired(self, pin: str = ""):
+        """Check BlueZ pairing/trust state and pair if needed."""
+        try:
+            info = subprocess.run(
+                ["bluetoothctl", "info", self.ble_address],
+                capture_output=True, text=True, timeout=5,
+            )
+            out = info.stdout
+            paired  = "Paired: yes"  in out
+            trusted = "Trusted: yes" in out
+
+            if paired and trusted:
+                logger.debug(f"Device {self.ble_address} already paired and trusted")
+                return
+
+            if not paired:
+                if not pin:
+                    raise RuntimeError(
+                        f"Device {self.ble_address} is not paired. "
+                        "Enter the PIN shown on the device screen, or pair manually: "
+                        f"bluetoothctl pair {self.ble_address}"
+                    )
+                logger.info(f"Pairing {self.ble_address} (PIN supplied)…")
+                proc = await asyncio.create_subprocess_exec(
+                    "bluetoothctl",
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                cmds = f"pair {self.ble_address}\n{pin}\nquit\n".encode()
+                try:
+                    stdout, _ = await asyncio.wait_for(proc.communicate(cmds), timeout=30.0)
+                    out2 = stdout.decode()
+                    logger.debug(f"bluetoothctl pair output: {out2.strip()}")
+                    if "Failed" in out2 and "AlreadyExists" not in out2:
+                        raise RuntimeError(f"Pairing failed: {out2.strip()}")
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    raise RuntimeError(
+                        "Pairing timed out — confirm on device screen if required"
+                    )
+
+            # Trust so BlueZ allows reconnects without prompting
+            logger.info(f"Trusting device {self.ble_address}…")
+            subprocess.run(
+                ["bluetoothctl", "trust", self.ble_address],
+                capture_output=True, timeout=5,
+            )
+        except FileNotFoundError:
+            logger.warning("bluetoothctl not found — skipping pairing check")
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(f"Pairing check error (will attempt connect anyway): {e}")
+
+    async def connect(self, pin: str = ""):
         """Connect to BLE device"""
         logger.info(f"Connecting to BLE device: {self.ble_address}")
 
         try:
-            # Check if device is discoverable
-            # During reconnection, scan to refresh Windows BLE cache
-            # Use longer timeout for reconnection - Windows BLE can be slow to rediscover devices
-            scan_timeout = 2.0 if self._initial_connect else 10.0
-            discovered_device = None
+            await self._ensure_paired(pin)
 
+            # On reconnect after drop: scan to confirm device is back before connecting
+            if not self._initial_connect:
+                logger.info("Reconnect: scanning for device (10s)...")
+                try:
+                    devices = await BleakScanner.discover(timeout=10.0, return_adv=True)
+                    if not any(a.upper() == self.ble_address.upper() for a in devices):
+                        raise RuntimeError("Device not found in scan — may still be rebooting")
+                    logger.info("Device found in reconnect scan")
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Reconnect scan error: {e}")
+
+            # Connect directly by address. BlueZ knows the device from the dashboard
+            # /ble/scan that the user ran just before clicking Connect.
+            logger.info(f"Connecting to {self.ble_address} (timeout=20s)...")
+            self.client = BleakClient(
+                self.ble_address, timeout=20.0,
+                disconnected_callback=self._on_ble_disconnect,
+            )
             try:
-                logger.debug(f"Scanning for device (timeout: {scan_timeout}s)...")
-                devices = await BleakScanner.discover(timeout=scan_timeout, return_adv=True)
-                device_found = False
-
-                for device_addr, (device, adv_data) in devices.items():
-                    if device.address.upper() == self.ble_address.upper():
-                        device_found = True
-                        discovered_device = device  # Save the device object
-                        logger.info(f"✅ Device found in scan: {device.name}")
-                        break
-
-                if not device_found:
-                    if self._initial_connect:
-                        logger.debug("Device not found in scan, attempting direct connection...")
-                    else:
-                        # During reconnection, if device not found in scan, fail fast
-                        logger.warning("⚠️  Device not found in scan during reconnection")
-                        raise RuntimeError("Device not discoverable - may still be rebooting")
-
-            except RuntimeError:
-                # Re-raise our "not found" error
-                raise
-            except Exception as scan_err:
-                logger.debug(f"Scan check failed (this is OK): {scan_err}")
-
-            # Create BleakClient
-            # Use discovered device object if available (fresher than cached MAC address)
-            if discovered_device:
-                logger.debug("Creating client from discovered device object")
-                self.client = BleakClient(discovered_device, timeout=20.0,
-                                           disconnected_callback=self._on_ble_disconnect)
-            else:
-                logger.debug("Creating client from MAC address")
-                self.client = BleakClient(self.ble_address, timeout=20.0,
-                                           disconnected_callback=self._on_ble_disconnect)
-
-            # Connect (with timeout to fail fast during device reboot)
-            try:
-                # Only use disconnect-retry logic on initial connection
-                # During reconnection, fail fast and let exponential backoff handle it
-                if self._initial_connect:
-                    # Initial connection - try disconnect-retry if needed
-                    try:
-                        await self.client.connect()
-                    except Exception as conn_err:
-                        logger.warning(f"Initial connection failed: {conn_err}")
-                        logger.info("Attempting to disconnect any existing connection...")
-
-                        try:
-                            disconnect_client = BleakClient(self.ble_address, timeout=5.0)
-                            if await disconnect_client.connect():
-                                await disconnect_client.disconnect()
-                                logger.info("Disconnected existing connection")
-                                await asyncio.sleep(2)
-                        except Exception as disc_err:
-                            logger.debug(f"Disconnect attempt result: {disc_err}")
-
-                        # Retry connection
-                        logger.info("Retrying connection...")
-                        await self.client.connect()
+                timeout = None if self._initial_connect else 15.0
+                if timeout:
+                    await asyncio.wait_for(self.client.connect(), timeout=timeout)
                 else:
-                    # Reconnection - fail fast with shorter timeout
-                    await asyncio.wait_for(self.client.connect(), timeout=15.0)
+                    await self.client.connect()
             except asyncio.TimeoutError:
-                raise RuntimeError(f"Connection timeout - device may still be rebooting")
+                raise RuntimeError("Connection timeout — device may still be rebooting")
 
             if not self.client.is_connected:
                 raise RuntimeError("Failed to establish BLE connection")
@@ -196,7 +211,9 @@ class BLEHandler:
         Poll FromRadio characteristic for incoming packets.
         Monitors connection health and triggers reconnection on disconnect.
         """
-        logger.debug("Starting FromRadio polling loop")
+        logger.info("FROMRADIO polling loop started")
+        _poll_count = 0
+        _data_count = 0
 
         while self.running:
             try:
@@ -232,21 +249,24 @@ class BLEHandler:
                 # Read from FromRadio characteristic
                 try:
                     data = await self.client.read_gatt_char(FROMRADIO_UUID)
+                    _poll_count += 1
+
+                    if _poll_count % 100 == 0:
+                        logger.info(f"FROMRADIO poll #{_poll_count}: {_data_count} packets received so far")
 
                     if data and len(data) > 0:
-                        # Deduplicate packets
-                        import time
+                        _data_count += 1
                         packet_hash = hash(bytes(data))
                         current_time = time.time()
 
                         if (packet_hash == self.last_packet_hash and
                             (current_time - self.last_packet_time) < 0.1):
-                            logger.debug(f"⏭️  Skipping duplicate packet ({len(data)} bytes)")
+                            logger.info(f"FROMRADIO: skipping duplicate {len(data)}b")
                         else:
                             self.last_packet_hash = packet_hash
                             self.last_packet_time = current_time
 
-                            logger.debug(f"📥 BLE packet received: {len(data)} bytes")
+                            logger.info(f"FROMRADIO: got {len(data)} bytes (packet #{_data_count})")
                             await self.stats.on_packet_from_ble(len(data))
 
                             # Notify callback
@@ -255,11 +275,11 @@ class BLEHandler:
 
                 except Exception as read_err:
                     if "not connected" in str(read_err).lower():
-                        logger.warning("⚠️  Disconnection detected during read")
+                        logger.warning("FROMRADIO: disconnection detected during read")
                         self.disconnection_event.set()
                         continue
                     else:
-                        logger.debug(f"Read error (may be normal): {read_err}")
+                        logger.warning(f"FROMRADIO read error: {read_err!r}")
 
                 await asyncio.sleep(0.1)  # 100ms polling interval
 
@@ -388,12 +408,12 @@ class BLEHandler:
             raise RuntimeError("BLE services not ready, please retry")
 
         try:
-            logger.debug(f"📤 Sending packet to BLE ({len(packet_bytes)} bytes)")
+            logger.info(f"BLE send: writing {len(packet_bytes)} bytes to TORADIO")
 
             await self.client.write_gatt_char(TORADIO_UUID, packet_bytes)
             await self.stats.on_packet_to_ble(len(packet_bytes))
 
-            logger.debug(f"✅ Sent {len(packet_bytes)} bytes to BLE")
+            logger.info(f"BLE send: TORADIO write OK ({len(packet_bytes)} bytes)")
 
         except Exception as e:
             error_msg = str(e)

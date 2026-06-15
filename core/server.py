@@ -18,18 +18,6 @@ from .schema import get_section_schema, get_channel_schema, get_owner_schema
 logger = logging.getLogger(__name__)
 
 
-async def _do_ble_connect(bridge, address: str):
-    """Background task: connect to BLE device, retry up to 3 times."""
-    for attempt in range(1, 4):
-        try:
-            await bridge.connect_to(address)
-            logger.info(f"Dashboard-initiated BLE connect succeeded: {address}")
-            return
-        except Exception as e:
-            logger.warning(f"BLE connect attempt {attempt}/3 failed: {e}")
-            if attempt < 3:
-                await asyncio.sleep(5)
-    logger.error(f"Dashboard-initiated BLE connect gave up after 3 attempts: {address}")
 
 
 def _error_response(req_id, code, message, status):
@@ -154,20 +142,21 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     @app.get("/ble/scan")
     async def ble_scan():
         try:
-            devices = await BleakScanner.discover(timeout=5.0)
             MESHTASTIC_SVC = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
+            found = await BleakScanner.discover(timeout=5.0, return_adv=True)
             result = []
-            for d in devices:
-                uuids = [str(u).lower() for u in (d.metadata.get("uuids") or [])]
-                is_mesh = MESHTASTIC_SVC in uuids or (d.name and any(
-                    k in (d.name or "").lower() for k in ("meshtastic", "ta2r", "ta2m")))
+            for addr, (dev, adv) in found.items():
+                uuids = [str(u).lower() for u in (adv.service_uuids or [])]
+                is_mesh = MESHTASTIC_SVC in uuids or any(
+                    k in (dev.name or "").lower() for k in ("meshtastic", "ta2r", "ta2m"))
                 result.append({
-                    "name": d.name or "Unknown",
-                    "address": d.address,
-                    "rssi": d.rssi or -100,
+                    "name": dev.name or "Unknown",
+                    "address": addr,
+                    "rssi": adv.rssi if adv.rssi is not None else -100,
                     "meshtastic": is_mesh,
                 })
-            result.sort(key=lambda x: (not x["meshtastic"], -x["rssi"]))
+            result = [r for r in result if r["meshtastic"]]
+            result.sort(key=lambda x: -x["rssi"])
             return {"devices": result}
         except Exception as e:
             raise HTTPException(500, f"Scan failed: {e}")
@@ -175,9 +164,10 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     @app.post("/ble/connect")
     async def ble_connect_endpoint(body: dict = Body(...)):
         address = (body.get("address") or "").strip()
+        pin     = (body.get("pin")     or "").strip()
         if not address:
             raise HTTPException(400, "address required")
-        asyncio.create_task(_do_ble_connect(bridge, address))
+        asyncio.create_task(bridge.connect_to(address, pin=pin))
         return {"connecting": True, "address": address}
 
     @app.post("/ble/disconnect")

@@ -30,7 +30,9 @@ class MeshBridge:
         self.ble: BLEHandler | None = None
         self.mqtt_proxy: MqttProxy | None = None
         self._reconnect_lock = asyncio.Lock()
-        self._user_disconnect = False  # set True when user explicitly disconnects
+        self._user_disconnect = False
+        self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
+        self.ble_error: str | None = None
 
         self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
         if ble_address:
@@ -66,22 +68,62 @@ class MeshBridge:
 
     # -- dashboard-driven connect/disconnect -----------------------------------
 
-    async def connect_to(self, address: str):
-        """Connect to a specific BLE device, called from dashboard."""
+    async def connect_to(self, address: str, pin: str = ""):
+        """Connect to BLE device — runs as a background task from the endpoint."""
         self._user_disconnect = False
-        async with self._reconnect_lock:
-            if self.ble:
-                await self._ble_disconnect_safe()
-            self.ble_address = address
-            self._init_ble(address)
-            self.state.config_complete = False
-            self.state.nodes.clear()
-        await self.start()
+        self.ble_state = "connecting"
+        self.ble_error = None
+        try:
+            async with self._reconnect_lock:
+                if self.ble:
+                    await self._ble_disconnect_safe()
+                self.ble_address = address
+                self.state.config_complete = False
+                self.state.nodes.clear()
+                logger.info(f"Connecting to BLE device: {address}")
+                for attempt in range(1, 4):
+                    self._init_ble(address)
+                    try:
+                        await self.ble.connect(pin=pin)
+                        break
+                    except Exception as e:
+                        logger.warning(f"Connect attempt {attempt}/3 failed: {e}")
+                        if attempt == 3:
+                            raise
+                        await asyncio.sleep(5)
+            self.ble_state = "syncing"
+            logger.info("BLE connected, requesting config…")
+            asyncio.create_task(self._safe_request_config())
+        except Exception as e:
+            logger.error(f"BLE connect_to failed: {e}")
+            self.ble_state = "error"
+            self.ble_error = str(e)
+            self.ble_address = None
+            self.ble = None
+
+    async def _safe_request_config(self):
+        """Request config with timeout; retries once if TORADIO write is slow."""
+        # Wait for BLE stack to fully stabilise after connect before writing
+        await asyncio.sleep(2.0)
+        for attempt in range(1, 4):
+            try:
+                await asyncio.wait_for(self._request_config(), timeout=15.0)
+                logger.info(f"want_config sent OK (attempt {attempt}/3) — waiting for FROMRADIO data")
+                return
+            except asyncio.TimeoutError:
+                logger.warning(f"Config request timed out (attempt {attempt}/3)")
+            except Exception as e:
+                logger.warning(f"Config request failed (attempt {attempt}/3): {e!r}")
+            if attempt < 3:
+                await asyncio.sleep(5)
+        logger.error("All config request attempts failed — stuck in syncing")
 
     async def disconnect_ble(self):
         """Disconnect BLE and clear address — called from dashboard."""
         self._user_disconnect = True
         self.ble_address = None
+        self.ble_state = "idle"
+        self.ble_error = None
         if self.mqtt_proxy:
             self.mqtt_proxy.stop()
             self.mqtt_proxy = None
@@ -92,8 +134,11 @@ class MeshBridge:
 
     async def _on_packet(self, data: bytes):
         await self.state.handle_from_radio_bytes(data)
-        if self.state.config_complete and not self.mqtt_proxy:
-            self._maybe_start_mqtt_proxy()
+        if self.state.config_complete:
+            if self.ble_state == "syncing":
+                self.ble_state = "active"
+            if not self.mqtt_proxy:
+                self._maybe_start_mqtt_proxy()
 
     async def _on_disconnected(self):
         if self._user_disconnect:
@@ -103,18 +148,20 @@ class MeshBridge:
         if self._reconnect_lock.locked():
             logger.debug("Reconnect already in progress, skipping duplicate _on_disconnected")
             return
+        self.ble_state = "reconnecting"
         async with self._reconnect_lock:
             if self._user_disconnect:
                 return
             for attempt in range(1, self.ble.MAX_RECONNECT_ATTEMPTS + 1):
                 if await self.ble.attempt_reconnection():
                     logger.info("Reconnected, re-requesting config")
-                    try:
-                        await self._request_config()
-                    except Exception as e:
-                        logger.warning(f"Config request failed after reconnect: {e}")
+                    self.ble_state = "syncing"
+                    self.state.config_complete = False
+                    asyncio.create_task(self._safe_request_config())
                     return
             logger.error("Giving up reconnecting to BLE device")
+            self.ble_state = "error"
+            self.ble_error = "Lost connection — could not reconnect after max attempts"
 
     async def _request_config(self):
         to_radio = mesh_pb2.ToRadio()
