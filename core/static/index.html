@@ -116,68 +116,81 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><polyline points="6.5 6.5 17.5 17.5"/><polyline points="17.5 6.5 12 12 6.5 17.5"/><path d="M5 3h14l-7 7z"/><path d="M5 21h14l-7-7z"/></svg>
               BLE Device
             </h2>
-            <div class="flex items-center gap-2">
-              <template x-if="status.ble_connected">
-                <div class="flex items-center gap-2">
-                  <span class="badge badge-success badge-sm gap-1">
-                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-success-content animate-pulse"></span>
-                    Connected
-                  </span>
-                  <span class="font-mono text-xs opacity-50" x-text="status.ble_address"></span>
-                  <button class="btn btn-xs btn-outline btn-error" @click="bleDisconnect()">Disconnect</button>
-                </div>
-              </template>
-              <template x-if="!status.ble_connected">
-                <span class="badge badge-ghost badge-sm">Not connected</span>
-              </template>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span x-show="status.ble_state==='active'" class="badge badge-success badge-sm gap-1">
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-success-content animate-pulse"></span>Active
+              </span>
+              <span x-show="status.ble_state==='syncing'" class="badge badge-warning badge-sm gap-1">
+                <span class="loading loading-spinner loading-xs"></span>Syncing…
+              </span>
+              <span x-show="status.ble_state==='connecting'" class="badge badge-warning badge-sm gap-1">
+                <span class="loading loading-spinner loading-xs"></span>Connecting…
+              </span>
+              <span x-show="status.ble_state==='reconnecting'" class="badge badge-warning badge-sm gap-1">
+                <span class="loading loading-spinner loading-xs"></span>Reconnecting…
+              </span>
+              <span x-show="status.ble_state==='error'" class="badge badge-error badge-sm" x-text="status.ble_error || 'Error'"></span>
+              <span x-show="status.ble_state==='idle'" class="badge badge-ghost badge-sm">Not connected</span>
+              <span class="font-mono text-xs opacity-50" x-show="status.ble_address" x-text="status.ble_address"></span>
+              <button x-show="status.ble_state !== 'idle'" class="btn btn-xs btn-outline btn-error" @click="bleDisconnect()">Disconnect</button>
             </div>
           </div>
 
-          <!-- Not connected — show scan/connect UI -->
-          <div x-show="!status.ble_connected" class="mt-2">
+          <!-- Scan/connect UI — shown when idle or error -->
+          <div x-show="status.ble_state==='idle' || status.ble_state==='error'" class="mt-2">
             <div class="flex flex-wrap gap-2 items-center mb-3">
               <button class="btn btn-sm btn-outline gap-2" @click="bleScan()" :disabled="bleScanning || bleConnecting">
                 <span x-show="bleScanning" class="loading loading-spinner loading-xs"></span>
                 <span x-text="bleScanning ? 'Scanning…' : 'Scan'"></span>
               </button>
-              <span class="text-xs opacity-40" x-show="bleDevices.length > 0" x-text="bleDevices.length + ' device' + (bleDevices.length!==1?'s':'') + ' found'"></span>
+              <span class="text-xs opacity-40" x-show="bleDevices.length > 0" x-text="bleDevices.length + ' Meshtastic device' + (bleDevices.length!==1?'s':'') + ' found'"></span>
             </div>
 
-            <div x-show="bleDevices.length > 0" class="overflow-x-auto mb-3">
-              <table class="table table-xs w-full max-w-xl">
+            <!-- Scanned device list — Connect button directly in each row -->
+            <div x-show="bleDevices.length > 0" class="overflow-x-auto mb-4">
+              <table class="table table-sm w-full max-w-2xl">
                 <thead>
-                  <tr><th>Name</th><th>Address</th><th>RSSI</th><th></th></tr>
+                  <tr><th>Name</th><th>Address</th><th>Signal</th><th>PIN</th><th></th></tr>
                 </thead>
                 <tbody>
                   <template x-for="d in bleDevices" :key="d.address">
-                    <tr class="cursor-pointer hover" :class="bleAddress === d.address ? 'bg-primary/10 font-semibold' : ''" @click="bleAddress = d.address">
-                      <td class="flex items-center gap-1.5">
-                        <span x-show="d.meshtastic" class="badge badge-xs badge-primary">mesh</span>
-                        <span x-text="d.name"></span>
-                      </td>
+                    <tr>
+                      <td class="font-semibold" x-text="d.name"></td>
                       <td class="font-mono text-xs" x-text="d.address"></td>
                       <td x-text="d.rssi + ' dBm'"></td>
-                      <td><button class="btn btn-xs btn-ghost" @click.stop="bleAddress = d.address" :class="bleAddress === d.address ? 'btn-primary' : ''">Select</button></td>
+                      <td>
+                        <input class="input input-bordered input-xs font-mono w-24" x-model="blePin" placeholder="optional" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
+                      </td>
+                      <td>
+                        <button class="btn btn-xs btn-primary gap-1" @click="bleConnect(d.address)" :disabled="bleConnecting || bleScanning">
+                          <span x-show="bleConnecting && bleAddress === d.address" class="loading loading-spinner loading-xs" x-cloak></span>
+                          Connect
+                        </button>
+                      </td>
                     </tr>
                   </template>
                 </tbody>
               </table>
             </div>
 
-            <div class="flex flex-wrap gap-3 items-end">
-              <div class="form-control">
-                <label class="label py-0.5"><span class="label-text text-xs">BLE Address</span></label>
-                <input class="input input-bordered input-sm font-mono w-52" x-model="bleAddress" placeholder="AA:BB:CC:DD:EE:FF" :disabled="bleConnecting">
+            <!-- Manual address entry (always shown) -->
+            <details class="text-sm" :open="bleDevices.length === 0">
+              <summary class="cursor-pointer opacity-50 hover:opacity-80 select-none text-xs mb-2">Enter address manually</summary>
+              <div class="flex flex-wrap gap-3 items-end mt-2">
+                <div class="form-control">
+                  <label class="label py-0.5"><span class="label-text text-xs">BLE Address</span></label>
+                  <input class="input input-bordered input-sm font-mono w-52" x-model="bleAddress" placeholder="AA:BB:CC:DD:EE:FF" :disabled="bleConnecting">
+                </div>
+                <div class="form-control">
+                  <label class="label py-0.5"><span class="label-text text-xs">PIN (if required)</span></label>
+                  <input class="input input-bordered input-sm w-28" x-model="blePin" placeholder="optional" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
+                </div>
+                <button class="btn btn-sm btn-primary gap-2 self-end" @click="bleConnect()" :disabled="!bleAddress || bleConnecting || bleScanning">
+                  <span x-show="bleConnecting" class="loading loading-spinner loading-xs"></span>
+                  <span x-text="bleConnecting ? 'Connecting…' : 'Connect'"></span>
+                </button>
               </div>
-              <div class="form-control">
-                <label class="label py-0.5"><span class="label-text text-xs">PIN code (if required)</span></label>
-                <input class="input input-bordered input-sm w-28" x-model="blePin" placeholder="123456" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
-              </div>
-              <button class="btn btn-sm btn-primary gap-2 self-end" @click="bleConnect()" :disabled="!bleAddress || bleConnecting || bleScanning">
-                <span x-show="bleConnecting" class="loading loading-spinner loading-xs"></span>
-                <span x-text="bleConnecting ? 'Connecting…' : 'Connect'"></span>
-              </button>
-            </div>
+            </details>
 
             <div x-show="bleError" class="alert alert-error mt-3 py-2 text-sm flex items-center gap-2">
               <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z"/></svg>
