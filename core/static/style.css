@@ -18,6 +18,13 @@
   --grid:         rgba(255, 255, 255, 0.032);
   --border:       rgba(255, 255, 255, 0.07);
   --border-hi:    rgba(255, 255, 255, 0.13);
+  --border-hover: rgba(255, 255, 255, 0.2);
+  --overlay-1:    rgba(255, 255, 255, 0.02);
+  --overlay-2:    rgba(255, 255, 255, 0.03);
+  --overlay-3:    rgba(255, 255, 255, 0.04);
+  --toggle-off:   rgba(255, 255, 255, 0.08);
+  --skeleton-1:   rgba(255, 255, 255, 0.05);
+  --skeleton-2:   rgba(255, 255, 255, 0.10);
   --t-fast:       140ms cubic-bezier(.4,0,.2,1);
   --t-base:       220ms cubic-bezier(.4,0,.2,1);
   --t-spring:     320ms cubic-bezier(.34,1.56,.64,1);
@@ -154,7 +161,7 @@ body {
 }
 
 .stat:hover {
-  background: rgba(255,255,255,0.03);
+  background: var(--overlay-2);
 }
 
 .stat-title {
@@ -233,7 +240,7 @@ body {
 }
 
 .table-zebra tbody tr:nth-child(even) {
-  background: rgba(255,255,255,0.02);
+  background: var(--overlay-1);
 }
 
 .overflow-x-auto.max-h-\[70vh\] {
@@ -291,7 +298,7 @@ body {
 }
 
 .input:hover, .select:hover, .textarea:hover {
-  border-color: rgba(255,255,255,0.2) !important;
+  border-color: var(--border-hover) !important;
 }
 
 .input:disabled, .select:disabled, .input[disabled] {
@@ -310,7 +317,7 @@ body {
 
 /* Toggle switch */
 .toggle {
-  --tglbg: rgba(255,255,255,0.08);
+  --tglbg: var(--toggle-off);
   transition: background var(--t-base);
 }
 
@@ -366,7 +373,6 @@ body {
 
 .btn-outline {
   border-color: var(--border-hi) !important;
-  color: rgba(255,255,255,0.7) !important;
 }
 
 .btn-outline:hover {
@@ -407,7 +413,7 @@ body {
 }
 
 .overflow-y-auto.max-h-\[480px\] .flex.gap-2:hover {
-  background: rgba(255,255,255,0.04);
+  background: var(--overlay-3);
 }
 
 /* ── Divider ─────────────────────────────────────────────── */
@@ -451,9 +457,9 @@ footer {
 .skeleton {
   background: linear-gradient(
     90deg,
-    rgba(255,255,255,0.05) 25%,
-    rgba(255,255,255,0.10) 50%,
-    rgba(255,255,255,0.05) 75%
+    var(--skeleton-1) 25%,
+    var(--skeleton-2) 50%,
+    var(--skeleton-1) 75%
   );
   background-size: 800px 100%;
   animation: shimmer 1.6s infinite linear;
@@ -548,6 +554,14 @@ footer {
     --grid:         rgba(0, 0, 0, 0.045);
     --border:       rgba(0, 0, 0, 0.09);
     --border-hi:    rgba(0, 0, 0, 0.18);
+    --border-hover: rgba(0, 0, 0, 0.2);
+    /* invert hover/zebra/skeleton overlays for a light canvas */
+    --overlay-1:    rgba(0, 0, 0, 0.02);
+    --overlay-2:    rgba(0, 0, 0, 0.03);
+    --overlay-3:    rgba(0, 0, 0, 0.04);
+    --toggle-off:   rgba(0, 0, 0, 0.08);
+    --skeleton-1:   rgba(0, 0, 0, 0.04);
+    --skeleton-2:   rgba(0, 0, 0, 0.08);
   }
 
   /* PCB grid on light background */
