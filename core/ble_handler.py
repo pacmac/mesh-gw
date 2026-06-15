@@ -80,6 +80,18 @@ class BLEHandler:
                 ["bluetoothctl", "trust", self.ble_address],
                 capture_output=True, timeout=5,
             )
+
+            if not paired:
+                # bluetoothctl keeps the GATT connection from the pairing
+                # process open, so the device stops advertising and bleak's
+                # scan-based connect() can't find it. Drop that connection so
+                # the device starts advertising again.
+                logger.debug(f"Releasing bluetoothctl connection to {self.ble_address}…")
+                subprocess.run(
+                    ["bluetoothctl", "disconnect", self.ble_address],
+                    capture_output=True, timeout=5,
+                )
+                await asyncio.sleep(1)
         except FileNotFoundError:
             logger.warning("bluetoothctl not found — skipping pairing check")
         except RuntimeError:
