@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mesh REST Bridge</title>
+<script>
+  (function() {
+    var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'business' : 'corporate');
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {
+      document.documentElement.setAttribute('data-theme', e.matches ? 'business' : 'corporate');
+    });
+  })();
+</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><text y=%22.9em%22 font-size=%2220%22>📡</text></svg>">
+<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="min-h-screen bg-base-200">
+<div x-data="dashboard()" x-init="init()" class="min-h-screen flex flex-col">
+
+  <!-- Top navbar -->
+  <div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4">
+    <div class="flex-1 flex items-center gap-3">
+      <span class="text-2xl">📡</span>
+      <div class="flex flex-col leading-tight">
+        <span class="text-lg font-bold tracking-wide">Mesh REST Bridge</span>
+        <span class="text-xs text-base-content/50" x-text="info.metadata.firmware_version ? ('fw ' + info.metadata.firmware_version) : ''"></span>
+      </div>
+      <span class="badge badge-outline ml-2" x-show="info.my_info.long_name || nodeSelf.user">
+        <span x-text="(nodeSelf.user && nodeSelf.user.long_name) || ''"></span>
+      </span>
+    </div>
+    <div class="flex-none flex items-center gap-2">
+      <div class="tooltip tooltip-bottom" data-tip="BLE link to radio">
+        <div class="badge gap-1" :class="status.ble_connected ? 'badge-success' : 'badge-error'">
+          <span class="inline-block w-2 h-2 rounded-full" :class="status.ble_connected ? 'bg-success-content animate-pulse' : 'bg-error-content'"></span>
+          BLE
+        </div>
+      </div>
+      <div class="tooltip tooltip-bottom" data-tip="MQTT proxy to broker">
+        <div class="badge gap-1" :class="mqttProxy ? 'badge-success' : 'badge-ghost'">
+          <span class="inline-block w-2 h-2 rounded-full" :class="mqttProxy ? 'bg-success-content animate-pulse' : ''"></span>
+          MQTT
+        </div>
+      </div>
+      <div class="badge badge-info" x-text="(status.node_count ?? '–') + ' nodes'"></div>
+      <div class="badge" :class="wsConnected ? 'badge-primary' : 'badge-ghost'" x-text="wsConnected ? 'live' : 'offline'"></div>
+    </div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs tabs-lift px-4 pt-3 bg-base-200">
+    <a class="tab" :class="tab==='overview' && 'tab-active font-semibold'" @click="tab='overview'">Overview</a>
+    <a class="tab" :class="tab==='nodes' && 'tab-active font-semibold'" @click="tab='nodes'; loadNodes()">Nodes</a>
+    <a class="tab" :class="tab==='config' && 'tab-active font-semibold'" @click="tab='config'; loadSections()">Radio Config</a>
+    <a class="tab" :class="tab==='channels' && 'tab-active font-semibold'" @click="tab='channels'; loadChannels()">Channels</a>
+    <a class="tab" :class="tab==='owner' && 'tab-active font-semibold'" @click="tab='owner'; loadOwner()">Owner</a>
+    <a class="tab" :class="tab==='messages' && 'tab-active font-semibold'" @click="tab='messages'">Messages</a>
+  </div>
+
+  <div class="flex-1 p-4 max-w-[1400px] w-full mx-auto">
+
+    <!-- ===================== OVERVIEW ===================== -->
+    <div x-show="tab==='overview'" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+      <div class="stats stats-vertical sm:stats-horizontal shadow lg:col-span-3 bg-base-100">
+        <div class="stat">
+          <div class="stat-title">Device</div>
+          <div class="stat-value text-lg" x-text="(nodeSelf.user && nodeSelf.user.long_name) || '–'"></div>
+          <div class="stat-desc" x-text="info.metadata.hw_model || ''"></div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Battery</div>
+          <div class="stat-value text-lg" x-text="(nodeSelf.device_metrics?.battery_level ?? '–') + '%'"></div>
+          <div class="stat-desc" x-text="nodeSelf.device_metrics ? (nodeSelf.device_metrics.voltage.toFixed(2) + ' V') : ''"></div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Uptime</div>
+          <div class="stat-value text-lg" x-text="fmtUptime(nodeSelf.device_metrics?.uptime_seconds)"></div>
+          <div class="stat-desc">since last boot</div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Channel Util</div>
+          <div class="stat-value text-lg" x-text="(nodeSelf.device_metrics?.channel_utilization?.toFixed(1) ?? '–') + '%'"></div>
+          <div class="stat-desc" x-text="'air tx ' + (nodeSelf.device_metrics?.air_util_tx?.toFixed(2) ?? '–') + '%'"></div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Heap Free</div>
+          <div class="stat-value text-lg" x-text="fmtBytes(nodeSelf.local_stats?.heap_free_bytes)"></div>
+          <div class="stat-desc" x-text="'of ' + fmtBytes(nodeSelf.local_stats?.heap_total_bytes)"></div>
+        </div>
+        <div class="stat">
+          <div class="stat-title">Config</div>
+          <div class="stat-value text-lg" :class="status.config_complete ? 'text-success' : 'text-warning'" x-text="status.config_complete ? 'complete' : 'syncing…'"></div>
+          <div class="stat-desc" x-text="(status.node_count ?? 0) + ' nodes in db'"></div>
+        </div>
+      </div>
+
+      <div class="card bg-base-100 shadow lg:col-span-2">
+        <div class="card-body">
+          <h2 class="card-title">Live Event Feed</h2>
+          <div class="overflow-y-auto max-h-[480px] font-mono text-xs flex flex-col gap-1" x-ref="feed">
+            <template x-for="(ev, i) in events" :key="i">
+              <div class="flex gap-2 items-start border-b border-base-200 pb-1">
+                <span class="text-base-content/40 shrink-0" x-text="ev.time"></span>
+                <span class="badge badge-sm" :class="badgeForType(ev.type)" x-text="ev.type"></span>
+                <span class="text-base-content/80" x-text="ev.summary"></span>
+              </div>
+            </template>
+            <div x-show="events.length===0" class="text-base-content/40 italic">Waiting for events…</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card bg-base-100 shadow">
+        <div class="card-body">
+          <h2 class="card-title">MQTT Proxy</h2>
+          <div class="text-sm flex flex-col gap-2">
+            <div class="flex justify-between"><span class="text-base-content/60">Status</span>
+              <span class="badge" :class="mqttProxy ? 'badge-success' : 'badge-ghost'" x-text="mqttProxy ? 'connected' : 'inactive'"></span>
+            </div>
+            <div class="flex justify-between"><span class="text-base-content/60">Broker</span><span x-text="mqttCfg.address || '–'"></span></div>
+            <div class="flex justify-between"><span class="text-base-content/60">Root topic</span><span class="font-mono" x-text="mqttCfg.root || '–'"></span></div>
+            <div class="flex justify-between"><span class="text-base-content/60">Encryption</span><span x-text="mqttCfg.encryption_enabled ? 'on' : 'off'"></span></div>
+            <div class="flex justify-between"><span class="text-base-content/60">JSON output</span><span x-text="mqttCfg.json_enabled ? 'on' : 'off'"></span></div>
+          </div>
+          <div class="divider my-1"></div>
+          <h3 class="font-semibold text-sm mb-1">Node identity</h3>
+          <div class="text-sm flex flex-col gap-2">
+            <div class="flex justify-between"><span class="text-base-content/60">Node ID</span><span class="font-mono" x-text="(nodeSelf.user && nodeSelf.user.id) || '–'"></span></div>
+            <div class="flex justify-between"><span class="text-base-content/60">Num</span><span class="font-mono" x-text="info.my_info.my_node_num ?? '–'"></span></div>
+            <div class="flex justify-between"><span class="text-base-content/60">Region</span><span x-text="loraCfg.region || '–'"></span></div>
+            <div class="flex justify-between"><span class="text-base-content/60">Modem preset</span><span x-text="loraCfg.modem_preset || '–'"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== NODES ===================== -->
+    <div x-show="tab==='nodes'" class="card bg-base-100 shadow">
+      <div class="card-body">
+        <div class="flex items-center justify-between">
+          <h2 class="card-title">NodeDB <span class="badge badge-neutral" x-text="nodes.length"></span></h2>
+          <button class="btn btn-sm btn-outline" @click="loadNodes()">Refresh</button>
+        </div>
+        <div class="overflow-x-auto max-h-[70vh]">
+          <table class="table table-zebra table-sm">
+            <thead class="sticky top-0 bg-base-100 z-10">
+              <tr>
+                <th @click="sortNodes('long_name')" class="cursor-pointer">Name</th>
+                <th @click="sortNodes('short_name')" class="cursor-pointer">Short</th>
+                <th>ID</th>
+                <th>HW</th>
+                <th @click="sortNodes('battery')" class="cursor-pointer">Batt</th>
+                <th @click="sortNodes('snr')" class="cursor-pointer">SNR</th>
+                <th @click="sortNodes('hops')" class="cursor-pointer">Hops</th>
+                <th @click="sortNodes('last_heard')" class="cursor-pointer">Last heard</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="n in nodes" :key="n.num">
+                <tr>
+                  <td x-text="(n.user && n.user.long_name) || '–'"></td>
+                  <td x-text="(n.user && n.user.short_name) || '–'"></td>
+                  <td class="font-mono text-xs" x-text="(n.user && n.user.id) || n.num"></td>
+                  <td class="text-xs" x-text="(n.user && n.user.hw_model) || '–'"></td>
+                  <td x-text="n.device_metrics?.battery_level != null ? (n.device_metrics.battery_level + '%') : '–'"></td>
+                  <td x-text="n.snr ?? '–'"></td>
+                  <td x-text="n.hops ?? '–'"></td>
+                  <td class="text-xs" x-text="fmtAge(n.last_heard)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== RADIO CONFIG ===================== -->
+    <div x-show="tab==='config'" class="flex flex-col gap-3">
+      <div class="alert alert-info shadow-sm text-sm">
+        <span>Forms are generated directly from the device's protobuf schema. Saving sends the <b>entire</b> section back to the radio (Meshtastic admin SetConfig replaces the whole section).</span>
+      </div>
+      <template x-for="sec in allSections" :key="sec.name">
+        <div class="collapse collapse-arrow bg-base-100 shadow">
+          <input type="checkbox" @change="onSectionToggle(sec)" />
+          <div class="collapse-title text-md font-semibold capitalize flex items-center gap-2">
+            <span x-text="sec.name.replace(/_/g,' ')"></span>
+            <span class="badge badge-ghost badge-sm" x-text="sec.kind"></span>
+            <span class="loading loading-spinner loading-xs" x-show="sec.loading"></span>
+          </div>
+          <div class="collapse-content">
+            <div x-ref="'sec_' + sec.name" :id="'sec_' + sec.name"></div>
+            <div class="flex items-center gap-2 mt-3" x-show="sec.loaded">
+              <button class="btn btn-sm btn-primary" @click="saveSection(sec)">Save</button>
+              <span class="text-success text-sm" x-show="sec.saved" x-transition>Saved ✓</span>
+              <span class="text-error text-sm" x-show="sec.error" x-text="sec.error"></span>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ===================== CHANNELS ===================== -->
+    <div x-show="tab==='channels'" class="flex flex-col gap-3">
+      <div class="alert alert-warning shadow-sm text-sm">
+        <span>Editing <b>psk</b> on the primary channel can break mesh connectivity for this device and all peers using the same PSK. Bytes fields are locked by default — unlock only if you know what you're doing.</span>
+      </div>
+      <template x-for="ch in channels" :key="ch.index">
+        <div class="collapse collapse-arrow bg-base-100 shadow">
+          <input type="checkbox" @change="onChannelToggle(ch)" />
+          <div class="collapse-title text-md font-semibold flex items-center gap-2">
+            <span x-text="'Channel ' + ch.index"></span>
+            <span class="badge badge-sm" :class="ch.data.role==='PRIMARY' ? 'badge-primary' : (ch.data.role==='SECONDARY' ? 'badge-secondary':'badge-ghost')" x-text="ch.data.role || 'DISABLED'"></span>
+            <span class="text-sm text-base-content/50" x-text="ch.data.settings?.name || ''"></span>
+            <span class="loading loading-spinner loading-xs" x-show="ch.loading"></span>
+          </div>
+          <div class="collapse-content">
+            <div :id="'ch_' + ch.index"></div>
+            <div class="flex items-center gap-2 mt-3" x-show="ch.loaded">
+              <button class="btn btn-sm btn-primary" @click="saveChannel(ch)">Save</button>
+              <span class="text-success text-sm" x-show="ch.saved" x-transition>Saved ✓</span>
+              <span class="text-error text-sm" x-show="ch.error" x-text="ch.error"></span>
+            </div>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ===================== OWNER ===================== -->
+    <div x-show="tab==='owner'" class="card bg-base-100 shadow max-w-xl">
+      <div class="card-body">
+        <h2 class="card-title">Owner / Identity</h2>
+        <div id="owner_form"></div>
+        <div class="flex items-center gap-2 mt-3">
+          <button class="btn btn-sm btn-primary" @click="saveOwner()">Save</button>
+          <span class="text-success text-sm" x-show="ownerSaved" x-transition>Saved ✓</span>
+          <span class="text-error text-sm" x-show="ownerError" x-text="ownerError"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== MESSAGES ===================== -->
+    <div x-show="tab==='messages'" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="card bg-base-100 shadow">
+        <div class="card-body">
+          <h2 class="card-title">Send Text</h2>
+          <div class="form-control">
+            <label class="label"><span class="label-text">Channel</span></label>
+            <select class="select select-bordered select-sm" x-model="msgChannel">
+              <option value="0">0 — Primary</option>
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5">5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+            </select>
+          </div>
+          <div class="form-control mt-2">
+            <label class="label"><span class="label-text">Message</span></label>
+            <textarea class="textarea textarea-bordered" rows="3" x-model="msgText" placeholder="Type a message…"></textarea>
+          </div>
+          <button class="btn btn-primary btn-sm mt-2" @click="sendMessage()" :disabled="!msgText.trim()">Send</button>
+          <span class="text-success text-sm mt-1" x-show="msgSent" x-transition>Sent ✓</span>
+        </div>
+      </div>
+      <div class="card bg-base-100 shadow">
+        <div class="card-body">
+          <h2 class="card-title">Message Feed</h2>
+          <div class="overflow-y-auto max-h-[400px] flex flex-col gap-2">
+            <template x-for="(m, i) in messages" :key="i">
+              <div class="chat chat-start">
+                <div class="chat-header text-xs opacity-50" x-text="m.from + ' · ' + m.time"></div>
+                <div class="chat-bubble chat-bubble-neutral text-sm" x-text="m.text"></div>
+              </div>
+            </template>
+            <div x-show="messages.length===0" class="text-base-content/40 italic">No messages yet…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <footer class="footer footer-center p-3 bg-base-100 text-base-content/40 text-xs">
+    <div>mesh-rest-bridge — schema-driven UI, served straight from the bridge</div>
+  </footer>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

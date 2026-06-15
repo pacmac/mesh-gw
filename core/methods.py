@@ -50,6 +50,7 @@ async def get_status(bridge: MeshBridge, params: dict):
         "ble_connected": bridge.ble.client.is_connected if bridge.ble.client else False,
         "config_complete": state.config_complete,
         "node_count": len(state.nodes),
+        "mqtt_proxy_connected": bool(bridge.mqtt_proxy and bridge.mqtt_proxy.connected),
     }
 
 
@@ -82,13 +83,17 @@ async def get_owner_live(bridge: MeshBridge, params: dict):
 
 # -- writes -------------------------------------------------------------------
 
+# These admin messages are fire-and-forget in the Meshtastic protocol --
+# the device applies them but never sends a reply, so we'd otherwise
+# always time out waiting for one.
+
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
     section = params["section"]
     kind = config_kind(section)
     key = "set_config" if kind == "config" else "set_module_config"
-    return await bridge.send_admin({key: {section: params["values"]}})
+    return await bridge.send_admin({key: {section: params["values"]}}, want_response=False)
 
 
 @method("set_channel")
@@ -99,14 +104,14 @@ async def set_channel(bridge: MeshBridge, params: dict):
         channel["settings"] = params["settings"]
     if "role" in params:
         channel["role"] = params["role"]
-    return await bridge.send_admin({"set_channel": channel})
+    return await bridge.send_admin({"set_channel": channel}, want_response=False)
 
 
 @method("set_owner")
 async def set_owner(bridge: MeshBridge, params: dict):
     """params: {long_name?, short_name?, is_licensed?}"""
     owner = {k: v for k, v in params.items() if k in ("long_name", "short_name", "is_licensed")}
-    return await bridge.send_admin({"set_owner": owner})
+    return await bridge.send_admin({"set_owner": owner}, want_response=False)
 
 
 @method("send_text")

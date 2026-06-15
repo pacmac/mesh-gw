@@ -24,6 +24,7 @@ class MqttProxy:
         self.root = root
         self.on_downlink = on_downlink
         self.loop = asyncio.get_event_loop()
+        self.connected = False
 
         host, _, port_s = address.partition(":")
         port = int(port_s) if port_s else (8883 if use_tls else 1883)
@@ -43,6 +44,7 @@ class MqttProxy:
 
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
+            self.connected = True
             topic = f"{self.root}/#"
             client.subscribe(topic)
             logger.info(f"MQTT proxy connected to broker, subscribed {topic}")
@@ -50,12 +52,15 @@ class MqttProxy:
             logger.error(f"MQTT proxy connect failed: rc={rc}")
 
     def _on_disconnect(self, client, userdata, rc):
+        self.connected = False
         logger.warning(f"MQTT proxy disconnected from broker: rc={rc}")
 
     def _on_message(self, client, userdata, msg):
+        logger.info(f"MQTT downlink <- {msg.topic} ({len(msg.payload)} bytes)")
         asyncio.run_coroutine_threadsafe(self.on_downlink(msg.topic, msg.payload), self.loop)
 
     def publish(self, topic: str, payload: bytes, retained: bool = False):
+        logger.info(f"MQTT uplink -> {topic} ({len(payload)} bytes)")
         self.client.publish(topic, payload, retain=retained)
 
     def stop(self):

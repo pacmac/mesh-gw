@@ -2,13 +2,16 @@
 REST API over the same method registry, and a websocket event stream
 (/ws)."""
 import logging
+import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from .bridge import MeshBridge
 from .methods import METHODS
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
+from .schema import get_section_schema, get_channel_schema, get_owner_schema
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +118,21 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     async def get_sections():
         return {"config": list(CONFIG_SECTIONS), "module_config": list(MODULE_CONFIG_SECTIONS)}
 
+    @app.get("/schema/channel")
+    async def schema_channel():
+        return get_channel_schema()
+
+    @app.get("/schema/owner")
+    async def schema_owner():
+        return get_owner_schema()
+
+    @app.get("/schema/{section}")
+    async def schema_section(section: str):
+        try:
+            return get_section_schema(section)
+        except KeyError as e:
+            return _error_response(None, -32602, str(e), 404)
+
     @app.websocket("/ws")
     async def ws(websocket: WebSocket):
         await websocket.accept()
@@ -127,5 +145,9 @@ def create_app(bridge: MeshBridge) -> FastAPI:
             pass
         finally:
             bridge.state.unsubscribe(queue)
+
+    # -- dashboard (static SPA) ------------------------------------------------
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="dashboard")
 
     return app
