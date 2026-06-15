@@ -40,6 +40,10 @@ class MeshState:
         # publish onto its configured MQTT broker (proxy_to_client_enabled)
         self.on_mqtt_proxy_from_radio = None
 
+        # most recently received mesh-packet signal metrics (any portnum)
+        self.last_rx_snr: float | None = None
+        self.last_rx_rssi: int | None = None
+
     # -- subscriber management ------------------------------------------------
     def subscribe(self) -> asyncio.Queue:
         q = asyncio.Queue(maxsize=100)
@@ -163,8 +167,10 @@ class MeshState:
 
         if pkt.rx_snr:
             node["snr"] = pkt.rx_snr
+            self.last_rx_snr = pkt.rx_snr
         if pkt.rx_rssi:
             node["rssi"] = pkt.rx_rssi
+            self.last_rx_rssi = pkt.rx_rssi
         if pkt.hop_start:
             node["hops"] = max(0, pkt.hop_start - pkt.hop_limit)
         node["last_heard_packet"] = True

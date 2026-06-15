@@ -35,10 +35,17 @@
       </span>
     </div>
     <div class="flex-none flex items-center gap-2">
-      <div class="tooltip tooltip-bottom" data-tip="BLE link to radio">
-        <div class="badge gap-1" :class="status.ble_connected ? 'badge-success' : 'badge-error'">
-          <span class="inline-block w-2 h-2 rounded-full" :class="status.ble_connected ? 'bg-success-content animate-pulse' : 'bg-error-content'"></span>
-          BLE
+      <div class="tooltip tooltip-bottom" :data-tip="'BLE · mesh SNR ' + (status.last_rx_snr != null ? status.last_rx_snr.toFixed(1) + ' dB' : 'n/a')">
+        <div class="flex items-center gap-1.5 px-2 py-1 rounded border" :class="status.ble_connected ? 'border-success/40' : 'border-error/40'">
+          <!-- signal bars icon, 4 bars filled based on signalBars() -->
+          <svg width="16" height="13" viewBox="0 0 16 13" class="shrink-0">
+            <rect x="0"  y="9"  width="3" height="4"  rx="0.8" :fill="signalBarFill(1)"/>
+            <rect x="4"  y="6"  width="3" height="7"  rx="0.8" :fill="signalBarFill(2)"/>
+            <rect x="8"  y="3"  width="3" height="10" rx="0.8" :fill="signalBarFill(3)"/>
+            <rect x="12" y="0"  width="3" height="13" rx="0.8" :fill="signalBarFill(4)"/>
+          </svg>
+          <span class="text-xs font-bold tracking-widest" :class="status.ble_connected ? 'text-success' : 'text-error'" style="font-family:'Oxanium',sans-serif;font-size:0.62rem">BLE</span>
+          <span class="inline-block w-1.5 h-1.5 rounded-full" :class="status.ble_connected ? 'bg-success animate-pulse' : 'bg-error'"></span>
         </div>
       </div>
       <div class="tooltip tooltip-bottom" data-tip="MQTT proxy to broker">
@@ -55,6 +62,7 @@
   <!-- Tabs -->
   <div class="tabs tabs-lift px-4 pt-3 bg-base-200">
     <a class="tab" :class="tab==='overview' && 'tab-active font-semibold'" @click="tab='overview'">Overview</a>
+    <a class="tab" :class="tab==='radar' && 'tab-active font-semibold'" @click="tab='radar'; initRadar()">Radar</a>
     <a class="tab" :class="tab==='nodes' && 'tab-active font-semibold'" @click="tab='nodes'; loadNodes()">Nodes</a>
     <a class="tab" :class="tab==='config' && 'tab-active font-semibold'" @click="tab='config'; loadSections()">Radio Config</a>
     <a class="tab" :class="tab==='channels' && 'tab-active font-semibold'" @click="tab='channels'; loadChannels()">Channels</a>
@@ -100,6 +108,85 @@
         </div>
       </div>
 
+      <!-- BLE Setup card -->
+      <div class="card bg-base-100 shadow lg:col-span-3">
+        <div class="card-body py-4">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <h2 class="card-title text-base flex items-center gap-2">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="shrink-0"><polyline points="6.5 6.5 17.5 17.5"/><polyline points="17.5 6.5 12 12 6.5 17.5"/><path d="M5 3h14l-7 7z"/><path d="M5 21h14l-7-7z"/></svg>
+              BLE Device
+            </h2>
+            <div class="flex items-center gap-2">
+              <template x-if="status.ble_connected">
+                <div class="flex items-center gap-2">
+                  <span class="badge badge-success badge-sm gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-full bg-success-content animate-pulse"></span>
+                    Connected
+                  </span>
+                  <span class="font-mono text-xs opacity-50" x-text="status.ble_address"></span>
+                  <button class="btn btn-xs btn-outline btn-error" @click="bleDisconnect()">Disconnect</button>
+                </div>
+              </template>
+              <template x-if="!status.ble_connected">
+                <span class="badge badge-ghost badge-sm">Not connected</span>
+              </template>
+            </div>
+          </div>
+
+          <!-- Not connected — show scan/connect UI -->
+          <div x-show="!status.ble_connected" class="mt-2">
+            <div class="flex flex-wrap gap-2 items-center mb-3">
+              <button class="btn btn-sm btn-outline gap-2" @click="bleScan()" :disabled="bleScanning || bleConnecting">
+                <span x-show="bleScanning" class="loading loading-spinner loading-xs"></span>
+                <span x-text="bleScanning ? 'Scanning…' : 'Scan'"></span>
+              </button>
+              <span class="text-xs opacity-40" x-show="bleDevices.length > 0" x-text="bleDevices.length + ' device' + (bleDevices.length!==1?'s':'') + ' found'"></span>
+            </div>
+
+            <div x-show="bleDevices.length > 0" class="overflow-x-auto mb-3">
+              <table class="table table-xs w-full max-w-xl">
+                <thead>
+                  <tr><th>Name</th><th>Address</th><th>RSSI</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <template x-for="d in bleDevices" :key="d.address">
+                    <tr class="cursor-pointer hover" :class="bleAddress === d.address ? 'bg-primary/10 font-semibold' : ''" @click="bleAddress = d.address">
+                      <td class="flex items-center gap-1.5">
+                        <span x-show="d.meshtastic" class="badge badge-xs badge-primary">mesh</span>
+                        <span x-text="d.name"></span>
+                      </td>
+                      <td class="font-mono text-xs" x-text="d.address"></td>
+                      <td x-text="d.rssi + ' dBm'"></td>
+                      <td><button class="btn btn-xs btn-ghost" @click.stop="bleAddress = d.address" :class="bleAddress === d.address ? 'btn-primary' : ''">Select</button></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="flex flex-wrap gap-3 items-end">
+              <div class="form-control">
+                <label class="label py-0.5"><span class="label-text text-xs">BLE Address</span></label>
+                <input class="input input-bordered input-sm font-mono w-52" x-model="bleAddress" placeholder="AA:BB:CC:DD:EE:FF" :disabled="bleConnecting">
+              </div>
+              <div class="form-control">
+                <label class="label py-0.5"><span class="label-text text-xs">PIN code (if required)</span></label>
+                <input class="input input-bordered input-sm w-28" x-model="blePin" placeholder="123456" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
+              </div>
+              <button class="btn btn-sm btn-primary gap-2 self-end" @click="bleConnect()" :disabled="!bleAddress || bleConnecting || bleScanning">
+                <span x-show="bleConnecting" class="loading loading-spinner loading-xs"></span>
+                <span x-text="bleConnecting ? 'Connecting…' : 'Connect'"></span>
+              </button>
+            </div>
+
+            <div x-show="bleError" class="alert alert-error mt-3 py-2 text-sm flex items-center gap-2">
+              <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z"/></svg>
+              <span x-text="bleError"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div class="card bg-base-100 shadow lg:col-span-2">
         <div class="card-body">
           <h2 class="card-title">Live Event Feed</h2>
@@ -135,6 +222,68 @@
             <div class="flex justify-between"><span class="text-base-content/60">Num</span><span class="font-mono" x-text="info.my_info.my_node_num ?? '–'"></span></div>
             <div class="flex justify-between"><span class="text-base-content/60">Region</span><span x-text="loraCfg.region || '–'"></span></div>
             <div class="flex justify-between"><span class="text-base-content/60">Modem preset</span><span x-text="loraCfg.modem_preset || '–'"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===================== RADAR ===================== -->
+    <div x-show="tab==='radar'" class="flex flex-col gap-4">
+      <div class="flex flex-wrap gap-3 items-center">
+        <div class="flex items-center gap-2 text-sm">
+          <span class="label-text">Max range</span>
+          <select class="select select-bordered select-xs" x-model="radarRange" @change="drawRadar()">
+            <option value="25">25 km</option>
+            <option value="50">50 km</option>
+            <option value="100">100 km</option>
+            <option value="250">250 km</option>
+            <option value="0">Auto</option>
+          </select>
+        </div>
+        <div class="flex items-center gap-2 text-sm">
+          <span class="label-text">Home</span>
+          <span class="font-mono text-xs opacity-60" x-text="homePos ? homePos.lat.toFixed(4)+', '+homePos.lon.toFixed(4) : 'no GPS fix'"></span>
+        </div>
+        <div class="badge badge-sm badge-ghost" x-text="radarNodes.length + ' plotted'"></div>
+        <div class="ml-auto text-xs opacity-40" x-show="geocoding">geocoding…</div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <!-- SVG polar plot -->
+        <div class="lg:col-span-2 card bg-base-100 shadow p-4 flex items-center justify-center min-h-[520px]" id="radar-wrap">
+          <div x-show="!homePos" class="text-base-content/40 italic text-sm">No home position — omni needs a GPS fix to compute bearing/distance</div>
+          <div x-show="homePos" id="radar-svg-container" class="w-full"></div>
+        </div>
+
+        <!-- Selected node detail panel -->
+        <div class="card bg-base-100 shadow">
+          <div class="card-body">
+            <h2 class="card-title">Node detail</h2>
+            <div x-show="!radarSelected" class="text-base-content/40 italic text-sm">Click a node on the radar</div>
+            <template x-if="radarSelected">
+              <div class="flex flex-col gap-2 text-sm">
+                <div class="text-base font-bold font-oxanium" x-text="radarSelected.user?.long_name || '–'"></div>
+                <div class="font-mono text-xs opacity-60" x-text="radarSelected.user?.id || radarSelected.num"></div>
+                <div class="divider my-1"></div>
+                <div class="flex justify-between"><span class="opacity-60">Distance</span> <span x-text="radarSelected._km != null ? radarSelected._km.toFixed(1)+' km' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Bearing</span> <span x-text="radarSelected._az != null ? radarSelected._az.toFixed(0)+'°' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">SNR</span> <span x-text="radarSelected.snr != null ? radarSelected.snr+' dB' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">RSSI</span> <span x-text="radarSelected.rssi != null ? radarSelected.rssi+' dBm' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Hops</span> <span x-text="radarSelected.hops ?? '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Battery</span> <span x-text="radarSelected.device_metrics?.battery_level != null ? radarSelected.device_metrics.battery_level+'%' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Last heard</span> <span x-text="fmtAge(radarSelected.last_heard)"></span></div>
+                <div class="divider my-1"></div>
+                <div class="flex flex-col gap-1">
+                  <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Location</span>
+                  <span class="text-xs" x-text="radarSelected._address || (radarSelected.position ? (radarSelected.position.latitude_i/1e7).toFixed(4)+', '+(radarSelected.position.longitude_i/1e7).toFixed(4) : 'no position')"></span>
+                </div>
+                <div class="divider my-1"></div>
+                <div class="flex flex-col gap-1">
+                  <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Hardware</span>
+                  <span x-text="radarSelected.user?.hw_model || '–'"></span>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </div>

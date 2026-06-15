@@ -30,6 +30,21 @@ function dashboard() {
     msgSent: false,
     messages: [],
 
+    // BLE setup state
+    bleDevices: [],
+    bleScanning: false,
+    bleConnecting: false,
+    bleAddress: "",
+    blePin: "",
+    bleError: "",
+
+    // Radar tab state
+    radarRange: "100",
+    radarNodes: [],
+    radarSelected: null,
+    homePos: null,
+    geocoding: false,
+
     async init() {
       await this.refreshStatus();
       await this.loadInfo();
@@ -57,6 +72,56 @@ function dashboard() {
       this.sortNodes(this.nodeSort.key, true);
       if (this.info.my_info?.my_node_num != null) {
         this.nodeSelf = data.nodes?.[String(this.info.my_info.my_node_num)] || {};
+      }
+    },
+
+    // -- BLE management -------------------------------------------------------
+    async bleScan() {
+      this.bleScanning = true;
+      this.bleError = "";
+      try {
+        const data = await fetchJSON("/ble/scan");
+        this.bleDevices = data.devices || [];
+        if (this.bleDevices.length === 0) this.bleError = "No BLE devices found. Make sure the device is powered on and advertising.";
+        // auto-select first Meshtastic device
+        const mesh = this.bleDevices.find((d) => d.meshtastic);
+        if (mesh && !this.bleAddress) this.bleAddress = mesh.address;
+      } catch (e) {
+        this.bleError = "Scan failed: " + (e.message || e);
+      } finally {
+        this.bleScanning = false;
+      }
+    },
+
+    async bleConnect() {
+      if (!this.bleAddress) return;
+      this.bleConnecting = true;
+      this.bleError = "";
+      try {
+        await fetchJSON("/ble/connect", "POST", { address: this.bleAddress });
+        // Poll status until connected or 30s timeout
+        const start = Date.now();
+        while (Date.now() - start < 30000) {
+          await new Promise((r) => setTimeout(r, 1500));
+          await this.refreshStatus();
+          if (this.status.ble_connected) break;
+        }
+        if (!this.status.ble_connected) this.bleError = "Connection timed out. Check address and that the device is advertising.";
+      } catch (e) {
+        this.bleError = "Connect failed: " + (e.message || e);
+      } finally {
+        this.bleConnecting = false;
+      }
+    },
+
+    async bleDisconnect() {
+      this.bleError = "";
+      try {
+        await fetchJSON("/ble/disconnect", "POST", {});
+        await new Promise((r) => setTimeout(r, 1000));
+        await this.refreshStatus();
+      } catch (e) {
+        this.bleError = "Disconnect failed: " + (e.message || e);
       }
     },
 
@@ -124,6 +189,13 @@ function dashboard() {
       }
       if (ev.type === "config_complete_id" || ev.type === "node_info") {
         this.refreshStatus();
+      }
+      if (ev.type === "mqtt_node" && ev.data) {
+        const upd = ev.data;
+        const idx = this.nodes.findIndex((n) => n.num === upd.num);
+        if (idx >= 0) this.nodes[idx] = { ...this.nodes[idx], ...upd };
+        else this.nodes.push(upd);
+        if (this.tab === "radar" && this.homePos && upd.position?.latitude_i) this.refreshRadar();
       }
     },
 
@@ -272,6 +344,83 @@ function dashboard() {
       this.msgText = "";
       this.msgSent = true;
       setTimeout(() => (this.msgSent = false), 2000);
+    },
+
+    // -- BLE signal bars -------------------------------------------------------------
+    signalBarFill(n) {
+      const snr = this.status.last_rx_snr;
+      const bars = snr == null ? 1 : snr > 0 ? 4 : snr > -7 ? 3 : snr > -14 ? 2 : 1;
+      if (n > bars) return "oklch(var(--bc)/0.12)";
+      if (bars >= 4) return "oklch(var(--su))";
+      if (bars >= 3) return "oklch(var(--su))";
+      if (bars >= 2) return "oklch(var(--wa))";
+      return "oklch(var(--er))";
+    },
+
+    // -- Radar tab -------------------------------------------------------------------
+    async initRadar() {
+      await this.loadNodes();
+      const selfNum = this.info.my_info?.my_node_num;
+      const self = selfNum != null ? this.nodes.find((n) => n.num === selfNum) : null;
+      if (self?.position?.latitude_i) {
+        this.homePos = {
+          lat: self.position.latitude_i / 1e7,
+          lon: self.position.longitude_i / 1e7,
+        };
+      } else {
+        this.homePos = null;
+        return;
+      }
+      this.refreshRadar();
+      this.geocodeNodes();
+    },
+
+    refreshRadar() {
+      if (!this.homePos) return;
+      this.radarNodes = this.nodes
+        .filter((n) => n.position?.latitude_i && n.position?.longitude_i)
+        .map((n) => {
+          const lat = n.position.latitude_i / 1e7;
+          const lon = n.position.longitude_i / 1e7;
+          const existing = this.radarNodes.find((r) => r.num === n.num);
+          return {
+            ...n,
+            _km: haversine(this.homePos.lat, this.homePos.lon, lat, lon),
+            _az: bearing(this.homePos.lat, this.homePos.lon, lat, lon),
+            _lat: lat,
+            _lon: lon,
+            _address: existing?._address,
+          };
+        });
+      this.drawRadar();
+    },
+
+    drawRadar() {
+      const container = document.getElementById("radar-svg-container");
+      if (!container || !this.homePos) return;
+      container.innerHTML = "";
+      const maxKm = this.radarRange === "0"
+        ? (this.radarNodes.length ? Math.max(...this.radarNodes.map((n) => n._km)) * 1.15 : 50)
+        : Number(this.radarRange);
+      container.appendChild(buildRadarSVG(this.radarNodes, maxKm, (node) => {
+        this.radarSelected = node;
+      }));
+    },
+
+    async geocodeNodes() {
+      this.geocoding = true;
+      for (const node of [...this.radarNodes]) {
+        if (node._address) continue;
+        if (!node._lat || !node._lon) continue;
+        const addr = await geocodeLatLon(node._lat, node._lon);
+        node._address = addr;
+        const idx = this.radarNodes.findIndex((r) => r.num === node.num);
+        if (idx >= 0) this.radarNodes[idx] = { ...this.radarNodes[idx], _address: addr };
+        if (this.radarSelected?.num === node.num) {
+          this.radarSelected = { ...this.radarSelected, _address: addr };
+        }
+      }
+      this.geocoding = false;
     },
 
     // -- formatting helpers -----------------------------------------------------------
@@ -482,6 +631,147 @@ function b64ToUtf8(b64) {
 function nextFrame() {
   return new Promise((resolve) => requestAnimationFrame(resolve));
 }
+
+// ============================================================================
+// Radar helpers
+// ============================================================================
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+function bearing(lat1, lon1, lat2, lon2) {
+  const y = Math.sin((lon2 - lon1) * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180);
+  const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+    Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos((lon2 - lon1) * Math.PI / 180);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function svgElem(tag, attrs = {}) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "style") { el.style.cssText = v; }
+    else el.setAttribute(k, v);
+  }
+  return el;
+}
+
+function buildRadarSVG(nodes, maxKm, onSelect) {
+  const SIZE = 480;
+  const CX = SIZE / 2, CY = SIZE / 2, R = SIZE / 2 - 36;
+
+  const svg = svgElem("svg", { viewBox: `0 0 ${SIZE} ${SIZE}`, width: "100%", style: "max-width:480px;display:block;margin:auto;overflow:visible" });
+
+  // Background
+  svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R, style: "fill:oklch(var(--b2)/0.6);stroke:oklch(var(--bc)/0.10);stroke-width:1" }));
+
+  // Concentric rings
+  for (let i = 1; i <= 4; i++) {
+    const r = R * i / 4;
+    const dash = i < 4 ? "4 6" : "";
+    svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r, style: `fill:none;stroke:oklch(var(--bc)/0.12);stroke-width:1;stroke-dasharray:${dash}` }));
+    const lbl = svgElem("text", { x: CX + 4, y: CY - r + 13, style: "fill:oklch(var(--bc)/0.35);font-size:10px;font-family:monospace" });
+    lbl.textContent = (maxKm * i / 4).toFixed(0) + " km";
+    svg.appendChild(lbl);
+  }
+
+  // Cross-hairs
+  svg.appendChild(svgElem("line", { x1: CX, y1: CY - R, x2: CX, y2: CY + R, style: "stroke:oklch(var(--bc)/0.08);stroke-width:0.5" }));
+  svg.appendChild(svgElem("line", { x1: CX - R, y1: CY, x2: CX + R, y2: CY, style: "stroke:oklch(var(--bc)/0.08);stroke-width:0.5" }));
+
+  // Compass labels
+  for (const [label, dx, dy] of [["N", 0, -1], ["E", 1, 0], ["S", 0, 1], ["W", -1, 0]]) {
+    const t = svgElem("text", {
+      x: CX + dx * (R + 18),
+      y: CY + dy * (R + 18) + 4,
+      style: "fill:oklch(var(--bc)/0.55);font-size:12px;font-weight:700;font-family:monospace;text-anchor:middle",
+    });
+    t.textContent = label;
+    svg.appendChild(t);
+  }
+
+  // Node dots
+  for (const node of nodes) {
+    const az = node._az * Math.PI / 180;
+    const normKm = Math.min(node._km / maxKm, 1.0);
+    const x = CX + Math.sin(az) * normKm * R;
+    const y = CY - Math.cos(az) * normKm * R;
+
+    const snr = node.snr;
+    let dotColor;
+    if (snr == null)     dotColor = "oklch(var(--bc)/0.35)";
+    else if (snr > -7)   dotColor = "oklch(var(--su))";
+    else if (snr > -14)  dotColor = "oklch(var(--wa))";
+    else                 dotColor = "oklch(var(--er))";
+
+    const g = svgElem("g", { style: "cursor:pointer" });
+    g.appendChild(svgElem("circle", { cx: x, cy: y, r: 6, style: `fill:${dotColor};stroke:oklch(var(--b1));stroke-width:1.5` }));
+
+    const label = node.user?.short_name || ("!" + (node.num ?? 0).toString(16).slice(-4));
+    const txt = svgElem("text", {
+      x: x + 8, y: y + 4,
+      style: "fill:oklch(var(--bc)/0.75);font-size:9px;font-family:monospace;pointer-events:none",
+    });
+    txt.textContent = label;
+    g.appendChild(txt);
+    g.addEventListener("click", (e) => { e.stopPropagation(); onSelect(node); });
+    svg.appendChild(g);
+  }
+
+  // Home marker
+  const hg = svgElem("g");
+  hg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: 8, style: "fill:oklch(var(--p));stroke:oklch(var(--b1));stroke-width:2" }));
+  hg.appendChild(svgElem("line", { x1: CX - 12, y1: CY, x2: CX + 12, y2: CY, style: "stroke:oklch(var(--b1));stroke-width:1.5" }));
+  hg.appendChild(svgElem("line", { x1: CX, y1: CY - 12, x2: CX, y2: CY + 12, style: "stroke:oklch(var(--b1));stroke-width:1.5" }));
+  svg.appendChild(hg);
+
+  return svg;
+}
+
+// ============================================================================
+// Nominatim geocoding — sequential queue with 1.1s inter-request delay
+// ============================================================================
+
+const _geocodeCache = new Map();
+let _geocodeQueue = Promise.resolve();
+
+function geocodeLatLon(lat, lon) {
+  const key = lat.toFixed(4) + "," + lon.toFixed(4);
+  if (_geocodeCache.has(key)) return Promise.resolve(_geocodeCache.get(key));
+
+  const p = _geocodeQueue.then(
+    () =>
+      new Promise((resolve) => {
+        setTimeout(async () => {
+          try {
+            const url = `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10`;
+            const res = await fetch(url, { headers: { "Accept-Language": "en" } });
+            const data = await res.json();
+            const parts = (data.display_name || "").split(",").map((s) => s.trim());
+            const addr = parts.slice(0, 3).join(", ") || `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+            _geocodeCache.set(key, addr);
+            resolve(addr);
+          } catch (_) {
+            const fallback = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+            _geocodeCache.set(key, fallback);
+            resolve(fallback);
+          }
+        }, 1100);
+      })
+  );
+
+  _geocodeQueue = p;
+  return p;
+}
+
+// ============================================================================
+// misc helpers
+// ============================================================================
 
 function summarizeEvent(ev) {
   switch (ev.type) {

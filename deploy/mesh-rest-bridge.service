@@ -1,0 +1,21 @@
+[Unit]
+Description=Meshtastic BLE-to-JSON bridge (mesh-rest-bridge)
+After=network.target bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/share/pac/mesh-rest-bridge
+ExecStart=/usr/share/pac/mesh-rest-bridge/venv/bin/python3 -m cli.main --http-port 8000
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mesh-rest-bridge
+
+# Give bluetoothd time to be fully ready before we try to connect
+ExecStartPre=/bin/sleep 3
+
+[Install]
+WantedBy=multi-user.target

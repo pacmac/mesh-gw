@@ -46,11 +46,15 @@ async def get_config(bridge: MeshBridge, params: dict):
 @method("get_status")
 async def get_status(bridge: MeshBridge, params: dict):
     state = bridge.state
+    ble_connected = bool(bridge.ble and bridge.ble.client and bridge.ble.client.is_connected)
     return {
-        "ble_connected": bridge.ble.client.is_connected if bridge.ble.client else False,
+        "ble_connected": ble_connected,
+        "ble_address": bridge.ble_address,
         "config_complete": state.config_complete,
         "node_count": len(state.nodes),
         "mqtt_proxy_connected": bool(bridge.mqtt_proxy and bridge.mqtt_proxy.connected),
+        "last_rx_snr": state.last_rx_snr,
+        "last_rx_rssi": state.last_rx_rssi,
     }
 
 

@@ -9,6 +9,7 @@ phone app) to relay MQTT traffic on its behalf:
 This module plays that role using paho-mqtt.
 """
 import asyncio
+import json
 import logging
 
 import paho.mqtt.client as mqtt
@@ -23,6 +24,7 @@ class MqttProxy:
         on the asyncio loop running when this is constructed."""
         self.root = root
         self.on_downlink = on_downlink
+        self.on_mqtt_node_update = None   # callback(node_dict) for /json/ parsed nodes
         self.loop = asyncio.get_event_loop()
         self.connected = False
 
@@ -57,7 +59,46 @@ class MqttProxy:
 
     def _on_message(self, client, userdata, msg):
         logger.info(f"MQTT downlink <- {msg.topic} ({len(msg.payload)} bytes)")
+        if "/2/json/" in msg.topic and self.on_mqtt_node_update:
+            self._try_parse_json_node(msg.payload)
         asyncio.run_coroutine_threadsafe(self.on_downlink(msg.topic, msg.payload), self.loop)
+
+    def _try_parse_json_node(self, payload: bytes):
+        try:
+            data = json.loads(payload)
+        except Exception:
+            return
+        pkt_type = data.get("type")
+        pkt_from = data.get("from")
+        if not pkt_from or pkt_type not in ("nodeinfo", "position"):
+            return
+        node: dict = {"num": pkt_from}
+        if pkt_type == "nodeinfo":
+            p = data.get("payload", {})
+            node["user"] = {
+                "id": p.get("id", ""),
+                "long_name": p.get("longname") or p.get("long_name", ""),
+                "short_name": p.get("shortname") or p.get("short_name", ""),
+                "hw_model": str(p.get("hardware", "")),
+            }
+        else:  # position
+            p = data.get("payload", {})
+            # Meshtastic JSON uses float lat/lon or integer latitude_i/longitude_i (1e-7)
+            lat = p.get("latitude") or (p.get("latitude_i", 0) / 1e7)
+            lon = p.get("longitude") or (p.get("longitude_i", 0) / 1e7)
+            if not (lat and lon):
+                return
+            pos = {"latitude_i": int(lat * 1e7), "longitude_i": int(lon * 1e7)}
+            if p.get("altitude"):
+                pos["altitude"] = p["altitude"]
+            node["position"] = pos
+        # rx signal if present
+        if data.get("rxSnr"):
+            node["snr"] = data["rxSnr"]
+        if data.get("rxRssi"):
+            node["rssi"] = data["rxRssi"]
+        logger.debug(f"MQTT /json/ node update: num={pkt_from} type={pkt_type}")
+        self.on_mqtt_node_update(node)
 
     def publish(self, topic: str, payload: bytes, retained: bool = False):
         logger.info(f"MQTT uplink -> {topic} ({len(payload)} bytes)")

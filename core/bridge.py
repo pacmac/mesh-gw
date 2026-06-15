@@ -23,27 +23,72 @@ def _random_id() -> int:
 
 
 class MeshBridge:
-    def __init__(self, ble_address: str):
-        self.ble_address = ble_address
+    def __init__(self, ble_address: str | None = None):
+        self.ble_address: str | None = ble_address
         self.stats = StatsCollector()
         self.state = MeshState()
-        self.ble = BLEHandler(ble_address, self.stats)
+        self.ble: BLEHandler | None = None
+        self.mqtt_proxy: MqttProxy | None = None
+        self._reconnect_lock = asyncio.Lock()
+        self._user_disconnect = False  # set True when user explicitly disconnects
 
+        self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
+        if ble_address:
+            self._init_ble(ble_address)
+
+    def _init_ble(self, address: str):
+        self.ble = BLEHandler(address, self.stats)
         self.ble.on_packet_received = self._on_packet
         self.ble.on_disconnected = self._on_disconnected
-        self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
-
-        self.mqtt_proxy: MqttProxy | None = None
 
     async def start(self):
+        if not self.ble:
+            raise RuntimeError("No BLE device configured")
+        logger.info(f"Connecting to BLE device: {self.ble_address}")
         await self.ble.connect()
+        logger.info("BLE connected, requesting config…")
         await self._request_config()
 
     async def stop(self):
+        """Full shutdown — stop MQTT proxy and disconnect BLE."""
+        self._user_disconnect = True
         if self.mqtt_proxy:
             self.mqtt_proxy.stop()
             self.mqtt_proxy = None
-        await self.ble.disconnect()
+        if self.ble:
+            await self._ble_disconnect_safe()
+
+    async def _ble_disconnect_safe(self):
+        try:
+            await asyncio.wait_for(self.ble.disconnect(), timeout=8.0)
+        except Exception as e:
+            logger.warning(f"BLE disconnect warning: {e}")
+
+    # -- dashboard-driven connect/disconnect -----------------------------------
+
+    async def connect_to(self, address: str):
+        """Connect to a specific BLE device, called from dashboard."""
+        self._user_disconnect = False
+        async with self._reconnect_lock:
+            if self.ble:
+                await self._ble_disconnect_safe()
+            self.ble_address = address
+            self._init_ble(address)
+            self.state.config_complete = False
+            self.state.nodes.clear()
+        await self.start()
+
+    async def disconnect_ble(self):
+        """Disconnect BLE and clear address — called from dashboard."""
+        self._user_disconnect = True
+        self.ble_address = None
+        if self.mqtt_proxy:
+            self.mqtt_proxy.stop()
+            self.mqtt_proxy = None
+        if self.ble:
+            await self._ble_disconnect_safe()
+            self.ble = None
+        self.state.config_complete = False
 
     async def _on_packet(self, data: bytes):
         await self.state.handle_from_radio_bytes(data)
@@ -51,17 +96,31 @@ class MeshBridge:
             self._maybe_start_mqtt_proxy()
 
     async def _on_disconnected(self):
-        for attempt in range(1, self.ble.MAX_RECONNECT_ATTEMPTS + 1):
-            if await self.ble.attempt_reconnection():
-                logger.info("Reconnected, re-requesting config")
-                await self._request_config()
+        if self._user_disconnect:
+            return
+        if not self.ble_address:
+            return
+        if self._reconnect_lock.locked():
+            logger.debug("Reconnect already in progress, skipping duplicate _on_disconnected")
+            return
+        async with self._reconnect_lock:
+            if self._user_disconnect:
                 return
-        logger.error("Giving up reconnecting to BLE device")
+            for attempt in range(1, self.ble.MAX_RECONNECT_ATTEMPTS + 1):
+                if await self.ble.attempt_reconnection():
+                    logger.info("Reconnected, re-requesting config")
+                    try:
+                        await self._request_config()
+                    except Exception as e:
+                        logger.warning(f"Config request failed after reconnect: {e}")
+                    return
+            logger.error("Giving up reconnecting to BLE device")
 
     async def _request_config(self):
         to_radio = mesh_pb2.ToRadio()
         to_radio.want_config_id = _random_id()
         await self.ble.send(to_radio.SerializeToString())
+        logger.debug("want_config sent")
 
     @property
     def my_node_num(self):
@@ -82,6 +141,7 @@ class MeshBridge:
                 use_tls=cfg.get("tls_enabled", False),
                 on_downlink=self._on_mqtt_downlink,
             )
+            self.mqtt_proxy.on_mqtt_node_update = self._on_mqtt_node_update
             logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')}")
         except Exception as e:
             logger.error(f"Failed to start MQTT proxy: {e}")
@@ -103,9 +163,19 @@ class MeshBridge:
         except RuntimeError as e:
             logger.debug(f"Dropping MQTT downlink, BLE not ready: {e}")
 
+    def _on_mqtt_node_update(self, node: dict):
+        """Called from paho thread — sync merge into state then schedule WS broadcast."""
+        self.state._merge_node_info(node)
+        asyncio.run_coroutine_threadsafe(
+            self.state._broadcast({"type": "mqtt_node", "data": node}),
+            asyncio.get_event_loop(),
+        )
+
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 
     async def send_text(self, text: str, to: int = BROADCAST_NUM, channel: int = 0):
+        if not self.ble:
+            raise RuntimeError("BLE not connected")
         data = mesh_pb2.Data()
         data.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
         data.payload = text.encode("utf-8")
@@ -123,6 +193,8 @@ class MeshBridge:
         return {"sent": True, "id": packet.id}
 
     async def send_admin(self, message: dict, to: int = None, want_response: bool = True):
+        if not self.ble:
+            raise RuntimeError("BLE not connected")
         """Send an AdminMessage built from a plain dict (same shape as
         protobuf json_format / `meshtastic --export-config` JSON).
 
