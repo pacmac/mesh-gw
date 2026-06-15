@@ -1,0 +1,163 @@
+"""Decodes FromRadio protobuf bytes into a JSON-friendly mesh state.
+
+Clients never see protobuf: everything exposed via state/methods is
+plain dict/JSON (built with google.protobuf.json_format), and writes
+accept the same JSON shape back.
+"""
+import asyncio
+import logging
+
+from google.protobuf import json_format
+from meshtastic import mesh_pb2, admin_pb2, portnums_pb2, telemetry_pb2
+
+logger = logging.getLogger(__name__)
+
+
+def _to_dict(msg):
+    return json_format.MessageToDict(msg, preserving_proto_field_name=True)
+
+
+class MeshState:
+    """Holds the decoded view of the mesh as seen via the connected radio."""
+
+    def __init__(self):
+        self.my_info = {}
+        self.metadata = {}
+        self.nodes = {}          # node_num (str) -> dict
+        self.channels = {}        # index (str) -> dict
+        self.config = {}          # by config section name
+        self.module_config = {}   # by module config section name
+        self.config_complete = False
+
+        # request_id -> asyncio.Future, resolved when a matching ADMIN_APP
+        # reply (Data.reply_id == request_id) is decoded
+        self._pending = {}
+
+        # async queues for websocket subscribers
+        self._subscribers = set()
+
+    # -- subscriber management ------------------------------------------------
+    def subscribe(self) -> asyncio.Queue:
+        q = asyncio.Queue(maxsize=100)
+        self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        self._subscribers.discard(q)
+
+    async def _broadcast(self, event: dict):
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning("Dropping event for slow websocket subscriber")
+
+    # -- pending admin replies -------------------------------------------------
+    def await_reply(self, request_id: int) -> asyncio.Future:
+        fut = asyncio.get_event_loop().create_future()
+        self._pending[request_id] = fut
+        return fut
+
+    def cancel_wait(self, request_id: int):
+        self._pending.pop(request_id, None)
+
+    # -- main decode entrypoint ------------------------------------------------
+    async def handle_from_radio_bytes(self, data: bytes):
+        fr = mesh_pb2.FromRadio()
+        try:
+            fr.ParseFromString(data)
+        except Exception as e:
+            logger.warning(f"Failed to parse FromRadio: {e}")
+            return
+
+        which = fr.WhichOneof("payload_variant")
+
+        if which == "my_info":
+            self.my_info = _to_dict(fr.my_info)
+        elif which == "metadata":
+            self.metadata = _to_dict(fr.metadata)
+        elif which == "node_info":
+            self._merge_node_info(_to_dict(fr.node_info))
+        elif which == "channel":
+            ch = _to_dict(fr.channel)
+            self.channels[str(fr.channel.index)] = ch
+        elif which == "config":
+            self._merge_config(fr.config)
+        elif which == "moduleConfig":
+            self._merge_module_config(fr.moduleConfig)
+        elif which == "config_complete_id":
+            self.config_complete = True
+        elif which == "packet":
+            await self._handle_mesh_packet(fr.packet)
+
+        await self._broadcast({"type": which, "data": _to_dict(fr)})
+
+    def _merge_config(self, config_msg):
+        which = config_msg.WhichOneof("payload_variant")
+        if which:
+            self.config[which] = _to_dict(getattr(config_msg, which))
+
+    def _merge_module_config(self, mc_msg):
+        which = mc_msg.WhichOneof("payload_variant")
+        if which:
+            self.module_config[which] = _to_dict(getattr(mc_msg, which))
+
+    def _merge_node_info(self, node: dict):
+        num = node.get("num")
+        if num is None:
+            return
+        key = str(num)
+        existing = self.nodes.setdefault(key, {})
+        existing.update(node)
+
+    async def _handle_mesh_packet(self, pkt):
+        # Admin replies are correlated to a pending request via request_id
+        if pkt.decoded.portnum == portnums_pb2.PortNum.ADMIN_APP:
+            req_id = pkt.decoded.reply_id or pkt.decoded.request_id
+            fut = self._pending.pop(req_id, None)
+            if fut and not fut.done():
+                admin = admin_pb2.AdminMessage()
+                try:
+                    admin.ParseFromString(pkt.decoded.payload)
+                    fut.set_result(_to_dict(admin))
+                except Exception as e:
+                    fut.set_exception(e)
+            return
+
+        pkt_from = getattr(pkt, "from")
+        node = self.nodes.setdefault(str(pkt_from), {"num": pkt_from})
+
+        if pkt.decoded.portnum == portnums_pb2.PortNum.POSITION_APP:
+            pos = mesh_pb2.Position()
+            try:
+                pos.ParseFromString(pkt.decoded.payload)
+            except Exception:
+                return
+            if pos.HasField("latitude_i") and pos.HasField("longitude_i"):
+                node["position"] = _to_dict(pos)
+
+        elif pkt.decoded.portnum == portnums_pb2.PortNum.NODEINFO_APP:
+            user = mesh_pb2.User()
+            try:
+                user.ParseFromString(pkt.decoded.payload)
+            except Exception:
+                return
+            node["user"] = _to_dict(user)
+
+        elif pkt.decoded.portnum == portnums_pb2.PortNum.TELEMETRY_APP:
+            tel = telemetry_pb2.Telemetry()
+            try:
+                tel.ParseFromString(pkt.decoded.payload)
+            except Exception:
+                return
+            which = tel.WhichOneof("variant")
+            if which:
+                node[which] = _to_dict(getattr(tel, which))
+
+        if pkt.rx_snr:
+            node["snr"] = pkt.rx_snr
+        if pkt.rx_rssi:
+            node["rssi"] = pkt.rx_rssi
+        if pkt.hop_start:
+            node["hops"] = max(0, pkt.hop_start - pkt.hop_limit)
+        node["last_heard_packet"] = True
