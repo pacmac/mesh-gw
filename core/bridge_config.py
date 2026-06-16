@@ -25,8 +25,13 @@ DEFAULTS = {
         "heatmap_max_age_sec": 3600,
     },
     "rotator": {
-        "beam_width_deg": 35,
+        "enabled": False,
         "ws_url": "ws://192.168.10.186:81",
+        "beam_width_deg": 35,
+    },
+    "devices": {
+        # BLE address → role tag. Roles: "yagi", "omni" (future multi-radio use).
+        # e.g. "AA:BB:CC:DD:EE:FF": {"role": "yagi"}
     },
     "mqtt_topics": {
         # Retained per-node position cache, compatible with the v3 ESP32

@@ -11,6 +11,7 @@ from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 from . import bridge_config, geo
 from .ble_handler import BLEHandler
 from .mqtt_proxy import MqttProxy
+from .rotator import RotatorClient
 from .stats import StatsCollector
 from .state import MeshState
 from .tcp_gateway import TcpGateway
@@ -38,6 +39,7 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
         self.ble_error: str | None = None
+        self.rotator: RotatorClient | None = self._init_rotator()
 
         # node IDs known to have a retained <nodeinfo_root>/nodeinfo/<id>
         # cache entry (seeded from retained docs, grown as we publish new ones)
@@ -46,6 +48,20 @@ class MeshBridge:
         self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
         if ble_address:
             self._init_ble(ble_address)
+
+    def _init_rotator(self) -> RotatorClient | None:
+        cfg = bridge_config.load().get("rotator", {})
+        if not cfg.get("enabled"):
+            return None
+        ws_url = cfg.get("ws_url")
+        if not ws_url:
+            return None
+        r = RotatorClient(ws_url)
+        r.on_status = self._on_rotator_status
+        return r
+
+    async def _on_rotator_status(self, status: dict):
+        await self.state._broadcast({"type": "rotator", "data": status})
 
     def _init_ble(self, address: str):
         self.ble = BLEHandler(address, self.stats)
@@ -57,6 +73,8 @@ class MeshBridge:
             raise RuntimeError("No BLE device configured")
         if self.tcp_gateway:
             await self.tcp_gateway.start()
+        if self.rotator:
+            self.rotator.start()
         self.ble_state = "connecting"
         logger.info(f"Connecting to BLE device: {self.ble_address}")
         try:
@@ -70,13 +88,15 @@ class MeshBridge:
         await self._request_config()
 
     async def stop(self):
-        """Full shutdown — stop TCP gateway, MQTT proxy, and disconnect BLE."""
+        """Full shutdown — stop TCP gateway, MQTT proxy, rotator, and disconnect BLE."""
         self._user_disconnect = True
         if self.tcp_gateway:
             await self.tcp_gateway.stop()
         if self.mqtt_proxy:
             self.mqtt_proxy.stop()
             self.mqtt_proxy = None
+        if self.rotator:
+            await self.rotator.stop()
         if self.ble:
             await self._ble_disconnect_safe()
 

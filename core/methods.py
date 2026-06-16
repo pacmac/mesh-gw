@@ -225,19 +225,14 @@ async def send_text(bridge: MeshBridge, params: dict):
 
 @method("yagi_point")
 async def yagi_point(bridge: MeshBridge, params: dict):
-    """params: {az, node?, name?}. Publishes the target azimuth for the Yagi
-    rotator over MQTT (full rotator integration is a future task -- this just
-    gets the command onto the broker in a stable shape)."""
-    if not bridge.mqtt_proxy or not bridge.mqtt_proxy.connected:
-        raise RuntimeError("MQTT proxy not connected")
-    import json
-    payload = json.dumps({
-        "az": float(params["az"]),
-        "node": params.get("node"),
-        "name": params.get("name", ""),
-    })
-    bridge.mqtt_proxy.publish("yagi/point", payload.encode(), retained=False)
-    return {"published": True}
+    """params: {az, node?, name?}. Sends move2az to the rotator via WS."""
+    if not bridge.rotator:
+        raise RuntimeError("Rotator not configured")
+    if not bridge.rotator.connected:
+        raise RuntimeError("Rotator not connected")
+    az = float(params["az"])
+    await bridge.rotator.move(az)
+    return {"moving": True, "az": az}
 
 
 @method("admin")

@@ -142,6 +142,39 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     async def post_yagi_point(body: dict = Body(...)):
         return await call("yagi_point", body)
 
+    # -- rotator --------------------------------------------------------------
+
+    def _rotator_or_503():
+        r = getattr(bridge, "rotator", None)
+        if not r or not r.connected:
+            raise HTTPException(503, "Rotator not connected")
+        return r
+
+    @app.get("/rotator/status")
+    async def get_rotator_status():
+        r = getattr(bridge, "rotator", None)
+        if not r:
+            raise HTTPException(503, "Rotator not configured")
+        return {"connected": r.connected, "status": r.status}
+
+    @app.post("/rotator/move")
+    async def post_rotator_move(body: dict = Body(...)):
+        r = _rotator_or_503()
+        az = body.get("az")
+        if az is None:
+            raise HTTPException(400, "az required")
+        await r.move(float(az))
+        return {"moving": True, "az": az}
+
+    @app.post("/rotator/mode")
+    async def post_rotator_mode(body: dict = Body(...)):
+        r = _rotator_or_503()
+        mode = body.get("mode")
+        if mode is None:
+            raise HTTPException(400, "mode required")
+        await r.set_mode(int(mode))
+        return {"mode": mode}
+
     @app.get("/range_test")
     async def get_range_test():
         return {"log": list(bridge.state.range_test_log), "count": len(bridge.state.range_test_log)}
