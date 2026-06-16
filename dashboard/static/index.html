@@ -404,7 +404,14 @@
                 <span class="badge badge-neutral" x-text="nodeCount"></span>
                 <span class="text-xs font-normal opacity-50" x-show="nodeCount !== nodeTotal" x-text="'of ' + nodeTotal"></span>
               </h2>
-              <button class="btn btn-sm btn-outline" @click="loadNodes()">Refresh</button>
+              <select class="select select-xs select-bordered"
+                      @change="nodeSort.dir = parseInt($event.target.selectedOptions[0].dataset.dir); sortNodes($event.target.value, true)">
+                <option value="last_heard" data-dir="-1">Most recent</option>
+                <option value="snr"        data-dir="-1">Best signal</option>
+                <option value="hops"       data-dir="1">Fewest hops</option>
+                <option value="km"         data-dir="1">Nearest</option>
+                <option value="long_name"  data-dir="1">Name A–Z</option>
+              </select>
             </div>
             <div class="flex flex-wrap gap-x-4 gap-y-1 items-center text-sm py-1 border-b border-base-300">
               <span class="font-semibold text-xs uppercase opacity-50 tracking-wide">Filters</span>
@@ -465,33 +472,27 @@
                                x-text="n.user?.long_name || n.user?.short_name || '–'"></div>
                           <div class="text-[10px] leading-tight mt-0.5"
                                :class="n.last_heard == null ? 'text-base-content/30'
-                                 : (Date.now()/1000 - n.last_heard) < 300  ? 'text-success/80'
+                                 : (Date.now()/1000 - n.last_heard) < 1800 ? 'text-base-content/40'
                                  : (Date.now()/1000 - n.last_heard) < 3600 ? 'text-warning/80'
                                  : 'text-error/60'"
                                x-text="fmtAge(n.last_heard)"></div>
                         </div>
                       </div>
-                      <!-- Signal · battery · distance · hops -->
+                      <!-- Signal · hops · distance -->
                       <div class="flex flex-wrap gap-1">
                         <span class="badge badge-xs"
-                              :class="n.snr == null     ? 'badge-ghost'
-                                    : n.snr >= 5        ? 'badge-success'
-                                    : n.snr >= 0        ? 'badge-warning'
-                                    :                     'badge-error'"
+                              :class="n.snr == null ? 'badge-ghost'
+                                    : n.snr >= 5   ? 'badge-ghost'
+                                    : n.snr >= 0   ? 'badge-warning'
+                                    :                'badge-error'"
                               x-text="n.snr != null ? n.snr + 'dB' : 'no RF'"></span>
-                        <span x-show="n.device_metrics?.battery_level != null"
-                              class="badge badge-xs"
-                              :class="n.device_metrics?.battery_level >= 75 ? 'badge-success'
-                                    : n.device_metrics?.battery_level >= 25 ? 'badge-warning'
-                                    :                                          'badge-error'"
-                              x-text="n.device_metrics?.battery_level + '%'"></span>
-                        <span x-show="nodeKm(n) != null"
-                              class="badge badge-xs badge-ghost"
-                              x-text="nodeKm(n)?.toFixed(1) + 'km'"></span>
                         <span x-show="n.hops != null"
                               class="badge badge-xs"
                               :class="n.hops === 0 ? 'badge-info' : 'badge-ghost'"
-                              x-text="n.hops === 0 ? 'direct' : n.hops + 'h'"></span>
+                              x-text="n.hops === 0 ? 'direct' : n.hops + ' hop'"></span>
+                        <span x-show="nodeKm(n) != null"
+                              class="badge badge-xs badge-ghost"
+                              x-text="nodeKm(n)?.toFixed(1) + ' km'"></span>
                       </div>
                     </div>
                   </div>
