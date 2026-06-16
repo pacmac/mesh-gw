@@ -19,21 +19,25 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
 <style>
-  /* Reusable node avatar — size via font-size (text-xs, text-sm, etc.)
-     Circle is always 2.5em × 2.5em so short name fits with natural padding */
+  /* Reusable node avatar — set size via --sz custom property or modifier class.
+     font-size is derived as 32% of --sz so 4-char names always fit. */
   .node-avatar {
+    --sz: 2.25rem;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
     font-weight: 700;
     color: white;
-    width: 2.5em;
-    height: 2.5em;
+    width: var(--sz);
+    height: var(--sz);
+    font-size: calc(var(--sz) * 0.32);
     flex-shrink: 0;
     line-height: 1;
     user-select: none;
   }
+  .node-avatar-sm { --sz: 1.75rem; }
+  .node-avatar-lg { --sz: 2.75rem; }
   [x-cloak] { display: none !important; }
 </style>
 <script src="config.js"></script>
@@ -309,7 +313,7 @@
                         <a :class="idx === mentionIdx ? 'active' : ''"
                            @mousedown.prevent="selectMention(n)"
                            class="flex items-center gap-2">
-                          <span class="node-avatar text-xs"
+                          <span class="node-avatar node-avatar-sm"
                                 :style="`background:${avatarColor(n.num)}`"
                                 x-text="n.user?.short_name || '?'"></span>
                           <span class="font-mono font-semibold text-xs" x-text="'@' + (n.user?.short_name || '?')"></span>
@@ -755,7 +759,7 @@
                 <template x-for="(m, i) in messages" :key="i">
                   <div class="flex items-start gap-3 py-2"
                        :class="m.replyId ? 'ml-6 pl-2 border-l-2 border-base-300' : ''">
-                    <span class="node-avatar text-sm cursor-pointer"
+                    <span class="node-avatar cursor-pointer"
                           :style="`background:${avatarColor(m.fromNum)}`"
                           :title="m.broadcast ? 'Load node info' : 'Reply DM'"
                           @click="replyTo(m)"
