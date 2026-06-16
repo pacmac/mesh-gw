@@ -6,8 +6,8 @@ Wants=bluetooth.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/usr/share/pac/mesh-rest-bridge
-ExecStart=/usr/share/pac/mesh-rest-bridge/venv/bin/python3 -m cli.main --http-port 8000
+WorkingDirectory=/usr/share/pac/mesh-gw
+ExecStart=/usr/share/pac/mesh-gw/venv/bin/python3 -m cli.main --http-port 8000
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
