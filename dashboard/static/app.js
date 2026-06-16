@@ -213,12 +213,19 @@ function dashboard() {
         localStorage.setItem("radarRange", this.radarRange);
         localStorage.setItem("radarCrosshair", this.radarCrosshair);
         localStorage.setItem("heatmapMaxAge", this.heatmapMaxAge);
-        // Apply server-side filter defaults only for filters not yet saved in localStorage
-        const nd = this.bridgeConfig.node_display || {};
-        if (nd.default_max_age_sec != null && localStorage.getItem("nf_maxAge") === null)
-          this.nodeFilters.maxAge = nd.default_max_age_sec;
-        if (nd.default_hide_mqtt != null && localStorage.getItem("nf_hideMqtt") === null)
-          this.nodeFilters.hideMqtt = !!nd.default_hide_mqtt;
+        // Load active node filter from server — single source of truth shared with rotator
+        try {
+          const nf = await fetchJSON("/node_filter");
+          this.nodeFilters = {
+            maxAge:    nf.max_age      ?? this.nodeFilters.maxAge,
+            maxHops:   nf.max_hops     ?? this.nodeFilters.maxHops,
+            namedOnly: nf.named_only   ?? this.nodeFilters.namedOnly,
+            hasPos:    nf.has_position ?? this.nodeFilters.hasPos,
+            hideMqtt:  nf.hide_mqtt    ?? this.nodeFilters.hideMqtt,
+            hasSignal: nf.has_signal   ?? this.nodeFilters.hasSignal,
+            hasTelem:  nf.has_telemetry ?? this.nodeFilters.hasTelem,
+          };
+        } catch (_) {}
         // Resolve yagi radio assignment from devices block
         const devs = this.bridgeConfig.devices || {};
         this.yagiRadioAddr = (Object.entries(devs)
@@ -229,7 +236,6 @@ function dashboard() {
     },
 
     resetNodeFilters() {
-      ['maxHops','namedOnly','hasPos','hasSignal','hasTelem','maxAge','hideMqtt'].forEach(k => localStorage.removeItem('nf_'+k));
       const nd = this.bridgeConfig?.node_display || {};
       this.nodeFilters = {
         maxHops:   99,
@@ -240,6 +246,12 @@ function dashboard() {
         maxAge:    nd.default_max_age_sec ?? 0,
         hideMqtt:  nd.default_hide_mqtt   ?? true,
       };
+      fetchJSON("/node_filter", "PUT", {
+        max_age: this.nodeFilters.maxAge, max_hops: 99,
+        named_only: false, has_position: false,
+        hide_mqtt: this.nodeFilters.hideMqtt,
+        has_signal: false, has_telemetry: false,
+      }).catch(() => {});
     },
 
     async saveBridgeConfig() {
@@ -417,11 +429,16 @@ function dashboard() {
 
     saveNodeFilter(key, val) {
       this.nodeFilters[key] = val;
-      for (const k of Object.keys(this.nodeFilters)) {
-        const v = this.nodeFilters[k];
-        if (typeof v === "boolean") localStorage.setItem("nf_" + k, v ? "1" : "0");
-        else localStorage.setItem("nf_" + k, String(v));
-      }
+      // Persist to server so rotator uses same filter, localStorage is just a fast fallback
+      fetchJSON("/node_filter", "PUT", {
+        max_age:      this.nodeFilters.maxAge,
+        max_hops:     this.nodeFilters.maxHops,
+        named_only:   this.nodeFilters.namedOnly,
+        has_position: this.nodeFilters.hasPos,
+        hide_mqtt:    this.nodeFilters.hideMqtt,
+        has_signal:   this.nodeFilters.hasSignal,
+        has_telemetry: this.nodeFilters.hasTelem,
+      }).catch(() => {});
       this.loadNodes();
     },
 

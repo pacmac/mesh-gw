@@ -61,12 +61,19 @@ DEFAULTS = {
         },
     },
     "node_display": {
-        # Server-side defaults applied to the node filter toolbar on first load
-        # (when localStorage has no saved preference for a given filter).
-        # User can override per-session via the toolbar; these only apply when
-        # the filter has never been saved in the browser.
         "default_max_age_sec": 1800,   # 30 minutes
         "default_hide_mqtt": True,
+    },
+    "node_filter": {
+        # Active node filter — shared by the dashboard display and the rotator.
+        # Saved here so both sides always agree on which nodes are visible/targetable.
+        "max_age":      1800,
+        "max_hops":     99,
+        "named_only":   False,
+        "has_position": False,
+        "hide_mqtt":    True,
+        "has_signal":   False,
+        "has_telemetry": False,
     },
 }
 

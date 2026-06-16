@@ -120,28 +120,9 @@ class RotatorController:
         if not from_num:
             return
 
-        # Never target our own bridge radios
+        # Never accumulate packets from our own bridge radios
         if from_num in self._dm.bridge_node_nums:
             return
-
-        # Apply the same node filters the dashboard radar uses
-        node_rec = self._node_record(from_num)
-        if node_rec.get("via_mqtt"):
-            return  # MQTT-proxied node — not a real RF contact
-        nd_cfg = self._nd_cfg()
-        max_age = nd_cfg.get("default_max_age_sec")
-        if max_age and node_rec.get("last_heard"):
-            if (time.time() - node_rec["last_heard"]) > max_age:
-                return  # node is too stale — not shown on radar
-
-        home = self._home_pos()
-        if not home:
-            return
-        node_pos = self._node_pos(from_num)
-        if not node_pos:
-            return  # no position known for this node — can't aim at it
-        if _haversine_km(home["lat"], home["lon"], node_pos["lat"], node_pos["lon"]) < 0.1:
-            return  # node is co-located with home (e.g. OMNI radio at same site) — skip
 
         now = time.time()
         cfg = self._cfg()
@@ -159,26 +140,32 @@ class RotatorController:
         if now < self._next_move:
             return
 
-        # Window expired: evaluate, move, then start a new dwell window.
-        # Sort candidates descending by packet count and pick the first one
-        # with a known position, so a positionless winner doesn't block others.
+        # Window expired: evaluate candidates against the active node filter
+        # (same filter the dashboard uses), then move to the best valid target.
+        valid = await self._valid_target_nums()
         sorted_cands = sorted(self._candidates.items(), key=lambda x: -x[1])
         self._candidates.clear()
-        # Set dwell immediately so packets that arrive during the move are counted
-        # toward the *next* target evaluation.
         self._next_move = now + cfg.get("aim_dwell_sec", 15)
+
+        home = self._home_pos()
+        if not home:
+            return
 
         winner_num = None
         winner_pos = None
         for cand_num, _ in sorted_cands:
+            if cand_num not in valid:
+                continue  # not visible on the dashboard — skip
             pos = self._node_pos(cand_num)
-            if pos:
-                winner_num = cand_num
-                winner_pos = pos
-                break
+            if not pos:
+                continue
+            if _haversine_km(home["lat"], home["lon"], pos["lat"], pos["lon"]) < 0.1:
+                continue  # co-located with home — skip
+            winner_num = cand_num
+            winner_pos = pos
+            break
 
         if winner_pos is None:
-            # No candidate has a known position — clear stale target
             if self._point_target is not None:
                 self._point_target = None
                 await self._broadcast({
@@ -220,17 +207,17 @@ class RotatorController:
         from core import bridge_config
         return bridge_config.load().get("rotator", {})
 
-    def _nd_cfg(self) -> dict:
+    async def _valid_target_nums(self) -> set[int]:
+        """Node nums that pass the active node_filter — mirrors what the dashboard shows."""
         from core import bridge_config
-        return bridge_config.load().get("node_display", {})
-
-    def _node_record(self, node_num: int) -> dict:
-        """Most recent stored record for node_num across all connected bridges."""
+        from core.methods import get_nodes
+        node_filter = bridge_config.load().get("node_filter", {})
+        result: set[int] = set()
         for bridge in self._dm._devices.values():
-            rec = bridge.state.nodes.get(str(node_num))
-            if rec:
-                return rec
-        return {}
+            data = await get_nodes(bridge, node_filter)
+            result.update(int(k) for k in data.get("nodes", {}).keys())
+        result -= self._dm.bridge_node_nums
+        return result
 
     def _home_pos(self) -> dict | None:
         """Position of the YAGI gateway's own radio (the bearing origin)."""

@@ -119,6 +119,20 @@ def create_app(dm: DeviceManager) -> FastAPI:
         merged = _bcfg._deep_merge(current, body)
         return _bcfg.save(merged)
 
+    _NODE_FILTER_KEYS = {"max_age", "max_hops", "named_only", "has_position",
+                         "hide_mqtt", "has_signal", "has_telemetry"}
+
+    @app.get("/node_filter")
+    async def get_node_filter():
+        return _bcfg.load().get("node_filter", {})
+
+    @app.put("/node_filter")
+    async def put_node_filter(body: dict = Body(...)):
+        cfg = _bcfg.load()
+        cfg["node_filter"] = {k: v for k, v in body.items() if k in _NODE_FILTER_KEYS}
+        _bcfg.save(cfg)
+        return cfg["node_filter"]
+
     @app.get("/ble/scan")
     async def ble_scan():
         try:
