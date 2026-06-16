@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>mesh-gw</title>
+<title>mesh radar</title>
 <script>
   (function() {
     var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -66,7 +66,7 @@
         </button>
       </div>
       <div class="flex-1 flex items-center gap-3 lg:hidden">
-        <span class="text-base font-bold tracking-wide">mesh-gw</span>
+        <span class="text-base font-bold tracking-wide">mesh radar</span>
         <span class="font-mono text-xs text-success opacity-70" x-show="activeNodeId" x-text="activeNodeId"></span>
       </div>
       <!-- Status indicators (right side) -->
@@ -1107,7 +1107,7 @@
     </div>
 
     <footer class="footer footer-center py-1 px-3 bg-base-100 text-base-content/40 text-xs border-t border-base-200">
-      <div>mesh-gw · <span x-text="activeNodeId || 'no device'"></span></div>
+      <div>mesh radar · <span x-text="activeNodeId || 'no device'"></span></div>
     </footer>
   </div>
 
@@ -1121,7 +1121,7 @@
         <div class="flex items-center gap-2">
           <span class="text-xl">📡</span>
           <div class="flex flex-col leading-tight flex-1">
-            <span class="text-sm font-bold tracking-widest uppercase" style="font-family:'Oxanium',sans-serif">mesh-gw</span>
+            <span class="text-sm font-bold tracking-widest uppercase" style="font-family:'Oxanium',sans-serif">mesh radar</span>
             <span class="text-xs text-base-content/50" x-text="info.metadata.firmware_version ? ('fw ' + info.metadata.firmware_version) : 'dashboard'"></span>
           </div>
           <!-- Desktop collapse button -->
@@ -1196,6 +1196,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260616n"></script>
+<script src="app.js?v=20260616o"></script>
 </body>
 </html>
