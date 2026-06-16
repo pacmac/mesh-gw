@@ -232,12 +232,22 @@ class RotatorController:
         """Node nums that pass the active node_filter — mirrors what the dashboard shows."""
         from core import bridge_config
         from core.methods import get_nodes
-        node_filter = bridge_config.load().get("node_filter", {})
+        cfg = bridge_config.load()
+        node_filter = cfg.get("node_filter", {})
         result: set[int] = set()
         for bridge in self._dm._devices.values():
             data = await get_nodes(bridge, node_filter)
             result.update(int(k) for k in data.get("nodes", {}).keys())
+        # Exclude our own bridge radios
         result -= self._dm.bridge_node_nums
+        # Exclude any manually excluded targets (own mobile radios, local nodes, etc.)
+        excludes = cfg.get("rotator", {}).get("exclude_targets", [])
+        for node_id in excludes:
+            if isinstance(node_id, str) and node_id.startswith("!"):
+                try:
+                    result.discard(int(node_id[1:], 16))
+                except ValueError:
+                    pass
         return result
 
     def _home_pos(self) -> dict | None:

@@ -75,6 +75,11 @@ DEFAULTS = {
         "has_signal":   False,
         "has_telemetry": False,
     },
+    "rotator": {
+        # node IDs (e.g. "!da5af428") that the rotator will never target,
+        # even if they pass all other filters (own mobile radios, local nodes, etc.)
+        "exclude_targets": [],
+    },
 }
 
 
