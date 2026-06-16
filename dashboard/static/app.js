@@ -89,6 +89,14 @@ function dashboard() {
 
     // Node Info modal (reusable, callable from Radar and Nodes table)
     nodeInfo: null,
+
+    get targetNode() {
+      if (!this.yagiPointTarget) return null;
+      // radarNodes has enriched _km/_az; fall back to raw nodes if not plotted
+      return this.radarNodes.find(n => n.num === this.yagiPointTarget)
+          || this.nodes.find(n => n.num === this.yagiPointTarget)
+          || null;
+    },
     lastHeardNum: null,
 
     // Bridge Config tab state (core/bridge_config.yaml via /bridge_config)

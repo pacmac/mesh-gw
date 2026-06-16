@@ -267,7 +267,7 @@
               </div>
             </div>
           </div>
-          <div class="flex-1 min-h-0 flex items-center justify-center" id="radar-wrap"
+          <div class="flex-1 min-h-0 flex items-center justify-center relative" id="radar-wrap"
                style="background:radial-gradient(ellipse at 40% 35%,#0c1a0c 0%,#050e05 55%,#020802 100%)">
             <div x-show="!homePos" class="font-mono text-xs text-center" style="color:rgba(0,255,80,0.35)">
               NO HOME POSITION<br><span class="opacity-60">set a fixed lat/lon via Device Config</span>
@@ -294,6 +294,45 @@
               <g id="radar-beam-g" style="transform-box:view-box;transform-origin:300px 300px;transition:transform 1.2s ease"></g>
               <g id="radar-nodes-g"></g>
             </svg>
+
+            <!-- Active target card — bottom-right overlay, visible in ACTV mode when a target is locked -->
+            <template x-if="rotatorMode === 1 && targetNode">
+              <div style="position:absolute;bottom:1rem;right:1rem;z-index:10;
+                          min-width:13rem;max-width:16rem;
+                          background:rgba(4,10,4,0.93);
+                          border:1px solid rgba(255,30,30,0.40);
+                          border-radius:0.5rem;
+                          backdrop-filter:blur(6px);
+                          padding:0.65rem 0.8rem;
+                          pointer-events:none">
+                <!-- header row -->
+                <div class="flex items-baseline gap-2 mb-1">
+                  <span style="font-family:'Oxanium',monospace;font-size:8px;font-weight:700;letter-spacing:0.18em;color:rgba(255,30,30,0.75)">TARGET</span>
+                  <span style="font-family:'Oxanium',monospace;font-size:14px;font-weight:700;color:rgba(255,30,30,0.95)" x-text="targetNode.user?.short_name || ('!'+targetNode.num?.toString(16))"></span>
+                  <span style="font-family:'Oxanium',monospace;font-size:9px;color:rgba(255,200,40,0.65);margin-left:auto" x-text="targetNode.user?.id || ''"></span>
+                </div>
+                <div style="font-family:'Oxanium',monospace;font-size:10px;color:rgba(255,255,255,0.45);margin-bottom:0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
+                     x-text="targetNode.user?.long_name || '–'"></div>
+                <div style="height:1px;background:rgba(255,30,30,0.20);margin:0.35rem 0"></div>
+                <!-- stats grid -->
+                <div style="display:grid;grid-template-columns:1fr auto;row-gap:0.2rem;column-gap:1rem;font-family:'Oxanium',monospace;font-size:10px">
+                  <span style="color:rgba(0,255,80,0.45)">Distance</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="targetNode._km != null ? targetNode._km.toFixed(1)+' km' : '–'"></span>
+                  <span style="color:rgba(0,255,80,0.45)">Bearing</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="targetNode._az != null ? targetNode._az.toFixed(0)+'°' : '–'"></span>
+                  <span style="color:rgba(0,255,80,0.45)">SNR</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="targetNode.snr != null ? targetNode.snr+' dB' : '–'"></span>
+                  <span style="color:rgba(0,255,80,0.45)">RSSI</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="targetNode.rssi != null ? targetNode.rssi+' dBm' : '–'"></span>
+                  <span style="color:rgba(0,255,80,0.45)">Hops</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="targetNode.hops ?? '–'"></span>
+                  <span style="color:rgba(0,255,80,0.45)">Battery</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="targetNode.device_metrics?.battery_level != null ? targetNode.device_metrics.battery_level+'%' : '–'"></span>
+                  <span style="color:rgba(0,255,80,0.45)">Last heard</span>
+                  <span style="color:rgba(0,255,80,0.9);text-align:right" x-text="fmtAge(targetNode.last_heard)"></span>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -1150,6 +1189,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260616j"></script>
+<script src="app.js?v=20260616k"></script>
 </body>
 </html>
