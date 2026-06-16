@@ -425,7 +425,12 @@ function dashboard() {
     },
 
     filteredNodes() {
-      return this.nodes;
+      const bridgeNums = new Set(
+        this.availableDevices
+          .map(d => d.node_id?.startsWith('!') ? parseInt(d.node_id.slice(1), 16) : null)
+          .filter(n => n != null && !isNaN(n))
+      );
+      return bridgeNums.size ? this.nodes.filter(n => !bridgeNums.has(n.num)) : this.nodes;
     },
 
     // -- websocket live feed ---------------------------------------------------
