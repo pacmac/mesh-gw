@@ -705,8 +705,28 @@
                 </select>
               </div>
               <div class="form-control mt-2">
-                <label class="label"><span class="label-text">Message</span></label>
+                <div class="flex items-center justify-between mb-1">
+                  <label class="label py-0"><span class="label-text">Message</span></label>
+                  <div class="dropdown dropdown-end">
+                    <label tabindex="0" class="btn btn-xs btn-ghost font-mono opacity-60 hover:opacity-100">{…}</label>
+                    <ul tabindex="0" class="dropdown-content menu menu-xs bg-base-200 rounded-box shadow-lg z-20 w-52 p-1">
+                      <li class="menu-title text-xs">My info</li>
+                      <li><a @click="insertText(availableDevices.find(d=>d.node_id===(msgFrom||activeNodeId))?.short_name)">Short name</a></li>
+                      <li><a @click="insertText(availableDevices.find(d=>d.node_id===(msgFrom||activeNodeId))?.long_name)">Long name</a></li>
+                      <li x-show="fixedPosition.lat != null"><a @click="insertText(fixedPosition.lat.toFixed(6) + ', ' + fixedPosition.lon.toFixed(6))">My position</a></li>
+                      <li><a @click="insertText(msgFrom || activeNodeId)">My node ID</a></li>
+                      <li><a @click="insertText(new Date().toLocaleTimeString())">Time</a></li>
+                      <li><a @click="insertText(new Date().toLocaleDateString())">Date</a></li>
+                      <li x-show="msgInsertNode" class="menu-title text-xs border-t border-base-300 mt-1 pt-1" x-text="'Node: ' + nodeShortName(msgInsertNode)"></li>
+                      <li x-show="msgInsertNode"><a @click="insertText(nodeShortName(msgInsertNode))">Short name</a></li>
+                      <li x-show="msgInsertNode"><a @click="insertText(nodeLongName(msgInsertNode))">Long name</a></li>
+                      <li x-show="msgInsertNode && insertNodeMeta()?.dist != null"><a @click="insertText(insertNodeMeta().dist + ' km')">Distance</a></li>
+                      <li x-show="msgInsertNode && insertNodeMeta()?.az != null"><a @click="insertText(insertNodeMeta().az + '°')">Azimuth</a></li>
+                    </ul>
+                  </div>
+                </div>
                 <textarea class="textarea textarea-bordered" rows="3" x-model="msgText" placeholder="Type a message…"
+                  x-ref="msgTextarea"
                   autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
                   @keydown.up="navigateMsgHistory($event, -1)"
                   @keydown.down="navigateMsgHistory($event, 1)"></textarea>

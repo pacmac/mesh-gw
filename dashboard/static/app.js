@@ -15,6 +15,7 @@ function dashboard() {
     msgFrom: localStorage.getItem("msgFrom") || "",
     msgIsDirect: false,
     msgDirectTo: "",
+    msgInsertNode: null,
     msgInputHistory: JSON.parse(localStorage.getItem('msgInputHistory') || '[]'),
     msgHistoryIdx: -1,
     msgDraft: '',
@@ -754,9 +755,35 @@ function dashboard() {
     },
 
     replyTo(m) {
-      if (m.broadcast) return;
-      this.msgIsDirect = true;
-      this.msgDirectTo = m.direction === 'tx' ? m.to : m.fromNum;
+      this.msgInsertNode = m.direction === 'tx' ? m.to : m.fromNum;
+      if (!m.broadcast) {
+        this.msgIsDirect = true;
+        this.msgDirectTo = this.msgInsertNode;
+      }
+    },
+
+    insertText(val) {
+      if (!val) return;
+      const ta = this.$refs.msgTextarea;
+      if (!ta) { this.msgText += val; return; }
+      const s = ta.selectionStart, e = ta.selectionEnd;
+      this.msgText = this.msgText.slice(0, s) + val + this.msgText.slice(e);
+      this.$nextTick(() => { ta.selectionStart = ta.selectionEnd = s + val.length; ta.focus(); });
+    },
+
+    insertNodeMeta() {
+      if (!this.msgInsertNode) return null;
+      const node = this.nodes.find(n => n.num === this.msgInsertNode);
+      const lat = node?.position?.latitude_i != null ? node.position.latitude_i / 1e7 : null;
+      const lon = node?.position?.longitude_i != null ? node.position.longitude_i / 1e7 : null;
+      const hp = this.homePos || (this.fixedPosition.lat != null ? { lat: this.fixedPosition.lat, lon: this.fixedPosition.lon } : null);
+      const dist = (hp && lat != null) ? haversine(hp.lat, hp.lon, lat, lon).toFixed(1) : null;
+      const az = (hp && lat != null) ? Math.round(bearing(hp.lat, hp.lon, lat, lon)) : null;
+      return {
+        shortName: this.nodeShortName(this.msgInsertNode),
+        longName: this.nodeLongName(this.msgInsertNode),
+        dist, az,
+      };
     },
 
     navigateMsgHistory(e, dir) {
