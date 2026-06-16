@@ -55,6 +55,10 @@ class BLEHandler:
         self.last_packet_hash: Optional[int] = None
         self.last_packet_time: float = 0
 
+        # RSSI captured at last connect (device stops advertising once connected
+        # so this is the best reading we can get without raw HCI access)
+        self.last_scan_rssi: Optional[int] = None
+
         # Track initial vs reconnect
         self._initial_connect = True
 
@@ -283,6 +287,18 @@ class BLEHandler:
                     capture_output=True, timeout=5,
                 )
                 await asyncio.sleep(1)
+            except Exception:
+                pass
+
+            # Capture advertising RSSI before pairing/connecting — device stops
+            # advertising once connected, so this is the only opportunity.
+            try:
+                found = await BleakScanner.discover(timeout=3.0, return_adv=True)
+                for addr, (_, adv) in found.items():
+                    if addr.upper() == self.ble_address.upper() and adv.rssi is not None:
+                        self.last_scan_rssi = adv.rssi
+                        logger.debug("Pre-connect RSSI for %s: %d dBm", self.ble_address, adv.rssi)
+                        break
             except Exception:
                 pass
 
@@ -649,8 +665,9 @@ class BLEHandler:
         self.services_ready = False
 
     def get_rssi(self) -> int | None:
-        """Return last known BLE RSSI (dBm) from bluetoothctl info.
-        Available connected or not — reflects last advertising/connection RSSI."""
+        """Return last known BLE RSSI (dBm). Checks bluetoothctl info first
+        (available when device is advertising/not connected), then falls back
+        to the RSSI captured at connect time."""
         try:
             out = subprocess.run(
                 ["bluetoothctl", "info", self.ble_address],
@@ -658,12 +675,11 @@ class BLEHandler:
             ).stdout
             for line in out.splitlines():
                 if "RSSI:" in line:
-                    # "	RSSI: 0xffffff9e (-98)"
                     part = line.split("(")[-1].rstrip(")")
                     return int(part)
         except Exception:
             pass
-        return None
+        return self.last_scan_rssi
 
     async def scan_devices(self) -> list:
         """
