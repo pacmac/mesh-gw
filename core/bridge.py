@@ -56,9 +56,7 @@ class MeshBridge:
             return None
         devices = full_cfg.get("devices") or {}
         addr = (self.ble_address or "").upper()
-        role = (devices.get(addr) or {}).get("role")
-        logger.info("_init_rotator: addr=%s role=%s devices_keys=%s", addr, role, list(devices.keys()))
-        if not addr or role != "yagi":
+        if not addr or (devices.get(addr) or {}).get("role") != "yagi":
             return None
         try:
             r = load_rotator(rot_cfg)

@@ -171,6 +171,7 @@
                   <div class="flex gap-2 items-start border-b border-base-200 pb-1">
                     <span class="text-base-content/40 shrink-0" x-text="ev.time"></span>
                     <span class="badge badge-sm" :class="badgeForType(ev.type)" x-text="ev.type"></span>
+                    <span x-show="ev.device" class="badge badge-xs badge-ghost font-mono shrink-0 opacity-60" x-text="deviceLabel(ev.device)"></span>
                     <span class="text-base-content/80" x-text="ev.summary"></span>
                   </div>
                 </template>
@@ -908,6 +909,7 @@
                         <span x-show="m.replyId" class="text-base-content/40" title="Reply">↩</span>
                         <span class="font-semibold text-base-content" x-text="nodeLongName(m.fromNum)"></span>
                         <span class="badge badge-xs" :class="m.broadcast ? 'badge-ghost' : 'badge-info'" x-text="m.broadcast ? 'BC' : 'DM'"></span>
+                        <span x-show="m.src" class="badge badge-xs badge-outline font-mono opacity-60" :title="m.src" x-text="deviceLabel(m.src)"></span>
                         <span class="ml-auto text-base-content/50 shrink-0" x-text="m.time"></span>
                         <span x-show="m.direction==='tx'" class="text-success shrink-0" title="Sent">✓</span>
                       </div>

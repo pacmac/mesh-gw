@@ -466,7 +466,7 @@ function dashboard() {
       if (ev.device && this.activeNodeId && ev.device !== this.activeNodeId) return;
       const time = new Date().toLocaleTimeString();
       const summary = summarizeEvent(ev);
-      this.events.unshift({ type: ev.type, time, summary });
+      this.events.unshift({ type: ev.type, time, summary, device: ev.device || null });
       if (this.events.length > 80) this.events.pop();
 
       if (ev.type === "packet") {
@@ -485,6 +485,7 @@ function dashboard() {
                 channel: pkt.channel ?? 0,
                 replyId: pkt.decoded.reply_id || null,
                 text, time, direction: 'rx', ackStatus: null,
+                src: ev.device || null,
               });
               if (this.messages.length > 50) this.messages.pop();
               try { localStorage.setItem("msgHistory", JSON.stringify(this.messages.slice(0, 20))); } catch (_) {}
@@ -746,6 +747,7 @@ function dashboard() {
       this.messages.unshift({
         fromNum, to: to >>> 0,
         broadcast: to === 0xFFFFFFFF, channel, text, time, direction: 'tx', ackStatus: 'sent',
+        src: fromId,
       });
       if (this.messages.length > 50) this.messages.pop();
       this.msgInputHistory = [text, ...this.msgInputHistory.filter(t => t !== text)].slice(0, 50);
@@ -896,6 +898,12 @@ function dashboard() {
     avatarColor(num) {
       const h = ((num >>> 0) * 2654435761 >>> 0) % 360;
       return `hsl(${h},55%,45%)`;
+    },
+
+    deviceLabel(nodeId) {
+      if (!nodeId) return '';
+      const d = this.availableDevices.find(d => d.node_id === nodeId);
+      return d?.short_name || nodeId.replace('!', '').slice(-4).toUpperCase();
     },
 
     async pointAtNode(node) {
