@@ -201,6 +201,43 @@
               </div>
             </div>
           </div>
+          <!-- Rotator panel — hidden when rotator.enabled = false -->
+          <div class="card bg-base-100 shadow" x-show="bridgeConfig?.rotator?.enabled">
+            <div class="card-body">
+              <h2 class="card-title text-base">
+                Rotator
+                <span class="badge badge-xs ml-auto"
+                      :class="rotatorConnected ? 'badge-success' : 'badge-ghost'"
+                      x-text="rotatorConnected ? 'connected' : 'offline'"></span>
+              </h2>
+              <div class="text-sm flex flex-col gap-2">
+                <div class="flex justify-between items-center">
+                  <span class="text-base-content/60">Bearing</span>
+                  <span class="font-mono text-2xl font-bold leading-none"
+                        x-text="rotatorStatus.az != null ? Number(rotatorStatus.az).toFixed(1) + '°' : '–'"></span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-base-content/60">Mode</span>
+                  <span x-text="rotatorStatus.mode || '–'"></span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-base-content/60">Status</span>
+                  <span :class="rotatorStatus.busy ? 'text-warning' : 'text-base-content/60'"
+                        x-text="rotatorStatus.busy ? 'moving…' : 'idle'"></span>
+                </div>
+              </div>
+              <div class="divider my-1"></div>
+              <div class="flex gap-2">
+                <input type="number" min="0" max="360" step="1" placeholder="0 – 360°"
+                       class="input input-bordered input-sm flex-1"
+                       x-model.number="rotatorManualAz">
+                <button class="btn btn-sm btn-primary"
+                        :disabled="rotatorManualAz == null || !rotatorConnected"
+                        @click="moveRotator(rotatorManualAz)">Point</button>
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- ===================== RADAR ===================== -->

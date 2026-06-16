@@ -49,6 +49,9 @@ function dashboard() {
     serverReachable: true,
     yagiAz: null,
     yagiConnected: false,
+    rotatorStatus: {},
+    rotatorConnected: false,
+    rotatorManualAz: null,
     events: [],
     allSections: [],
     channels: [],
@@ -179,7 +182,6 @@ function dashboard() {
       }
       await this.loadBridgeConfig();
       this.connectWS();
-      this.connectYagiWS();
       setInterval(() => { this.refreshStatus(); this.loadDevices(); }, 5000);
       if (this.tab === "radar") this.$nextTick(() => this.initRadar());
       else if (this.tab === "cfg") this.switchCfgTab(this.cfgTab);
@@ -434,24 +436,19 @@ function dashboard() {
       this.connectWS();
     },
 
-    // -- Yagi rotator WS (192.168.10.186:81) — live bearing + status ----------
-    connectYagiWS() {
-      const ws = new WebSocket("ws://192.168.10.186:81");
-      ws.onopen  = () => { this.yagiConnected = true; };
-      ws.onclose = () => {
-        this.yagiConnected = false;
-        setTimeout(() => this.connectYagiWS(), 5000);
-      };
-      ws.onerror = () => ws.close();
-      ws.onmessage = (msg) => {
-        try {
-          const d = JSON.parse(msg.data);
-          if (d.type === "status" && d.az != null) {
-            this.yagiAz = d.az;
-            if (this.tab === "radar") this.drawRadar();
-          }
-        } catch (_) {}
-      };
+    // -- Rotator (status via bridge WS type:rotator events) ------------------
+    _onRotatorEvent(data) {
+      this.rotatorStatus = data;
+      this.rotatorConnected = true;
+      if (data.az != null) {
+        this.yagiAz = data.az;
+        this.yagiConnected = true;
+        if (this.tab === "radar") this.drawRadar();
+      }
+    },
+    async moveRotator(az) {
+      if (az == null) return;
+      await fetchJSON("/rotator/move", "POST", { az: Number(az) });
     },
 
     handleEvent(ev) {
@@ -461,6 +458,8 @@ function dashboard() {
       const summary = summarizeEvent(ev);
       this.events.unshift({ type: ev.type, time, summary });
       if (this.events.length > 80) this.events.pop();
+
+      if (ev.type === "rotator") { this._onRotatorEvent(ev.data || {}); return; }
 
       if (ev.type === "packet") {
         const pkt = ev.data?.packet;
