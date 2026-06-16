@@ -1104,18 +1104,23 @@ function dashboard() {
       for (let yy = CY - R; yy < CY + R; yy += 4)
         scanG.appendChild(svgElem('line', { x1: CX - R, y1: yy, x2: CX + R, y2: yy, style: 'stroke:rgba(0,0,0,0.10);stroke-width:1' }));
       bg.appendChild(scanG);
-      for (let i = 1; i <= 4; i++) {
-        const r = R * i / 4, isFull = i === 4;
+      const ringKms = this.radarLogScale
+        ? (() => {
+            // Pick up to 3 nice round values inside maxKm, plus maxKm itself
+            const cands = [1, 2, 5, 10, 20, 50, 100, 150, 250, 500, 1000].filter(k => k < maxKm);
+            return [...cands.slice(-3), maxKm];
+          })()
+        : [1, 2, 3, 4].map(i => maxKm * i / 4);
+      ringKms.forEach((km, idx) => {
+        const isFull = idx === ringKms.length - 1;
+        const r = this._radarNorm(km, maxKm) * R;
         bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r,
           style: `fill:none;stroke:${isFull ? G2 : G1};stroke-width:${isFull ? 1.2 : 0.9};stroke-dasharray:${isFull ? '' : '5 5'}` }));
-        const ringKm = this.radarLogScale
-          ? Math.expm1((i / 4) * Math.log1p(maxKm))
-          : maxKm * i / 4;
         const lbl = svgElem('text', { x: CX + 5, y: CY - r + 12,
           style: `fill:${G3};font-size:10px;font-family:'Oxanium',monospace;letter-spacing:0.05em` });
-        lbl.textContent = (ringKm < 10 ? ringKm.toFixed(1) : Math.round(ringKm)) + ' km';
+        lbl.textContent = (km < 10 ? km.toFixed(km % 1 ? 1 : 0) : km) + ' km';
         bg.appendChild(lbl);
-      }
+      });
       if (this.radarCrosshair) {
         bg.appendChild(svgElem('line', { x1: CX, y1: CY - R, x2: CX, y2: CY + R, style: `stroke:${G1};stroke-width:0.7;stroke-dasharray:2 8` }));
         bg.appendChild(svgElem('line', { x1: CX - R, y1: CY, x2: CX + R, y2: CY, style: `stroke:${G1};stroke-width:0.7;stroke-dasharray:2 8` }));
