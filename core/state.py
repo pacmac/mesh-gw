@@ -50,6 +50,9 @@ class MeshState:
         # suppress that echo from the WS feed (clients already showed it)
         self._suppress_packet_ids: set[int] = set()
 
+        # set by DeviceManager once my_info reveals the real node_id
+        self.device_id: str | None = None
+
     def suppress_packet_id(self, packet_id: int):
         """Register a sent packet ID so its TX echo is not re-broadcast on WS."""
         self._suppress_packet_ids.add(packet_id)
@@ -66,6 +69,8 @@ class MeshState:
         self._subscribers.discard(q)
 
     async def _broadcast(self, event: dict):
+        if self.device_id and "device" not in event:
+            event = {**event, "device": self.device_id}
         for q in list(self._subscribers):
             try:
                 q.put_nowait(event)

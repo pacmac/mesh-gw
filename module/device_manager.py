@@ -192,6 +192,7 @@ class DeviceManager:
                         task = self._watchers.pop(temp_key, None)
                         if task:
                             self._watchers[node_id] = task
+                        bridge.state.device_id = node_id
                         logger.info("Bridge aliased: %s -> %s", temp_key, node_id)
                 await self._broadcast({**event, "device": node_id})
         except asyncio.CancelledError:
