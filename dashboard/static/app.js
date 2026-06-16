@@ -17,6 +17,8 @@ function dashboard() {
     info: { my_info: {}, metadata: {} },
     nodeSelf: {},
     nodes: [],
+    nodeTotal: 0,
+    nodeCount: 0,
     nodeSort: { key: "last_heard", dir: -1 },
     nodeFilters: {
       maxHops:    parseInt(localStorage.getItem("nf_maxHops")   ?? "99"),
@@ -265,7 +267,19 @@ function dashboard() {
 
     async loadNodes() {
       if (!this.activeNodeId) return;
-      const data = await fetchJSON(this.d("/nodes"));
+      const f = this.nodeFilters;
+      const qs = new URLSearchParams();
+      if (f.maxAge)           qs.set("max_age",      f.maxAge);
+      if (f.maxHops < 99)     qs.set("max_hops",     f.maxHops);
+      if (f.namedOnly)        qs.set("named_only",   "true");
+      if (f.hasPos)           qs.set("has_position", "true");
+      if (f.hideMqtt)         qs.set("hide_mqtt",    "true");
+      if (f.hasSignal)        qs.set("has_signal",   "true");
+      if (f.hasTelem)         qs.set("has_telemetry","true");
+      const query = qs.toString() ? "?" + qs.toString() : "";
+      const data = await fetchJSON(this.d("/nodes") + query);
+      this.nodeTotal = data.total ?? Object.keys(data.nodes || {}).length;
+      this.nodeCount = data.count ?? this.nodeTotal;
       this.nodes = Object.values(data.nodes || {});
       this.updateHomePos();
       this.sortNodes(this.nodeSort.key, true);
@@ -363,21 +377,11 @@ function dashboard() {
         if (typeof v === "boolean") localStorage.setItem("nf_" + k, v ? "1" : "0");
         else localStorage.setItem("nf_" + k, String(v));
       }
+      this.loadNodes();
     },
 
     filteredNodes() {
-      const { maxHops, namedOnly, hasPos, hasSignal, hasTelem, maxAge, hideMqtt } = this.nodeFilters;
-      const now = Math.floor(Date.now() / 1000);
-      return this.nodes.filter(n => {
-        if (hideMqtt && n.via_mqtt === true) return false;
-        if (maxHops < 99 && (n.hops == null || n.hops > maxHops)) return false;
-        if (namedOnly && !n.user?.long_name) return false;
-        if (hasPos && this.nodeKm(n) == null) return false;
-        if (hasSignal && n.snr == null && n.rssi == null) return false;
-        if (hasTelem && n.device_metrics?.battery_level == null) return false;
-        if (maxAge > 0 && (!n.last_heard || (now - n.last_heard) > maxAge)) return false;
-        return true;
-      });
+      return this.nodes;
     },
 
     // -- websocket live feed ---------------------------------------------------

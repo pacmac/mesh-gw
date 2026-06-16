@@ -289,8 +289,8 @@
             <div class="flex items-center justify-between flex-wrap gap-2">
               <h2 class="card-title">
                 NodeDB
-                <span class="badge badge-neutral" x-text="filteredNodes().length"></span>
-                <span class="text-xs font-normal opacity-50" x-show="filteredNodes().length !== nodes.length" x-text="'of ' + nodes.length"></span>
+                <span class="badge badge-neutral" x-text="nodeCount"></span>
+                <span class="text-xs font-normal opacity-50" x-show="nodeCount !== nodeTotal" x-text="'of ' + nodeTotal"></span>
               </h2>
               <button class="btn btn-sm btn-outline" @click="loadNodes()">Refresh</button>
             </div>
