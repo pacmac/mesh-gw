@@ -54,10 +54,11 @@ class MeshBridge:
         rot_cfg = full_cfg.get("rotator", {})
         if not rot_cfg.get("enabled"):
             return None
-        # Only activate for the radio tagged role:yagi in bridge_config.devices
         devices = full_cfg.get("devices") or {}
         addr = (self.ble_address or "").upper()
-        if not addr or (devices.get(addr) or {}).get("role") != "yagi":
+        role = (devices.get(addr) or {}).get("role")
+        logger.info("_init_rotator: addr=%s role=%s devices_keys=%s", addr, role, list(devices.keys()))
+        if not addr or role != "yagi":
             return None
         try:
             r = load_rotator(rot_cfg)
