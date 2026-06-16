@@ -122,6 +122,7 @@ function dashboard() {
       this.allSections = [];
       this.channels = [];
       this.ownerSchema = null;
+      this.reconnectWS();
       await this.refreshStatus();
       await this.loadInfo();
       await this.loadNodes();
@@ -387,17 +388,25 @@ function dashboard() {
     // -- websocket live feed ---------------------------------------------------
     connectWS() {
       const apiUrl = window.MESH_API || location.origin;
-      const ws = new WebSocket(apiUrl.replace(/^http/, "ws") + "/events");
+      const deviceParam = this.activeNodeId ? "?device=" + encodeURIComponent(this.activeNodeId) : "";
+      const ws = new WebSocket(apiUrl.replace(/^http/, "ws") + "/events" + deviceParam);
+      this._ws = ws;
       ws.onopen = () => { this.wsConnected = true; };
       ws.onclose = () => {
         this.wsConnected = false;
-        setTimeout(() => this.connectWS(), 3000);
+        if (ws === this._ws) setTimeout(() => this.connectWS(), 3000);
       };
       ws.onerror = () => ws.close();
       ws.onmessage = (msg) => {
         const ev = JSON.parse(msg.data);
         this.handleEvent(ev);
       };
+    },
+
+    reconnectWS() {
+      if (this._ws) { this._ws.onclose = null; this._ws.close(); this._ws = null; }
+      this.wsConnected = false;
+      this.connectWS();
     },
 
     // -- Yagi rotator WS (192.168.10.186:81) — live bearing + status ----------

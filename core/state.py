@@ -111,6 +111,11 @@ class MeshState:
         elif which == "packet":
             await self._handle_mesh_packet(fr.packet)
 
+        # Suppress startup NodeDB dump from WS — clients fetch nodedb via
+        # GET /nodes. After config_complete, live NODEINFO arrives as packets.
+        if which == "node_info" and not self.config_complete:
+            return
+
         await self._broadcast({"type": which, "data": _to_dict(fr)})
 
     def _merge_config(self, config_msg):

@@ -180,11 +180,14 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     @app.websocket("/events")
     async def ws_all(websocket: WebSocket):
+        device_filter = websocket.query_params.get("device", "")
         await websocket.accept()
         q = dm.subscribe()
         try:
             while True:
                 event = await q.get()
+                if device_filter and event.get("device") != device_filter:
+                    continue
                 await websocket.send_json(event)
         except WebSocketDisconnect:
             pass
