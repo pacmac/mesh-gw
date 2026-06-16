@@ -449,39 +449,54 @@
               </label>
               <button class="btn btn-xs btn-ghost opacity-50" @click="resetNodeFilters()">Reset</button>
             </div>
-            <div class="overflow-x-auto max-h-[65vh]">
-              <table class="table table-zebra table-sm">
-                <thead class="sticky top-0 bg-base-100 z-10">
-                  <tr>
-                    <template x-for="col in [
-                      {k:'long_name',l:'Name'},{k:'short_name',l:'Short'},{k:'id',l:'ID'},
-                      {k:'battery',l:'Batt'},{k:'snr',l:'SNR'},{k:'rssi',l:'SS%'},
-                      {k:'km',l:'KM'},{k:'az',l:'AZ'},{k:'hops',l:'Hops'},{k:'last_heard',l:'Last heard'}
-                    ]" :key="col.k">
-                      <th class="cursor-pointer select-none" @click="sortNodes(col.k)">
-                        <span x-text="col.l"></span>
-                        <span x-show="nodeSort.key===col.k" class="ml-0.5 opacity-60" x-text="nodeSort.dir===-1?'▼':'▲'"></span>
-                      </th>
-                    </template>
-                  </tr>
-                </thead>
-                <tbody>
-                  <template x-for="n in filteredNodes()" :key="n.num">
-                    <tr class="cursor-pointer hover" @click="openNodeInfo(n)">
-                      <td x-text="(n.user && n.user.long_name) || '–'"></td>
-                      <td x-text="(n.user && n.user.short_name) || '–'"></td>
-                      <td class="font-mono text-xs" x-text="(n.user && n.user.id) || n.num"></td>
-                      <td x-text="n.device_metrics?.battery_level != null ? (n.device_metrics.battery_level + '%') : '–'"></td>
-                      <td x-text="n.snr ?? '–'"></td>
-                      <td x-text="n.rssi != null ? rssiPercent(n.rssi)+'%' : '–'"></td>
-                      <td x-text="nodeKm(n) != null ? nodeKm(n).toFixed(1) : '–'"></td>
-                      <td x-text="nodeAz(n) != null ? nodeAz(n).toFixed(0)+'°' : '–'"></td>
-                      <td x-text="n.hops ?? '–'"></td>
-                      <td class="text-xs" x-text="fmtAge(n.last_heard)"></td>
-                    </tr>
-                  </template>
-                </tbody>
-              </table>
+            <div class="overflow-y-auto max-h-[65vh]">
+              <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2 pt-1">
+                <template x-for="n in filteredNodes()" :key="n.num">
+                  <div class="card bg-base-100 border border-base-300 cursor-pointer hover:border-primary/40 hover:shadow-md transition-all"
+                       @click="openNodeInfo(n)">
+                    <div class="card-body p-3 gap-2">
+                      <!-- Avatar + name + freshness -->
+                      <div class="flex items-center gap-2 min-w-0">
+                        <span class="node-avatar shrink-0"
+                              :style="`background:${avatarColor(n.num)}`"
+                              x-text="n.user?.short_name || '?'"></span>
+                        <div class="min-w-0 flex-1">
+                          <div class="font-semibold text-sm leading-tight truncate"
+                               x-text="n.user?.long_name || n.user?.short_name || '–'"></div>
+                          <div class="text-[10px] leading-tight mt-0.5"
+                               :class="n.last_heard == null ? 'text-base-content/30'
+                                 : (Date.now()/1000 - n.last_heard) < 300  ? 'text-success/80'
+                                 : (Date.now()/1000 - n.last_heard) < 3600 ? 'text-warning/80'
+                                 : 'text-error/60'"
+                               x-text="fmtAge(n.last_heard)"></div>
+                        </div>
+                      </div>
+                      <!-- Signal · battery · distance · hops -->
+                      <div class="flex flex-wrap gap-1">
+                        <span class="badge badge-xs"
+                              :class="n.snr == null     ? 'badge-ghost'
+                                    : n.snr >= 5        ? 'badge-success'
+                                    : n.snr >= 0        ? 'badge-warning'
+                                    :                     'badge-error'"
+                              x-text="n.snr != null ? n.snr + 'dB' : 'no RF'"></span>
+                        <span x-show="n.device_metrics?.battery_level != null"
+                              class="badge badge-xs"
+                              :class="n.device_metrics?.battery_level >= 75 ? 'badge-success'
+                                    : n.device_metrics?.battery_level >= 25 ? 'badge-warning'
+                                    :                                          'badge-error'"
+                              x-text="n.device_metrics?.battery_level + '%'"></span>
+                        <span x-show="nodeKm(n) != null"
+                              class="badge badge-xs badge-ghost"
+                              x-text="nodeKm(n)?.toFixed(1) + 'km'"></span>
+                        <span x-show="n.hops != null"
+                              class="badge badge-xs"
+                              :class="n.hops === 0 ? 'badge-info' : 'badge-ghost'"
+                              x-text="n.hops === 0 ? 'direct' : n.hops + 'h'"></span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
             </div>
           </div>
         </div>
