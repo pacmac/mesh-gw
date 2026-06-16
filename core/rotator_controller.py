@@ -46,7 +46,7 @@ class RotatorController:
         self._dm = dm
         self._broadcast = broadcast_fn
         self._task: asyncio.Task | None = None
-        self._mode: int = MODE_PASSIVE
+        self._mode: int = int(self._cfg().get("mode", MODE_PASSIVE))
         # _next_move = 0 means "start a fresh accumulation window on next packet".
         # During accumulation it is set to now + aim_accumulate_sec.
         # During dwell it is set to now + aim_dwell_sec.
@@ -79,6 +79,10 @@ class RotatorController:
         self._mode = int(value)
         self._candidates.clear()
         self._next_move = 0.0
+        from core import bridge_config
+        cfg = bridge_config.load()
+        cfg.setdefault("rotator", {})["mode"] = self._mode
+        bridge_config.save(cfg)
         logger.info("Rotator mode -> %d", self._mode)
 
     @property
