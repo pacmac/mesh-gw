@@ -124,6 +124,16 @@ class RotatorController:
         if from_num in self._dm.bridge_node_nums:
             return
 
+        # Apply the same node filters the dashboard radar uses
+        node_rec = self._node_record(from_num)
+        if node_rec.get("via_mqtt"):
+            return  # MQTT-proxied node — not a real RF contact
+        nd_cfg = self._nd_cfg()
+        max_age = nd_cfg.get("default_max_age_sec")
+        if max_age and node_rec.get("last_heard"):
+            if (time.time() - node_rec["last_heard"]) > max_age:
+                return  # node is too stale — not shown on radar
+
         home = self._home_pos()
         if not home:
             return
@@ -209,6 +219,18 @@ class RotatorController:
     def _cfg(self) -> dict:
         from core import bridge_config
         return bridge_config.load().get("rotator", {})
+
+    def _nd_cfg(self) -> dict:
+        from core import bridge_config
+        return bridge_config.load().get("node_display", {})
+
+    def _node_record(self, node_num: int) -> dict:
+        """Most recent stored record for node_num across all connected bridges."""
+        for bridge in self._dm._devices.values():
+            rec = bridge.state.nodes.get(str(node_num))
+            if rec:
+                return rec
+        return {}
 
     def _home_pos(self) -> dict | None:
         """Position of the YAGI gateway's own radio (the bearing origin)."""
