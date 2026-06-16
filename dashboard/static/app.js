@@ -15,6 +15,8 @@ function dashboard() {
     msgFrom: localStorage.getItem("msgFrom") || "",
     msgIsDirect: false,
     msgDirectTo: "",
+    unreadMessages: 0,
+    _seenPacketIds: new Set(),
     availableDevices: [],
     status: {},
     info: { my_info: {}, metadata: {} },
@@ -98,6 +100,7 @@ function dashboard() {
       else if (t === "range") this.loadRangeTest();
       else if (t === "nodes") this.loadNodes();
       else if (t === "devices") this.loadDevices();
+      else if (t === "messages") this.unreadMessages = 0;
     },
 
     // -- device path helper -------------------------------------------------------
@@ -152,6 +155,13 @@ function dashboard() {
     },
 
     async init() {
+      try {
+        const saved = JSON.parse(localStorage.getItem("msgHistory") || "[]");
+        if (Array.isArray(saved) && saved.length) {
+          this.messages = saved;
+          saved.forEach(m => { if (m.pktId) this._seenPacketIds.add(m.pktId); });
+        }
+      } catch (_) {}
       await this.loadDevices();
       if (this.activeNodeId) {
         await this.refreshStatus();
@@ -449,15 +459,21 @@ function dashboard() {
         const portnum = pkt?.decoded?.portnum;
         if (portnum === "TEXT_MESSAGE_APP" && pkt?.decoded?.payload) {
           try {
-            const text = b64ToUtf8(pkt.decoded.payload);
-            const toNum = pkt.to >>> 0;
-            this.messages.unshift({
-              fromNum: pkt.from ?? 0, to: toNum,
-              broadcast: toNum === 0xFFFFFFFF || pkt.to == null,
-              channel: pkt.channel ?? 0,
-              text, time, direction: 'rx', ackStatus: null,
-            });
-            if (this.messages.length > 50) this.messages.pop();
+            const pktId = pkt.id;
+            if (!pktId || !this._seenPacketIds.has(pktId)) {
+              if (pktId) { this._seenPacketIds.add(pktId); if (this._seenPacketIds.size > 200) this._seenPacketIds.delete(this._seenPacketIds.values().next().value); }
+              const text = b64ToUtf8(pkt.decoded.payload);
+              const toNum = pkt.to >>> 0;
+              this.messages.unshift({
+                pktId, fromNum: pkt.from ?? 0, to: toNum,
+                broadcast: toNum === 0xFFFFFFFF || pkt.to == null,
+                channel: pkt.channel ?? 0,
+                text, time, direction: 'rx', ackStatus: null,
+              });
+              if (this.messages.length > 50) this.messages.pop();
+              try { localStorage.setItem("msgHistory", JSON.stringify(this.messages.slice(0, 20))); } catch (_) {}
+              if (this.tab !== 'messages') { this.unreadMessages++; this.playMsgSound(); }
+            }
           } catch (e) { /* ignore decode errors */ }
         }
         // Track the most recently heard node for the radar's reticle marker
@@ -750,6 +766,18 @@ function dashboard() {
     },
 
     // -- Yagi rotator "Point" (future integration: see radar-revamp task goal) -------
+    playMsgSound() {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = ctx.createOscillator(), g = ctx.createGain();
+        o.connect(g); g.connect(ctx.destination);
+        o.type = 'sine'; o.frequency.value = 880;
+        g.gain.setValueAtTime(0.25, ctx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+        o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.35);
+      } catch (_) {}
+    },
+
     nodeShortName(num) {
       const n = this.nodes.find(n => n.num === num);
       return n?.user?.short_name || ('!' + (num & 0xFFFF).toString(16).toUpperCase());

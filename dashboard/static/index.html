@@ -901,7 +901,12 @@
           </details>
         </li>
         <li><a :class="tab==='range' && 'active'" @click="setNav('range')">Range Test</a></li>
-        <li><a :class="tab==='messages' && 'active'" @click="setNav('messages')">Messages</a></li>
+        <li>
+          <a :class="tab==='messages' && 'active'" @click="setNav('messages')" class="flex justify-between items-center">
+            Messages
+            <span x-show="unreadMessages > 0" class="badge badge-error badge-sm" x-text="unreadMessages"></span>
+          </a>
+        </li>
         <li class="mt-2 border-t border-base-200 pt-2">
           <a :class="tab==='devices' && 'active'" @click="setNav('devices')">
             Devices
