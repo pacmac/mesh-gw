@@ -243,14 +243,10 @@
               <!-- Mode selector: PASV / ACTV -->
               <div class="flex gap-1">
                 <button class="btn btn-xs font-mono tracking-widest"
-                        :style="rotatorMode === 0
-                          ? 'background:rgba(80,200,255,0.22);border:1px solid rgba(80,200,255,0.65);color:rgba(80,200,255,1.0)'
-                          : 'background:rgba(80,200,255,0.04);border:1px solid rgba(80,200,255,0.25);color:rgba(80,200,255,0.55)'"
+                        :class="rotatorMode === 0 ? 'btn-outline btn-info' : 'btn-ghost opacity-50'"
                         @click="setRotatorMode(0)" title="Passive — manual Point only">PASV</button>
                 <button class="btn btn-xs font-mono tracking-widest"
-                        :style="rotatorMode === 1
-                          ? 'background:rgba(255,40,40,0.22);border:1px solid rgba(255,40,40,0.70);color:rgba(255,90,90,1.0)'
-                          : 'background:rgba(255,40,40,0.04);border:1px solid rgba(255,40,40,0.30);color:rgba(255,80,80,0.60)'"
+                        :class="rotatorMode === 1 ? 'btn-error' : 'btn-ghost opacity-50'"
                         @click="setRotatorMode(1)" title="Active — follow last heard node">ACTV</button>
               </div>
               <span class="font-mono text-sm font-bold tabular-nums"
@@ -1133,6 +1129,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260616c"></script>
+<script src="app.js?v=20260616d"></script>
 </body>
 </html>

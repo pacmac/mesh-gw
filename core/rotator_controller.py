@@ -31,6 +31,14 @@ def _angle_diff(a: float, b: float) -> float:
     return d if d <= 180 else d - 360
 
 
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat / 2) ** 2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    return R * 2 * math.asin(math.sqrt(a))
+
+
 class RotatorController:
     """Server-side rotator mode state machine."""
 
@@ -111,8 +119,11 @@ class RotatorController:
         home = self._home_pos()
         if not home:
             return
-        if not self._node_pos(from_num):
+        node_pos = self._node_pos(from_num)
+        if not node_pos:
             return  # no position known for this node — can't aim at it
+        if _haversine_km(home["lat"], home["lon"], node_pos["lat"], node_pos["lon"]) < 0.1:
+            return  # node is co-located with home (e.g. OMNI radio at same site) — skip
 
         now = time.time()
         cfg = self._cfg()
