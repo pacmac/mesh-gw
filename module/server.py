@@ -194,6 +194,31 @@ def create_app(dm: DeviceManager) -> FastAPI:
         finally:
             dm.unsubscribe(q)
 
+    # Schema meta (device-independent) — must be registered before /{node_id}/
+    # routes to avoid /{node_id}/range_test shadowing /schema/range_test etc.
+    @app.get("/sections")
+    async def get_sections():
+        return {"config": list(CONFIG_SECTIONS), "module_config": list(MODULE_CONFIG_SECTIONS)}
+
+    @app.get("/schema/channel")
+    async def schema_channel():
+        return get_channel_schema()
+
+    @app.get("/schema/owner")
+    async def schema_owner():
+        return get_owner_schema()
+
+    @app.get("/schema/fixed_position")
+    async def schema_fixed_position():
+        return get_fixed_position_schema()
+
+    @app.get("/schema/{section}")
+    async def schema_section(section: str):
+        try:
+            return get_section_schema(section)
+        except KeyError as e:
+            raise HTTPException(404, str(e))
+
     # =========================================================================
     # Device-namespaced routes  — prefix /{node_id}/
     # node_id is the full '!3f172791' string (the '!' is part of the path)
@@ -332,29 +357,5 @@ def create_app(dm: DeviceManager) -> FastAPI:
             pass
         finally:
             bridge.state.unsubscribe(q)
-
-    # Schema meta (device-independent)
-    @app.get("/sections")
-    async def get_sections():
-        return {"config": list(CONFIG_SECTIONS), "module_config": list(MODULE_CONFIG_SECTIONS)}
-
-    @app.get("/schema/channel")
-    async def schema_channel():
-        return get_channel_schema()
-
-    @app.get("/schema/owner")
-    async def schema_owner():
-        return get_owner_schema()
-
-    @app.get("/schema/fixed_position")
-    async def schema_fixed_position():
-        return get_fixed_position_schema()
-
-    @app.get("/schema/{section}")
-    async def schema_section(section: str):
-        try:
-            return get_section_schema(section)
-        except KeyError as e:
-            raise HTTPException(404, str(e))
 
     return app
