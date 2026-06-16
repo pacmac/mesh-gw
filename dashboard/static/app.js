@@ -49,9 +49,11 @@ function dashboard() {
     serverReachable: true,
     yagiAz: null,
     yagiConnected: false,
+    yagiPointTarget: null,
     rotatorStatus: {},
     rotatorConnected: false,
     rotatorManualAz: null,
+    rotatorMode: 0,
     yagiRadioAddr: '',
     events: [],
     allSections: [],
@@ -182,6 +184,7 @@ function dashboard() {
         this.updateHomePos();
       }
       await this.loadBridgeConfig();
+      await this.loadRotatorState();
       this.connectWS();
       setInterval(() => { this.refreshStatus(); this.loadDevices(); }, 5000);
       if (this.tab === "radar") this.$nextTick(() => this.initRadar());
@@ -449,8 +452,25 @@ function dashboard() {
       if (data.az != null) {
         this.yagiAz = data.az;
         this.yagiConnected = true;
-        if (this.tab === "radar") this.drawRadar();
       }
+      if (data.point_target != null) {
+        this.yagiPointTarget = data.point_target;
+      }
+      if (data.mode != null) {
+        this.rotatorMode = data.mode;
+      }
+      if (this.tab === "radar") this.drawRadar();
+    },
+    async loadRotatorState() {
+      try {
+        const d = await fetchJSON("/rotator/state");
+        this.rotatorMode = d.mode ?? 0;
+        if (d.point_target != null) this.yagiPointTarget = d.point_target;
+      } catch (_) {}
+    },
+    async setRotatorMode(m) {
+      this.rotatorMode = m;
+      try { await fetchJSON("/rotator/state", "POST", { mode: m }); } catch (_) {}
     },
     async moveRotator(az) {
       if (az == null) return;
@@ -1029,6 +1049,7 @@ function dashboard() {
         heatmapMaxAge: this.heatmapMaxAge,
         selectedNum: this.radarSelected?.num,
         lastHeardNum: this.lastHeardNum,
+        pointTarget: this.yagiPointTarget,
         yagiAz: this.yagiAz,
         beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
         onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
@@ -1332,7 +1353,7 @@ function svgElem(tag, attrs = {}) {
 }
 
 function buildRadarSVG(nodes, maxKm, opts = {}) {
-  const { crosshair = true, heatmapMaxAge = 3600, selectedNum = null, lastHeardNum = null, yagiAz = null, beamWidth = 5, onSelect = () => {} } = opts;
+  const { crosshair = true, heatmapMaxAge = 3600, selectedNum = null, lastHeardNum = null, pointTarget = null, yagiAz = null, beamWidth = 5, onSelect = () => {} } = opts;
   const SIZE = 600;
   const CX = SIZE / 2, CY = SIZE / 2, R = SIZE / 2 - 44;
 
@@ -1542,10 +1563,22 @@ function buildRadarSVG(nodes, maxKm, opts = {}) {
     const dotColor = ageColor(node.last_heard, heatmapMaxAge);
     const isSelected = node.num === selectedNum;
     const isLastHeard = node.num === lastHeardNum;
+    const isPointTarget = node.num === pointTarget;
 
     const g = svgElem("g", { class: "radar-node" + (isSelected ? " radar-node-selected" : ""), style: "cursor:pointer" });
 
-    // Reticle on most-recently-heard node
+    // Red targeting crosshairs — rotator is aimed here (active mode point target)
+    if (isPointTarget) {
+      const RED = "rgba(255,30,30,0.95)";
+      const rs = `stroke:${RED};stroke-width:1.8`;
+      g.appendChild(svgElem("circle", { cx: x, cy: y, r: 16, style: `fill:none;${rs};stroke-dasharray:4 3` }));
+      g.appendChild(svgElem("line", { x1: x-22, y1: y, x2: x-10, y2: y, style: rs }));
+      g.appendChild(svgElem("line", { x1: x+10, y1: y, x2: x+22, y2: y, style: rs }));
+      g.appendChild(svgElem("line", { x1: x, y1: y-22, x2: x, y2: y-10, style: rs }));
+      g.appendChild(svgElem("line", { x1: x, y1: y+10, x2: x, y2: y+22, style: rs }));
+    }
+
+    // Amber reticle on most-recently-heard node
     if (isLastHeard) {
       const rs = "stroke:" + AMBER + ";stroke-width:1.2";
       g.appendChild(svgElem("circle", { cx: x, cy: y, r: 13, style: `fill:none;${rs};stroke-dasharray:3 4` }));

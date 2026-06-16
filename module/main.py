@@ -42,6 +42,7 @@ def setup_logging(verbose: bool):
 async def run(addresses: list[tuple[str, str]], http_port: int):
     """addresses: list of (ble_address, pin) tuples."""
     dm = DeviceManager()
+    dm.start_rotator_controller()
     app = create_app(dm)
 
     config = uvicorn.Config(app, host="0.0.0.0", port=http_port, log_level="info")

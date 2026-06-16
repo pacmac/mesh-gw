@@ -240,13 +240,26 @@
                 <span class="inline-block w-1.5 h-1.5 rounded-full"
                       :class="rotatorConnected ? 'bg-success animate-pulse' : 'bg-error opacity-60'"></span>
               </div>
+              <!-- Mode selector: PASV / ACTV -->
+              <div class="flex gap-0.5">
+                <button class="btn btn-xs font-mono tracking-widest"
+                        :style="rotatorMode === 0
+                          ? 'background:rgba(80,200,255,0.18);border:1px solid rgba(80,200,255,0.50);color:rgba(80,200,255,0.95)'
+                          : 'background:transparent;border:1px solid rgba(80,200,255,0.18);color:rgba(80,200,255,0.40)'"
+                        @click="setRotatorMode(0)" title="Passive — manual Point only">PASV</button>
+                <button class="btn btn-xs font-mono tracking-widest"
+                        :style="rotatorMode === 1
+                          ? 'background:rgba(255,40,40,0.18);border:1px solid rgba(255,40,40,0.55);color:rgba(255,80,80,0.95)'
+                          : 'background:transparent;border:1px solid rgba(255,40,40,0.18);color:rgba(255,40,40,0.40)'"
+                        @click="setRotatorMode(1)" title="Active — follow last heard node">ACTV</button>
+              </div>
               <span class="font-mono text-sm font-bold tabular-nums"
                     style="color:rgba(80,200,255,0.90);min-width:4rem;text-align:right"
                     x-text="rotatorStatus.az != null ? Number(rotatorStatus.az).toFixed(1) + '°' : '– °'"></span>
               <span x-show="rotatorStatus.busy"
                     class="text-xs font-mono animate-pulse"
                     style="color:rgba(255,200,40,0.85)">moving</span>
-              <div class="flex items-center gap-1.5" x-show="rotatorConnected">
+              <div class="flex items-center gap-1.5" x-show="rotatorConnected && rotatorMode === 0">
                 <input type="number" min="0" max="360" step="1" placeholder="0–360"
                        class="input input-xs w-20 font-mono text-center"
                        style="background:rgba(80,200,255,0.07);border:1px solid rgba(80,200,255,0.25);color:rgba(80,200,255,0.9);border-radius:0.25rem"
@@ -1120,6 +1133,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260616"></script>
+<script src="app.js?v=20260616b"></script>
 </body>
 </html>

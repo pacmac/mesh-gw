@@ -250,6 +250,22 @@ def create_app(dm: DeviceManager) -> FastAPI:
         await r.set_mode(int(mode))
         return {"mode": mode}
 
+    @app.get("/rotator/state")
+    async def rotator_ctrl_state():
+        rc = dm.get_rotator_controller()
+        if not rc:
+            return {"mode": 0, "point_target": None, "dwell_remaining": 0}
+        return rc.state
+
+    @app.post("/rotator/state")
+    async def set_rotator_ctrl_state(body: dict = Body(...)):
+        rc = dm.get_rotator_controller()
+        if not rc:
+            raise HTTPException(503, "Rotator controller not running")
+        if "mode" in body:
+            rc.mode = int(body["mode"])
+        return rc.state
+
     # =========================================================================
     # Device-namespaced routes  — prefix /{node_id}/
     # node_id is the full '!3f172791' string (the '!' is part of the path)
