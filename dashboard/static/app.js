@@ -94,8 +94,8 @@ function dashboard() {
     rangeLog: [],
     rangeLoading: false,
 
-    // Message modal state
-    msgModal: { open: false, mode: "broadcast", to: 0xFFFFFFFF, label: "", channel: "0", text: "", sent: false },
+    msgIsModal: false,
+    _composeTa: null,
 
     // -- nav -----------------------------------------------------------------------
     setNav(t, c) {
@@ -736,26 +736,22 @@ function dashboard() {
       this.msgText = "";
       this.msgSent = true;
       setTimeout(() => (this.msgSent = false), 2000);
+      if (this.msgIsModal) this.closeMessageModal();
     },
 
     // -- Reusable message modal (broadcast / direct), callable from any tab ----------
     openMessageModal(mode, node) {
-      this.loadChannels();
-      this.msgModal = {
-        open: true,
-        mode,
-        fromNodeId: this.msgFrom || this.activeNodeId,
-        to: mode === "direct" ? node.num : 0xFFFFFFFF,
-        label: mode === "direct" ? (node.user?.long_name || node.user?.id || node.num) : "",
-        channel: this.msgChannel,
-        text: "",
-        sent: false,
-      };
+      this.msgIsDirect = mode === 'direct';
+      this.msgDirectTo = mode === 'direct' ? (node?.num ?? '') : '';
+      this.msgInsertNode = node?.num ?? null;
+      this.msgText = '';
+      this.msgSent = false;
+      this.msgIsModal = true;
       this.$nextTick(() => this.$refs.msgModalDialog?.showModal());
     },
 
     closeMessageModal() {
-      this.msgModal.open = false;
+      this.msgIsModal = false;
       this.$refs.msgModalDialog?.close();
     },
 
@@ -769,7 +765,7 @@ function dashboard() {
 
     insertText(val) {
       if (!val) return;
-      const ta = this.$refs.msgTextarea;
+      const ta = this._composeTa;
       if (!ta) { this.msgText += val; return; }
       const s = ta.selectionStart, e = ta.selectionEnd;
       this.msgText = this.msgText.slice(0, s) + val + this.msgText.slice(e);
@@ -820,6 +816,7 @@ function dashboard() {
     },
 
     handleMsgInput(e) {
+      this._composeTa = e.target;
       const ta = e.target;
       const before = ta.value.slice(0, ta.selectionStart);
       const m = before.match(/@(\w*)$/);
@@ -834,6 +831,7 @@ function dashboard() {
     },
 
     handleMsgKeydown(e) {
+      this._composeTa = e.target;
       if (this.mentionOpen) {
         const items = this.mentionedNodes();
         if (e.key === 'ArrowDown') { e.preventDefault(); this.mentionIdx = Math.min(this.mentionIdx + 1, items.length - 1); return; }
@@ -848,30 +846,11 @@ function dashboard() {
 
     selectMention(node) {
       const sn = node.user?.short_name || ('!' + node.num.toString(16).slice(-4));
-      const ta = this.$refs.msgTextarea;
+      const ta = this._composeTa;
       const cursorAfterAt = this.mentionPos + 1 + this.mentionQuery.length;
       this.msgText = this.msgText.slice(0, this.mentionPos) + '@' + sn + ' ' + this.msgText.slice(cursorAfterAt);
       this.mentionOpen = false;
-      this.$nextTick(() => { ta.selectionStart = ta.selectionEnd = this.mentionPos + sn.length + 2; ta.focus(); });
-    },
-
-    async sendModalMessage() {
-      if (!this.msgModal.text.trim()) return;
-      const text = this.msgModal.text, channel = Number(this.msgModal.channel), time = new Date().toLocaleTimeString();
-      const to = this.msgModal.mode === 'direct' ? this.msgModal.to : 0xFFFFFFFF;
-      const fromId = this.msgModal.fromNodeId || this.activeNodeId;
-      const body = { text, channel };
-      if (this.msgModal.mode === "direct") body.to = to;
-      await fetchJSON("/" + fromId + "/messages", "POST", body);
-      const fromNum = parseInt(fromId.replace('!', ''), 16) || 0;
-      this.messages.unshift({
-        fromNum, to: to >>> 0,
-        broadcast: to === 0xFFFFFFFF, channel, text, time, direction: 'tx', ackStatus: 'sent',
-      });
-      if (this.messages.length > 50) this.messages.pop();
-      this.msgModal.text = "";
-      this.msgModal.sent = true;
-      setTimeout(() => (this.msgModal.sent = false), 2000);
+      this.$nextTick(() => { if (ta) { ta.selectionStart = ta.selectionEnd = this.mentionPos + sn.length + 2; ta.focus(); } });
     },
 
     // -- Yagi rotator "Point" (future integration: see radar-revamp task goal) -------

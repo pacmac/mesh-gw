@@ -217,54 +217,114 @@
           </div>
         </div>
 
+        <!-- ===================== SHARED COMPOSE TEMPLATE ===================== -->
+        <template id="msg-compose">
+          <div class="flex flex-col gap-3">
+
+            <!-- From device (hidden when only 1 device) -->
+            <div x-show="availableDevices.length > 1" class="flex items-center gap-2">
+              <span class="text-xs text-base-content/60 w-12 shrink-0">From</span>
+              <div class="join">
+                <template x-for="dev in availableDevices" :key="dev.node_id">
+                  <button class="join-item btn btn-xs"
+                          :class="msgFrom === dev.node_id ? 'btn-primary' : 'btn-outline'"
+                          @click="msgFrom = dev.node_id; localStorage.setItem('msgFrom', dev.node_id)"
+                          x-text="dev.short_name || dev.node_id">
+                  </button>
+                </template>
+              </div>
+            </div>
+
+            <!-- Direct / Broadcast toggle -->
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-base-content/60 w-12 shrink-0">To</span>
+              <div class="join">
+                <button class="join-item btn btn-xs" :class="!msgIsDirect ? 'btn-primary' : 'btn-outline'" @click="msgIsDirect = false">Broadcast</button>
+                <button class="join-item btn btn-xs" :class="msgIsDirect ? 'btn-primary' : 'btn-outline'" @click="msgIsDirect = true">Direct</button>
+              </div>
+              <select x-show="msgIsDirect" class="select select-bordered select-xs flex-1" x-model="msgDirectTo">
+                <option value="" disabled>Select node…</option>
+                <template x-for="n in filteredNodes()" :key="n.num">
+                  <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
+                </template>
+              </select>
+            </div>
+
+            <!-- Channel -->
+            <div class="form-control">
+              <label class="label py-1"><span class="label-text text-xs">Channel</span></label>
+              <select class="select select-bordered select-sm" x-model="msgChannel">
+                <option value="0">0 — Primary</option>
+                <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                <option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option>
+              </select>
+            </div>
+
+            <!-- Message + insert dropdown + @mention -->
+            <div class="form-control">
+              <div class="flex items-center justify-between mb-1">
+                <label class="label py-0"><span class="label-text">Message</span></label>
+                <div class="dropdown dropdown-end">
+                  <label tabindex="0" class="btn btn-xs btn-ghost font-mono opacity-60 hover:opacity-100">{…}</label>
+                  <ul tabindex="0" class="dropdown-content menu menu-xs bg-base-200 rounded-box shadow-lg z-20 w-52 p-1">
+                    <li class="menu-title text-xs">My info</li>
+                    <li><a @click="insertText(availableDevices.find(d=>d.node_id===(msgFrom||activeNodeId))?.short_name)">Short name</a></li>
+                    <li><a @click="insertText(availableDevices.find(d=>d.node_id===(msgFrom||activeNodeId))?.long_name)">Long name</a></li>
+                    <li x-show="fixedPosition.lat != null"><a @click="insertText(fixedPosition.lat.toFixed(6) + ', ' + fixedPosition.lon.toFixed(6))">My position</a></li>
+                    <li><a @click="insertText(msgFrom || activeNodeId)">My node ID</a></li>
+                    <li><a @click="insertText(new Date().toLocaleTimeString())">Time</a></li>
+                    <li><a @click="insertText(new Date().toLocaleDateString())">Date</a></li>
+                    <li x-show="msgInsertNode" class="menu-title text-xs border-t border-base-300 mt-1 pt-1" x-text="'Node: ' + nodeShortName(msgInsertNode)"></li>
+                    <li x-show="msgInsertNode"><a @click="insertText(nodeShortName(msgInsertNode))">Short name</a></li>
+                    <li x-show="msgInsertNode"><a @click="insertText(nodeLongName(msgInsertNode))">Long name</a></li>
+                    <li x-show="msgInsertNode && insertNodeMeta()?.dist != null"><a @click="insertText(insertNodeMeta().dist + ' km')">Distance</a></li>
+                    <li x-show="msgInsertNode && insertNodeMeta()?.az != null"><a @click="insertText(insertNodeMeta().az + '°')">Azimuth</a></li>
+                  </ul>
+                </div>
+              </div>
+              <div class="relative">
+                <div x-show="mentionOpen" x-cloak
+                     class="absolute bottom-full left-0 right-0 mb-1 bg-base-200 border border-base-300 rounded-box shadow-lg z-30 overflow-hidden">
+                  <ul class="menu menu-xs p-1 max-h-48 overflow-y-auto">
+                    <template x-for="(n, idx) in mentionedNodes()" :key="n.num">
+                      <li>
+                        <a :class="idx === mentionIdx ? 'active' : ''"
+                           @mousedown.prevent="selectMention(n)"
+                           class="flex items-center gap-2">
+                          <span class="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white"
+                                :style="`background:${avatarColor(n.num)}`"
+                                x-text="n.user?.short_name || '?'"></span>
+                          <span class="font-mono font-semibold text-xs" x-text="'@' + (n.user?.short_name || '?')"></span>
+                          <span class="text-base-content/50 text-xs truncate" x-text="n.user?.long_name || ''"></span>
+                        </a>
+                      </li>
+                    </template>
+                  </ul>
+                </div>
+                <textarea class="textarea textarea-bordered w-full" rows="3" x-model="msgText" placeholder="Type a message… (@name to mention)"
+                  autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                  @keydown="handleMsgKeydown($event)"
+                  @input="handleMsgInput($event)"
+                  @blur="$nextTick(() => { mentionOpen = false })"></textarea>
+              </div>
+            </div>
+
+            <!-- Send -->
+            <div class="flex items-center gap-2">
+              <button class="btn btn-primary btn-sm" @click="sendMessage()" :disabled="!msgText.trim() || (msgIsDirect && !msgDirectTo)">Send</button>
+              <span class="text-success text-sm" x-show="msgSent" x-transition>Sent ✓</span>
+            </div>
+
+          </div>
+        </template>
+
         <!-- ===================== MESSAGE MODAL ===================== -->
-        <dialog class="modal" x-ref="msgModalDialog" @close="msgModal.open = false">
+        <dialog class="modal" x-ref="msgModalDialog" @close="closeMessageModal()">
           <div class="modal-box">
-            <h3 class="font-bold text-lg font-oxanium" x-text="msgModal.mode === 'direct' ? ('Message → ' + (msgModal.label || msgModal.to)) : 'Broadcast'"></h3>
-            <div class="flex flex-col gap-3 mt-3">
-
-              <!-- From device (only when >1 device) -->
-              <div x-show="availableDevices.length > 1" class="flex items-center gap-2 text-sm">
-                <span class="text-base-content/60 w-12 shrink-0">From</span>
-                <div class="join">
-                  <template x-for="dev in availableDevices" :key="dev.node_id">
-                    <button class="join-item btn btn-xs"
-                            :class="msgModal.fromNodeId === dev.node_id ? 'btn-primary' : 'btn-outline'"
-                            @click="msgModal.fromNodeId = dev.node_id"
-                            x-text="dev.short_name || dev.node_id">
-                    </button>
-                  </template>
-                </div>
-              </div>
-
-              <!-- Direct / Broadcast toggle -->
-              <div class="flex items-center gap-2 text-sm">
-                <span class="text-base-content/60 w-12 shrink-0">To</span>
-                <div class="join">
-                  <button class="join-item btn btn-xs" :class="msgModal.mode === 'broadcast' ? 'btn-primary' : 'btn-outline'" @click="msgModal.mode = 'broadcast'; msgModal.to = 0xFFFFFFFF">Broadcast</button>
-                  <button class="join-item btn btn-xs" :class="msgModal.mode === 'direct' ? 'btn-primary' : 'btn-outline'" @click="msgModal.mode = 'direct'">Direct</button>
-                </div>
-                <select x-show="msgModal.mode === 'direct'" class="select select-bordered select-xs flex-1" x-model="msgModal.to">
-                  <option value="" disabled>Select node…</option>
-                  <template x-for="n in filteredNodes()" :key="n.num">
-                    <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
-                  </template>
-                </select>
-              </div>
-
-              <label class="flex items-center gap-2 text-sm" x-show="msgModal.mode === 'broadcast'">
-                <span class="text-base-content/60 w-12 shrink-0">Ch</span>
-                <select class="select select-bordered select-xs" x-model="msgModal.channel">
-                  <template x-for="ch in channels" :key="ch.index">
-                    <option :value="String(ch.index)" x-text="ch.index + ': ' + (ch.data?.settings?.name || 'default')"></option>
-                  </template>
-                </select>
-              </label>
-              <textarea class="textarea textarea-bordered w-full" rows="3" placeholder="Message text" x-model="msgModal.text"></textarea>
-              <div class="flex items-center gap-2">
-                <button class="btn btn-sm btn-primary" @click="sendModalMessage()" :disabled="!msgModal.text.trim() || (msgModal.mode === 'direct' && !msgModal.to)">Send</button>
-                <span class="text-success text-xs" x-show="msgModal.sent">Sent ✓</span>
-              </div>
+            <h3 class="font-bold text-lg font-oxanium"
+                x-text="msgIsDirect ? 'Message → ' + (nodeLongName(msgDirectTo) || msgDirectTo) : 'Broadcast'"></h3>
+            <div class="mt-3"
+                 x-init="$nextTick(() => { const f = document.getElementById('msg-compose').content.cloneNode(true); const r = f.firstElementChild; $el.append(f); Alpine.initTree(r); })">
             </div>
             <div class="modal-action">
               <button class="btn btn-sm" @click="closeMessageModal()">Close</button>
@@ -666,94 +726,8 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body">
               <h2 class="card-title">Send Text</h2>
-
-              <!-- From device -->
-              <div x-show="availableDevices.length > 1" class="flex items-center gap-2">
-                <span class="text-xs text-base-content/60 w-12 shrink-0">From</span>
-                <div class="join">
-                  <template x-for="dev in availableDevices" :key="dev.node_id">
-                    <button class="join-item btn btn-xs"
-                            :class="msgFrom === dev.node_id ? 'btn-primary' : 'btn-outline'"
-                            @click="msgFrom = dev.node_id; localStorage.setItem('msgFrom', dev.node_id)"
-                            x-text="dev.short_name || dev.node_id">
-                    </button>
-                  </template>
-                </div>
+              <div x-init="$nextTick(() => { const f = document.getElementById('msg-compose').content.cloneNode(true); const r = f.firstElementChild; $el.append(f); Alpine.initTree(r); })">
               </div>
-
-              <!-- Direct / Broadcast toggle -->
-              <div class="flex items-center gap-2">
-                <span class="text-xs text-base-content/60 w-12 shrink-0">To</span>
-                <div class="join">
-                  <button class="join-item btn btn-xs" :class="!msgIsDirect ? 'btn-primary' : 'btn-outline'" @click="msgIsDirect = false">Broadcast</button>
-                  <button class="join-item btn btn-xs" :class="msgIsDirect ? 'btn-primary' : 'btn-outline'" @click="msgIsDirect = true">Direct</button>
-                </div>
-                <select x-show="msgIsDirect" class="select select-bordered select-xs flex-1" x-model="msgDirectTo">
-                  <option value="" disabled>Select node…</option>
-                  <template x-for="n in filteredNodes()" :key="n.num">
-                    <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
-                  </template>
-                </select>
-              </div>
-
-              <div class="form-control">
-                <label class="label"><span class="label-text">Channel</span></label>
-                <select class="select select-bordered select-sm" x-model="msgChannel">
-                  <option value="0">0 — Primary</option>
-                  <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-                  <option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option>
-                </select>
-              </div>
-              <div class="form-control mt-2">
-                <div class="flex items-center justify-between mb-1">
-                  <label class="label py-0"><span class="label-text">Message</span></label>
-                  <div class="dropdown dropdown-end">
-                    <label tabindex="0" class="btn btn-xs btn-ghost font-mono opacity-60 hover:opacity-100">{…}</label>
-                    <ul tabindex="0" class="dropdown-content menu menu-xs bg-base-200 rounded-box shadow-lg z-20 w-52 p-1">
-                      <li class="menu-title text-xs">My info</li>
-                      <li><a @click="insertText(availableDevices.find(d=>d.node_id===(msgFrom||activeNodeId))?.short_name)">Short name</a></li>
-                      <li><a @click="insertText(availableDevices.find(d=>d.node_id===(msgFrom||activeNodeId))?.long_name)">Long name</a></li>
-                      <li x-show="fixedPosition.lat != null"><a @click="insertText(fixedPosition.lat.toFixed(6) + ', ' + fixedPosition.lon.toFixed(6))">My position</a></li>
-                      <li><a @click="insertText(msgFrom || activeNodeId)">My node ID</a></li>
-                      <li><a @click="insertText(new Date().toLocaleTimeString())">Time</a></li>
-                      <li><a @click="insertText(new Date().toLocaleDateString())">Date</a></li>
-                      <li x-show="msgInsertNode" class="menu-title text-xs border-t border-base-300 mt-1 pt-1" x-text="'Node: ' + nodeShortName(msgInsertNode)"></li>
-                      <li x-show="msgInsertNode"><a @click="insertText(nodeShortName(msgInsertNode))">Short name</a></li>
-                      <li x-show="msgInsertNode"><a @click="insertText(nodeLongName(msgInsertNode))">Long name</a></li>
-                      <li x-show="msgInsertNode && insertNodeMeta()?.dist != null"><a @click="insertText(insertNodeMeta().dist + ' km')">Distance</a></li>
-                      <li x-show="msgInsertNode && insertNodeMeta()?.az != null"><a @click="insertText(insertNodeMeta().az + '°')">Azimuth</a></li>
-                    </ul>
-                  </div>
-                </div>
-                <div class="relative">
-                  <div x-show="mentionOpen" x-cloak
-                       class="absolute bottom-full left-0 right-0 mb-1 bg-base-200 border border-base-300 rounded-box shadow-lg z-30 overflow-hidden">
-                    <ul class="menu menu-xs p-1 max-h-48 overflow-y-auto">
-                      <template x-for="(n, idx) in mentionedNodes()" :key="n.num">
-                        <li>
-                          <a :class="idx === mentionIdx ? 'active' : ''"
-                             @mousedown.prevent="selectMention(n)"
-                             class="flex items-center gap-2">
-                            <span class="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-bold text-white"
-                                  :style="`background:${avatarColor(n.num)}`"
-                                  x-text="n.user?.short_name || '?'"></span>
-                            <span class="font-mono font-semibold text-xs" x-text="'@' + (n.user?.short_name || '?')"></span>
-                            <span class="text-base-content/50 text-xs truncate" x-text="n.user?.long_name || ''"></span>
-                          </a>
-                        </li>
-                      </template>
-                    </ul>
-                  </div>
-                  <textarea class="textarea textarea-bordered w-full" rows="3" x-model="msgText" placeholder="Type a message… (@name to mention)"
-                    x-ref="msgTextarea"
-                    autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
-                    @keydown="handleMsgKeydown($event)"
-                    @input="handleMsgInput($event)"
-                    @blur="$nextTick(() => { mentionOpen = false })"></textarea>
-                </div>
-              </div>
-              <button class="btn btn-primary btn-sm mt-2" @click="sendMessage()" :disabled="!msgText.trim() || (msgIsDirect && !msgDirectTo)">Send</button>
-              <span class="text-success text-sm mt-1" x-show="msgSent" x-transition>Sent ✓</span>
             </div>
           </div>
           <div class="card bg-base-100 shadow">
