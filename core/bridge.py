@@ -56,6 +56,7 @@ class MeshBridge:
         try:
             r = load_rotator(cfg)
             r.on_status = self._on_rotator_status
+            r.start()
             return r
         except Exception as e:
             logger.error(f"Failed to load rotator driver: {e}")
