@@ -150,15 +150,32 @@ class RotatorController:
         if now < self._next_move:
             return
 
-        # Window expired: evaluate, move, then start a new dwell window
-        winner_num = max(self._candidates, key=lambda n: self._candidates[n])
+        # Window expired: evaluate, move, then start a new dwell window.
+        # Sort candidates descending by packet count and pick the first one
+        # with a known position, so a positionless winner doesn't block others.
+        sorted_cands = sorted(self._candidates.items(), key=lambda x: -x[1])
         self._candidates.clear()
         # Set dwell immediately so packets that arrive during the move are counted
         # toward the *next* target evaluation.
         self._next_move = now + cfg.get("aim_dwell_sec", 15)
 
-        winner_pos = self._node_pos(winner_num)
-        if not winner_pos:
+        winner_num = None
+        winner_pos = None
+        for cand_num, _ in sorted_cands:
+            pos = self._node_pos(cand_num)
+            if pos:
+                winner_num = cand_num
+                winner_pos = pos
+                break
+
+        if winner_pos is None:
+            # No candidate has a known position — clear stale target
+            if self._point_target is not None:
+                self._point_target = None
+                await self._broadcast({
+                    "type": "rotator",
+                    "data": {"point_target": None, "mode": MODE_ACTIVE},
+                })
             return
 
         az = _bearing(home["lat"], home["lon"], winner_pos["lat"], winner_pos["lon"])
