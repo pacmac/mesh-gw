@@ -13,6 +13,7 @@ from .ble_handler import BLEHandler
 from .mqtt_proxy import MqttProxy
 from .stats import StatsCollector
 from .state import MeshState
+from .tcp_gateway import TcpGateway
 
 logger = logging.getLogger(__name__)
 
@@ -25,13 +26,14 @@ def _random_id() -> int:
 
 
 class MeshBridge:
-    def __init__(self, ble_address: str | None = None, ble_pin: str = ""):
+    def __init__(self, ble_address: str | None = None, ble_pin: str = "", tcp_port: int | None = None):
         self.ble_address: str | None = ble_address
         self.ble_pin: str = ble_pin
         self.stats = StatsCollector()
         self.state = MeshState()
         self.ble: BLEHandler | None = None
         self.mqtt_proxy: MqttProxy | None = None
+        self.tcp_gateway: TcpGateway | None = TcpGateway(tcp_port, on_to_radio=self._tcp_to_radio) if tcp_port else None
         self._reconnect_lock = asyncio.Lock()
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
@@ -53,6 +55,8 @@ class MeshBridge:
     async def start(self):
         if not self.ble:
             raise RuntimeError("No BLE device configured")
+        if self.tcp_gateway:
+            await self.tcp_gateway.start()
         self.ble_state = "connecting"
         logger.info(f"Connecting to BLE device: {self.ble_address}")
         try:
@@ -66,8 +70,10 @@ class MeshBridge:
         await self._request_config()
 
     async def stop(self):
-        """Full shutdown — stop MQTT proxy and disconnect BLE."""
+        """Full shutdown — stop TCP gateway, MQTT proxy, and disconnect BLE."""
         self._user_disconnect = True
+        if self.tcp_gateway:
+            await self.tcp_gateway.stop()
         if self.mqtt_proxy:
             self.mqtt_proxy.stop()
             self.mqtt_proxy = None
@@ -154,12 +160,20 @@ class MeshBridge:
         self.state.config_complete = False
 
     async def _on_packet(self, data: bytes):
+        if self.tcp_gateway:
+            self.tcp_gateway.broadcast(data)
         await self.state.handle_from_radio_bytes(data)
         if self.state.config_complete:
             if self.ble_state == "syncing":
                 self.ble_state = "active"
             if not self.mqtt_proxy:
                 self._maybe_start_mqtt_proxy()
+
+    async def _tcp_to_radio(self, payload: bytes):
+        """Forward a ToRadio packet received from a TCP client to the BLE radio."""
+        if not self.ble:
+            raise RuntimeError("BLE not connected")
+        await self.ble.send(payload)
 
     async def _on_disconnected(self):
         if self._user_disconnect:

@@ -30,7 +30,7 @@ class DeviceManager:
 
     # -- device lifecycle -------------------------------------------------------
 
-    async def connect(self, ble_address: str, pin: str = "", passkey_future=None) -> str:
+    async def connect(self, ble_address: str, pin: str = "", passkey_future=None, tcp_port: int | None = None) -> str:
         """Start a BLE connection. Returns temp key ('ble:<ADDR>') immediately;
         the device is re-keyed to '!{node_id}' once my_info arrives."""
         addr = ble_address.upper()
@@ -44,7 +44,7 @@ class DeviceManager:
             logger.info("Already connecting to %s", addr)
             return temp_key
 
-        bridge = MeshBridge(ble_address, ble_pin=pin)
+        bridge = MeshBridge(ble_address, ble_pin=pin, tcp_port=tcp_port)
         self._pending[temp_key] = bridge
 
         task = asyncio.create_task(
@@ -57,7 +57,7 @@ class DeviceManager:
         logger.info("Connecting to %s (temp key: %s)", addr, temp_key)
         return temp_key
 
-    async def pair_device(self, ble_address: str) -> str:
+    async def pair_device(self, ble_address: str, tcp_port: int | None = None) -> str:
         """Initiate connection for a dynamic-PIN device. The pairing process
         will pause at the passkey prompt — call resolve_passkey() with the PIN
         shown on the device screen to complete it. Returns the temp key."""
@@ -68,7 +68,7 @@ class DeviceManager:
             old.cancel()
         future: asyncio.Future = asyncio.get_event_loop().create_future()
         self._passkey_futures[addr] = future
-        return await self.connect(ble_address, passkey_future=future)
+        return await self.connect(ble_address, passkey_future=future, tcp_port=tcp_port)
 
     def resolve_passkey(self, ble_address: str, passkey: str):
         """Supply the PIN seen on the device screen to complete pairing."""
@@ -116,6 +116,7 @@ class DeviceManager:
     def list_devices(self) -> list[dict]:
         result = []
         for node_id, bridge in self._devices.items():
+            gw = bridge.tcp_gateway
             result.append({
                 "node_id": node_id,
                 "ble_address": bridge.ble_address,
@@ -123,8 +124,11 @@ class DeviceManager:
                 "ble_error": bridge.ble_error,
                 "node_count": len(bridge.state.nodes),
                 "config_complete": bridge.state.config_complete,
+                "tcp_port": gw.port if gw else None,
+                "tcp_clients": gw.client_count if gw else 0,
             })
         for temp_key, bridge in self._pending.items():
+            gw = bridge.tcp_gateway
             result.append({
                 "node_id": temp_key,
                 "ble_address": bridge.ble_address,
@@ -132,6 +136,8 @@ class DeviceManager:
                 "ble_error": bridge.ble_error,
                 "node_count": 0,
                 "config_complete": False,
+                "tcp_port": gw.port if gw else None,
+                "tcp_clients": 0,
             })
         return result
 

@@ -60,10 +60,10 @@ async def run(addresses: list[tuple[str, str]], http_port: int):
         if not addresses:
             logger.info("No BLE addresses configured — use POST /devices to connect")
             return
-        for addr, pin in addresses:
+        for addr, pin, tcp_port in addresses:
             try:
-                key = await dm.connect(addr, pin=pin)
-                logger.info("Initiated connection: %s -> %s", addr, key)
+                key = await dm.connect(addr, pin=pin, tcp_port=tcp_port)
+                logger.info("Initiated connection: %s -> %s (tcp_port=%s)", addr, key, tcp_port)
             except Exception as e:
                 logger.error("Failed to start connection to %s: %s", addr, e)
 
@@ -102,19 +102,19 @@ def main():
     if not persisted and cfg.get("ble", {}).get("address"):
         persisted = [{"address": cfg["ble"]["address"], "pin": cfg["ble"].get("pin", "")}]
 
-    addresses: list[tuple[str, str]] = []
+    addresses: list[tuple[str, str, int | None]] = []
     seen: set[str] = set()
 
     for entry in persisted:
         addr = (entry.get("address") or "").strip().upper()
         if addr and addr not in seen:
-            addresses.append((addr, entry.get("pin", "") or ""))
+            addresses.append((addr, entry.get("pin", "") or "", entry.get("tcp_port") or None))
             seen.add(addr)
 
     for addr in args.addresses:
         addr = addr.strip().upper()
         if addr and addr not in seen:
-            addresses.append((addr, args.pin))
+            addresses.append((addr, args.pin, None))
             seen.add(addr)
 
     if addresses:

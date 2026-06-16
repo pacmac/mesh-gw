@@ -82,16 +82,22 @@ def create_app(dm: DeviceManager) -> FastAPI:
         pin = (body.get("pin") or "").strip()
         if not address:
             raise HTTPException(400, "address required")
+        tcp_port = body.get("tcp_port") or None
+        if tcp_port:
+            tcp_port = int(tcp_port)
         if body.get("persist", True):
             cfg = _bcfg.load()
             devices = cfg.get("ble_devices") or []
             addrs = [d.get("address", "").upper() for d in devices]
             if address.upper() not in addrs:
-                devices.append({"address": address, "pin": pin})
+                entry = {"address": address, "pin": pin}
+                if tcp_port:
+                    entry["tcp_port"] = tcp_port
+                devices.append(entry)
                 cfg["ble_devices"] = devices
                 _bcfg.save(cfg)
-        key = await dm.connect(address, pin=pin)
-        return {"connecting": True, "key": key, "address": address}
+        key = await dm.connect(address, pin=pin, tcp_port=tcp_port)
+        return {"connecting": True, "key": key, "address": address, "tcp_port": tcp_port}
 
     @app.delete("/devices/{node_id:path}")
     async def remove_device(node_id: str):
@@ -140,11 +146,15 @@ def create_app(dm: DeviceManager) -> FastAPI:
         address = (body.get("address") or "").strip()
         if not address:
             raise HTTPException(400, "address required")
-        key = await dm.pair_device(address)
+        tcp_port = body.get("tcp_port") or None
+        if tcp_port:
+            tcp_port = int(tcp_port)
+        key = await dm.pair_device(address, tcp_port=tcp_port)
         return {
             "connecting": True,
             "key": key,
             "address": address,
+            "tcp_port": tcp_port,
             "hint": "Watch device screen for PIN, then POST /ble/passkey",
         }
 
