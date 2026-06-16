@@ -19,6 +19,10 @@ function dashboard() {
     msgInputHistory: JSON.parse(localStorage.getItem('msgInputHistory') || '[]'),
     msgHistoryIdx: -1,
     msgDraft: '',
+    mentionOpen: false,
+    mentionQuery: '',
+    mentionPos: 0,
+    mentionIdx: 0,
     unreadMessages: 0,
     _seenPacketIds: new Set(),
     availableDevices: [],
@@ -803,6 +807,52 @@ function dashboard() {
         if (this.msgHistoryIdx < 0) { this.msgText = this.msgDraft; return; }
       }
       this.msgText = h[this.msgHistoryIdx];
+    },
+
+    mentionedNodes() {
+      const q = this.mentionQuery.toLowerCase();
+      return this.nodes
+        .filter(n => n.user?.short_name && (
+          n.user.short_name.toLowerCase().startsWith(q) ||
+          (n.user.long_name || '').toLowerCase().startsWith(q)
+        ))
+        .slice(0, 8);
+    },
+
+    handleMsgInput(e) {
+      const ta = e.target;
+      const before = ta.value.slice(0, ta.selectionStart);
+      const m = before.match(/@(\w*)$/);
+      if (m) {
+        this.mentionQuery = m[1];
+        this.mentionPos = before.lastIndexOf('@');
+        this.mentionIdx = 0;
+        this.mentionOpen = this.mentionedNodes().length > 0;
+      } else {
+        this.mentionOpen = false;
+      }
+    },
+
+    handleMsgKeydown(e) {
+      if (this.mentionOpen) {
+        const items = this.mentionedNodes();
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.mentionIdx = Math.min(this.mentionIdx + 1, items.length - 1); return; }
+        if (e.key === 'ArrowUp')   { e.preventDefault(); this.mentionIdx = Math.max(this.mentionIdx - 1, 0); return; }
+        if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); if (items[this.mentionIdx]) this.selectMention(items[this.mentionIdx]); return; }
+        if (e.key === 'Escape')    { e.preventDefault(); this.mentionOpen = false; return; }
+        return;
+      }
+      if (e.key === 'ArrowUp')   this.navigateMsgHistory(e, -1);
+      if (e.key === 'ArrowDown') this.navigateMsgHistory(e, 1);
+    },
+
+    selectMention(node) {
+      const sn = node.user?.short_name || ('!' + node.num.toString(16).slice(-4));
+      const ta = this.$refs.msgTextarea;
+      const cursorAfterAt = this.mentionPos + 1 + this.mentionQuery.length;
+      this.msgText = this.msgText.slice(0, this.mentionPos) + '@' + sn + ' ' + this.msgText.slice(cursorAfterAt);
+      this.mentionOpen = false;
+      this.$nextTick(() => { ta.selectionStart = ta.selectionEnd = this.mentionPos + sn.length + 2; ta.focus(); });
     },
 
     async sendModalMessage() {
