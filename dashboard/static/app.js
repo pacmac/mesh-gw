@@ -462,16 +462,14 @@ function dashboard() {
       if (data.az != null && this.tab === "radar") this._animateBeam(data.az);
     },
 
-    // Animate only the beam layer — never rebuilds SVG
+    // Update beam transform — element is persistent across SVG rebuilds so
+    // the CSS transition state is preserved and the browser sweeps smoothly
     _animateBeam(newAz) {
       const beamG = document.querySelector('#radar-svg-container .radar-beam');
       if (!beamG) { this.drawRadar(); return; }
       const from = this._radarBeamAz ?? newAz;
       const diff = ((newAz - from + 540) % 360) - 180;
       const to = from + diff;
-      beamG.style.transition = 'none';
-      beamG.style.transform = `rotate(${from}deg)`;
-      beamG.getBoundingClientRect(); // flush style before transition
       beamG.style.transition = 'transform 0.8s linear';
       beamG.style.transform = `rotate(${to}deg)`;
       this._radarBeamAz = newAz;
@@ -1058,11 +1056,13 @@ function dashboard() {
       const container = document.getElementById("radar-svg-container");
       if (!container || !this.homePos) return;
       const prevAz = this._radarBeamAz ?? this.yagiAz;
+      // Save beam element before wipe — re-insert after rebuild to keep CSS transition alive
+      const savedBeam = container.querySelector('.radar-beam');
       container.innerHTML = "";
       const maxKm = this.radarRange === "0"
         ? (this.radarNodes.length ? Math.max(...this.radarNodes.map((n) => n._km)) * 1.15 : 50)
         : Number(this.radarRange);
-      container.appendChild(buildRadarSVG(this.radarNodes, maxKm, {
+      const svg = buildRadarSVG(this.radarNodes, maxKm, {
         crosshair: this.radarCrosshair,
         heatmapMaxAge: this.heatmapMaxAge,
         selectedNum: this.radarSelected?.num,
@@ -1071,17 +1071,21 @@ function dashboard() {
         yagiAz: this.yagiAz,
         beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
         onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
-      }));
-      // Snap beam to last displayed position so _animateBeam can continue from there
-      if (this.yagiAz != null) {
-        const beamG = container.querySelector('.radar-beam');
-        const snapAz = this._radarBeamAz ?? this.yagiAz;
+      });
+      if (savedBeam && this.yagiAz != null) {
+        // Splice persistent beam back in — preserves CSS transition state
+        const freshBeam = svg.querySelector('.radar-beam');
+        if (freshBeam) freshBeam.parentNode.replaceChild(savedBeam, freshBeam);
+        else svg.appendChild(savedBeam);
+      } else if (this.yagiAz != null) {
+        // First draw — set initial position, then arm transition for future updates
+        const beamG = svg.querySelector('.radar-beam');
         if (beamG) {
-          beamG.style.transition = 'none';
-          beamG.style.transform = `rotate(${snapAz}deg)`;
+          beamG.style.transform = `rotate(${this.yagiAz}deg)`;
+          this._radarBeamAz = this.yagiAz;
         }
-        if (this._radarBeamAz == null) this._radarBeamAz = this.yagiAz;
       }
+      container.appendChild(svg);
     },
 
     // -- Reusable Node Info modal, callable from Radar and Nodes table ----------------
