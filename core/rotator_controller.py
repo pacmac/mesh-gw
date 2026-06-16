@@ -120,6 +120,11 @@ class RotatorController:
         if not from_num:
             return
 
+        # Never target our own bridge radios
+        bridge_nums = {b.my_node_num for b in self._dm._devices.values() if b.my_node_num}
+        if from_num in bridge_nums:
+            return
+
         home = self._home_pos()
         if not home:
             return
