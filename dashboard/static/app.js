@@ -465,13 +465,18 @@ function dashboard() {
     // Update beam transform — element is persistent across SVG rebuilds so
     // the CSS transition state is preserved and the browser sweeps smoothly
     _animateBeam(newAz) {
-      const beamG = document.querySelector('#radar-svg-container .radar-beam');
-      if (!beamG) { this.drawRadar(); return; }
-      const from = this._radarBeamAz ?? newAz;
-      const diff = ((newAz - from + 540) % 360) - 180;
-      const to = from + diff;
-      beamG.style.transition = 'transform 0.8s linear';
-      beamG.style.transform = `rotate(${to}deg)`;
+      const beamG = document.getElementById('radar-beam-g');
+      if (!beamG) return;
+      if (!beamG.firstChild) this._drawRadarBeam();
+      if (this._radarBeamAz == null) {
+        // First position — snap without sweeping from north
+        beamG.style.transition = 'none';
+        beamG.style.transform = `rotate(${newAz}deg)`;
+        beamG.getBoundingClientRect(); // commit style before re-enabling transition
+        beamG.style.transition = 'transform 1.2s ease';
+      } else {
+        beamG.style.transform = `rotate(${newAz}deg)`;
+      }
       this._radarBeamAz = newAz;
       const lbl = beamG.querySelector('text');
       if (lbl) lbl.textContent = Math.round(newAz) + '°';
@@ -1053,39 +1058,158 @@ function dashboard() {
     },
 
     drawRadar() {
-      const container = document.getElementById("radar-svg-container");
-      if (!container || !this.homePos) return;
-      const prevAz = this._radarBeamAz ?? this.yagiAz;
-      // Save beam element before wipe — re-insert after rebuild to keep CSS transition alive
-      const savedBeam = container.querySelector('.radar-beam');
-      container.innerHTML = "";
+      if (!this.homePos) return;
       const maxKm = this.radarRange === "0"
         ? (this.radarNodes.length ? Math.max(...this.radarNodes.map((n) => n._km)) * 1.15 : 50)
         : Number(this.radarRange);
-      const svg = buildRadarSVG(this.radarNodes, maxKm, {
-        crosshair: this.radarCrosshair,
-        heatmapMaxAge: this.heatmapMaxAge,
-        selectedNum: this.radarSelected?.num,
-        lastHeardNum: this.lastHeardNum,
-        pointTarget: this.yagiPointTarget,
-        yagiAz: this.yagiAz,
-        beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
-        onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
-      });
-      if (savedBeam && this.yagiAz != null) {
-        // Splice persistent beam back in — preserves CSS transition state
-        const freshBeam = svg.querySelector('.radar-beam');
-        if (freshBeam) freshBeam.parentNode.replaceChild(savedBeam, freshBeam);
-        else svg.appendChild(savedBeam);
-      } else if (this.yagiAz != null) {
-        // First draw — set initial position, then arm transition for future updates
-        const beamG = svg.querySelector('.radar-beam');
-        if (beamG) {
-          beamG.style.transform = `rotate(${this.yagiAz}deg)`;
-          this._radarBeamAz = this.yagiAz;
-        }
+      this._drawRadarBg(maxKm);
+      this._drawRadarBeam();
+      this._drawRadarNodes(maxKm);
+    },
+
+    _drawRadarBg(maxKm) {
+      const bg = document.getElementById('radar-bg-g');
+      if (!bg) return;
+      const CX = 300, CY = 300, R = 256;
+      const G0 = "rgba(0,255,80,0.06)";
+      const G1 = "rgba(0,255,80,0.45)";
+      const G2 = "rgba(0,255,80,0.40)";
+      const G3 = "rgba(0,255,80,0.70)";
+      const G4 = "rgba(0,255,80,0.95)";
+      bg.innerHTML = '';
+      bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r: R, style: 'fill:url(#radarBg)' }));
+      const scanG = svgElem('g', { 'clip-path': 'url(#radarClip)', style: 'pointer-events:none' });
+      for (let yy = CY - R; yy < CY + R; yy += 4)
+        scanG.appendChild(svgElem('line', { x1: CX - R, y1: yy, x2: CX + R, y2: yy, style: 'stroke:rgba(0,0,0,0.10);stroke-width:1' }));
+      bg.appendChild(scanG);
+      for (let i = 1; i <= 4; i++) {
+        const r = R * i / 4, isFull = i === 4;
+        bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r,
+          style: `fill:none;stroke:${isFull ? G2 : G1};stroke-width:${isFull ? 1.2 : 0.9};stroke-dasharray:${isFull ? '' : '5 5'}` }));
+        const lbl = svgElem('text', { x: CX + 5, y: CY - r + 12,
+          style: `fill:${G3};font-size:10px;font-family:'Oxanium',monospace;letter-spacing:0.05em` });
+        lbl.textContent = (maxKm * i / 4 | 0) + ' km';
+        bg.appendChild(lbl);
       }
-      container.appendChild(svg);
+      if (this.radarCrosshair) {
+        bg.appendChild(svgElem('line', { x1: CX, y1: CY - R, x2: CX, y2: CY + R, style: `stroke:${G1};stroke-width:0.7;stroke-dasharray:2 8` }));
+        bg.appendChild(svgElem('line', { x1: CX - R, y1: CY, x2: CX + R, y2: CY, style: `stroke:${G1};stroke-width:0.7;stroke-dasharray:2 8` }));
+        const d45 = R * 0.707;
+        bg.appendChild(svgElem('line', { x1: CX - d45, y1: CY - d45, x2: CX + d45, y2: CY + d45, style: `stroke:${G0};stroke-width:0.6;stroke-dasharray:2 10` }));
+        bg.appendChild(svgElem('line', { x1: CX + d45, y1: CY - d45, x2: CX - d45, y2: CY + d45, style: `stroke:${G0};stroke-width:0.6;stroke-dasharray:2 10` }));
+      }
+      for (let deg = 0; deg < 360; deg += 10) {
+        const isMajor = deg % 30 === 0, tickLen = isMajor ? 11 : 5;
+        const rad = deg * Math.PI / 180;
+        const ox = CX + Math.sin(rad) * R, oy = CY - Math.cos(rad) * R;
+        const ix = CX + Math.sin(rad) * (R - tickLen), iy = CY - Math.cos(rad) * (R - tickLen);
+        bg.appendChild(svgElem('line', { x1: ox, y1: oy, x2: ix, y2: iy,
+          style: `stroke:rgba(0,255,80,${isMajor ? 0.70 : 0.38});stroke-width:${isMajor ? 1.2 : 0.8}` }));
+      }
+      bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r: R, style: `fill:none;stroke:${G2};stroke-width:1.5;filter:url(#rimGlow)` }));
+      bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r: R + 6, style: 'fill:none;stroke:rgba(0,255,80,0.10);stroke-width:3' }));
+      bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r: R + 10, style: 'fill:none;stroke:rgba(0,255,80,0.04);stroke-width:2' }));
+      for (const [label, dx, dy] of [['N', 0, -1], ['E', 1, 0], ['S', 0, 1], ['W', -1, 0]]) {
+        const t = svgElem('text', { x: CX + dx * (R + 22), y: CY + dy * (R + 22) + 5,
+          style: `fill:${G4};font-size:13px;font-weight:700;font-family:'Oxanium',monospace;text-anchor:middle;letter-spacing:0.1em` });
+        t.textContent = label;
+        bg.appendChild(t);
+      }
+    },
+
+    _drawRadarBeam() {
+      const beamG = document.getElementById('radar-beam-g');
+      if (!beamG || this.yagiAz == null) return;
+      const CX = 300, CY = 300, R = 256;
+      const bw = this.bridgeConfig?.rotator?.beam_width_deg ?? 5;
+      const HW = (bw / 2) * Math.PI / 180;
+      const wx1 = CX + Math.sin(-HW) * R, wy1 = CY - Math.cos(-HW) * R;
+      const wx2 = CX + Math.sin(HW) * R,  wy2 = CY - Math.cos(HW) * R;
+      const az = Math.round(this._radarBeamAz ?? this.yagiAz);
+      // innerHTML replaces only children — group's own style.transition and style.transform are unchanged
+      beamG.innerHTML = `<path d="M ${CX} ${CY} L ${wx1.toFixed(1)} ${wy1.toFixed(1)} A ${R} ${R} 0 0 1 ${wx2.toFixed(1)} ${wy2.toFixed(1)} Z" style="fill:rgba(80,200,255,0.14);stroke:none;clip-path:url(#radarClip)"/><line x1="${CX}" y1="${CY}" x2="${CX}" y2="${CY - R}" style="stroke:rgba(80,200,255,0.85);stroke-width:2;opacity:0.9"/><text x="${CX}" y="${CY - R - 15}" style="fill:rgba(255,50,50,0.95);font-size:11px;font-weight:700;font-family:'Oxanium',monospace;text-anchor:middle;dominant-baseline:middle;pointer-events:none">${az}°</text>`;
+    },
+
+    _drawRadarNodes(maxKm) {
+      const ng = document.getElementById('radar-nodes-g');
+      if (!ng) return;
+      ng.innerHTML = '';
+      const nodes = this.radarNodes;
+      const CX = 300, CY = 300, R = 256;
+      const G4 = 'rgba(0,255,80,0.95)';
+      const AMBER = 'rgba(255,200,40,0.90)';
+      const CLUSTER_R = 22, BASE_DIAG = 12, STEP_DIAG = 14, HOR_LEN = 16;
+      const selectedNum = this.radarSelected?.num;
+      const lastHeardNum = this.lastHeardNum;
+      const pointTarget = this.yagiPointTarget;
+
+      const npos = nodes.map(node => {
+        const az = node._az * Math.PI / 180;
+        const normKm = Math.min(node._km / maxKm, 1.0);
+        return { x: CX + Math.sin(az) * normKm * R, y: CY - Math.cos(az) * normKm * R, diagLen: BASE_DIAG, isRight: null };
+      });
+      const clusterOf = new Array(npos.length).fill(-1);
+      for (let i = 0; i < npos.length; i++) {
+        if (clusterOf[i] >= 0) continue;
+        const members = [i]; clusterOf[i] = i;
+        for (let j = i + 1; j < npos.length; j++) {
+          if (clusterOf[j] >= 0) continue;
+          const dx = npos[i].x - npos[j].x, dy = npos[i].y - npos[j].y;
+          if (dx * dx + dy * dy < CLUSTER_R * CLUSTER_R) { members.push(j); clusterOf[j] = i; }
+        }
+        if (members.length > 1) members.forEach((idx, rank) => { npos[idx].diagLen = BASE_DIAG + rank * STEP_DIAG; npos[idx].isRight = rank % 2 === 0; });
+      }
+
+      nodes.forEach((node, ni) => {
+        const { x, y, diagLen } = npos[ni];
+        const isRight = npos[ni].isRight !== null ? npos[ni].isRight : x >= CX;
+        const dotColor = ageColor(node.last_heard, this.heatmapMaxAge);
+        const isSelected = node.num === selectedNum;
+        const isLastHeard = node.num === lastHeardNum;
+        const isPointTarget = node.num === pointTarget;
+        const g = svgElem('g', { class: 'radar-node' + (isSelected ? ' radar-node-selected' : ''), style: 'cursor:pointer' });
+        if (isPointTarget) {
+          const rs = 'stroke:rgba(255,30,30,0.95);stroke-width:1.8';
+          g.appendChild(svgElem('circle', { cx: x, cy: y, r: 16, style: `fill:none;${rs};stroke-dasharray:4 3` }));
+          g.appendChild(svgElem('line', { x1: x-22, y1: y, x2: x-10, y2: y, style: rs }));
+          g.appendChild(svgElem('line', { x1: x+10, y1: y, x2: x+22, y2: y, style: rs }));
+          g.appendChild(svgElem('line', { x1: x, y1: y-22, x2: x, y2: y-10, style: rs }));
+          g.appendChild(svgElem('line', { x1: x, y1: y+10, x2: x, y2: y+22, style: rs }));
+        }
+        if (isLastHeard) {
+          const rs = `stroke:${AMBER};stroke-width:1.2`;
+          g.appendChild(svgElem('circle', { cx: x, cy: y, r: 13, style: `fill:none;${rs};stroke-dasharray:3 4` }));
+          g.appendChild(svgElem('line', { x1: x-17, y1: y, x2: x-7, y2: y, style: rs }));
+          g.appendChild(svgElem('line', { x1: x+7, y1: y, x2: x+17, y2: y, style: rs }));
+          g.appendChild(svgElem('line', { x1: x, y1: y-17, x2: x, y2: y-7, style: rs }));
+          g.appendChild(svgElem('line', { x1: x, y1: y+7, x2: x, y2: y+17, style: rs }));
+        }
+        if (isSelected)
+          g.appendChild(svgElem('circle', { cx: x, cy: y, r: 12, style: `fill:none;stroke:${G4};stroke-width:1.5;stroke-dasharray:4 3` }));
+        g.appendChild(svgElem('circle', { cx: x, cy: y, r: isSelected ? 5 : 4, style: `fill:${dotColor};filter:url(#blipGlow)` }));
+        const title = svgElem('title');
+        title.textContent = node.user?.long_name || node.user?.id || ('!' + (node.num ?? 0).toString(16).slice(-4));
+        g.appendChild(title);
+        const label = node.user?.short_name || ('!' + (node.num ?? 0).toString(16).slice(-4));
+        const diagSign = isRight ? 1 : -1;
+        const elbowX = x + diagSign * diagLen, elbowY = y - diagLen;
+        const capX = elbowX + diagSign * HOR_LEN, capY = elbowY;
+        g.appendChild(svgElem('line', { x1: x + diagSign * 5, y1: y - 4, x2: elbowX, y2: elbowY, style: `stroke:${dotColor};stroke-width:0.8;opacity:0.7;pointer-events:none` }));
+        g.appendChild(svgElem('line', { x1: elbowX, y1: elbowY, x2: capX, y2: capY, style: `stroke:${dotColor};stroke-width:0.8;opacity:0.7;pointer-events:none` }));
+        const txt = svgElem('text', { class: 'radar-node-label', x: capX + diagSign * 3, y: capY + 4,
+          style: `fill:${dotColor};font-size:10px;font-family:'Oxanium',monospace;pointer-events:none;text-anchor:${isRight ? 'start' : 'end'}` });
+        txt.textContent = label;
+        g.appendChild(txt);
+        g.addEventListener('click', (e) => { e.stopPropagation(); this.radarSelected = node; this.openNodeInfo(node); });
+        ng.appendChild(g);
+      });
+
+      const hSize = 7;
+      ng.appendChild(svgElem('polygon', { points: `${CX},${CY-hSize} ${CX+hSize},${CY} ${CX},${CY+hSize} ${CX-hSize},${CY}`, style: `fill:${G4};filter:url(#blipGlow)` }));
+      ng.appendChild(svgElem('line', { x1: CX-16, y1: CY, x2: CX-hSize-1, y2: CY, style: `stroke:${G4};stroke-width:1.2` }));
+      ng.appendChild(svgElem('line', { x1: CX+hSize+1, y1: CY, x2: CX+16, y2: CY, style: `stroke:${G4};stroke-width:1.2` }));
+      ng.appendChild(svgElem('line', { x1: CX, y1: CY-16, x2: CX, y2: CY-hSize-1, style: `stroke:${G4};stroke-width:1.2` }));
+      ng.appendChild(svgElem('line', { x1: CX, y1: CY+hSize+1, x2: CX, y2: CY+16, style: `stroke:${G4};stroke-width:1.2` }));
     },
 
     // -- Reusable Node Info modal, callable from Radar and Nodes table ----------------

@@ -272,7 +272,28 @@
             <div x-show="!homePos" class="font-mono text-xs text-center" style="color:rgba(0,255,80,0.35)">
               NO HOME POSITION<br><span class="opacity-60">set a fixed lat/lon via Device Config</span>
             </div>
-            <div x-show="homePos" id="radar-svg-container" class="w-full h-full"></div>
+            <svg x-show="homePos" id="radar-svg" viewBox="0 0 600 600" class="w-full max-h-full"
+                 style="display:block;margin:auto;overflow:visible">
+              <defs>
+                <radialGradient id="radarBg" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="rgba(0,30,8,1)"/>
+                  <stop offset="60%" stop-color="rgba(0,15,4,1)"/>
+                  <stop offset="100%" stop-color="rgba(0,5,2,1)"/>
+                </radialGradient>
+                <filter id="rimGlow" x="-10%" y="-10%" width="120%" height="120%">
+                  <feGaussianBlur stdDeviation="3" result="blur"/>
+                  <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <filter id="blipGlow" x="-80%" y="-80%" width="260%" height="260%">
+                  <feGaussianBlur stdDeviation="2.5" result="blur"/>
+                  <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <clipPath id="radarClip"><circle cx="300" cy="300" r="256"/></clipPath>
+              </defs>
+              <g id="radar-bg-g"></g>
+              <g id="radar-beam-g" style="transform-box:view-box;transform-origin:300px 300px;transition:transform 1.2s ease"></g>
+              <g id="radar-nodes-g"></g>
+            </svg>
           </div>
         </div>
 
@@ -1129,6 +1150,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260616i"></script>
+<script src="app.js?v=20260616j"></script>
 </body>
 </html>
