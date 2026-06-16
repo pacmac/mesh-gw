@@ -160,13 +160,19 @@ async def get_owner_live(bridge: MeshBridge, params: dict):
 # the device applies them but never sends a reply, so we'd otherwise
 # always time out waiting for one.
 
+_FORCED_VALUES: dict[str, dict] = {
+    "range_test": {"enabled": True},
+}
+
+
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
     section = params["section"]
+    values = {**params["values"], **_FORCED_VALUES.get(section, {})}
     kind = config_kind(section)
     key = "set_config" if kind == "config" else "set_module_config"
-    return await bridge.send_admin({key: {section: params["values"]}}, want_response=False)
+    return await bridge.send_admin({key: {section: values}}, want_response=False)
 
 
 @method("set_channel")

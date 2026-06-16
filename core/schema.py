@@ -49,9 +49,16 @@ def section_message_type(section: str):
     raise KeyError(f"unknown config section: {section}")
 
 
+_HIDDEN_FIELDS: dict[str, set[str]] = {
+    "range_test": {"enabled"},  # always kept True server-side, no user-facing toggle needed
+}
+
+
 def get_section_schema(section: str) -> dict:
     msg_type = section_message_type(section)
-    return {"section": section, "fields": [_field_schema(f) for f in msg_type.fields]}
+    hidden = _HIDDEN_FIELDS.get(section, set())
+    fields = [_field_schema(f) for f in msg_type.fields if f.name not in hidden]
+    return {"section": section, "fields": fields}
 
 
 def get_channel_schema() -> dict:
