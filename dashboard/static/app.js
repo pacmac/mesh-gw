@@ -80,6 +80,7 @@ function dashboard() {
 
     // Radar tab state
     radarRange: localStorage.getItem("radarRange") || "100",
+    radarLogScale: localStorage.getItem("radarLogScale") !== "false",
     radarNodes: [],
     radarSelected: null,
     homePos: null,
@@ -1080,6 +1081,14 @@ function dashboard() {
       this._drawRadarNodes(maxKm);
     },
 
+    _radarNorm(km, maxKm) {
+      if (!km || !maxKm) return 0;
+      const f = this.radarLogScale
+        ? Math.log1p(km) / Math.log1p(maxKm)
+        : km / maxKm;
+      return Math.min(f, 1.0);
+    },
+
     _drawRadarBg(maxKm) {
       const bg = document.getElementById('radar-bg-g');
       if (!bg) return;
@@ -1099,9 +1108,12 @@ function dashboard() {
         const r = R * i / 4, isFull = i === 4;
         bg.appendChild(svgElem('circle', { cx: CX, cy: CY, r,
           style: `fill:none;stroke:${isFull ? G2 : G1};stroke-width:${isFull ? 1.2 : 0.9};stroke-dasharray:${isFull ? '' : '5 5'}` }));
+        const ringKm = this.radarLogScale
+          ? Math.expm1((i / 4) * Math.log1p(maxKm))
+          : maxKm * i / 4;
         const lbl = svgElem('text', { x: CX + 5, y: CY - r + 12,
           style: `fill:${G3};font-size:10px;font-family:'Oxanium',monospace;letter-spacing:0.05em` });
-        lbl.textContent = (maxKm * i / 4 | 0) + ' km';
+        lbl.textContent = (ringKm < 10 ? ringKm.toFixed(1) : Math.round(ringKm)) + ' km';
         bg.appendChild(lbl);
       }
       if (this.radarCrosshair) {
@@ -1158,7 +1170,7 @@ function dashboard() {
 
       const npos = nodes.map(node => {
         const az = node._az * Math.PI / 180;
-        const normKm = Math.min(node._km / maxKm, 1.0);
+        const normKm = this._radarNorm(node._km, maxKm);
         return { x: CX + Math.sin(az) * normKm * R, y: CY - Math.cos(az) * normKm * R, diagLen: BASE_DIAG, isRight: null };
       });
       const clusterOf = new Array(npos.length).fill(-1);

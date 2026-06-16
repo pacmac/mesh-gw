@@ -229,6 +229,13 @@
               <span class="text-xs font-mono opacity-50 tracking-widest uppercase">XHair</span>
               <input type="checkbox" class="toggle toggle-xs" :checked="radarCrosshair" @change="toggleRadarCrosshair()">
             </label>
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-mono opacity-50 tracking-widest uppercase">Scale</span>
+              <button class="btn btn-xs font-mono tracking-widest"
+                      :class="radarLogScale ? 'btn-outline btn-success' : 'btn-ghost opacity-40'"
+                      @click="radarLogScale = !radarLogScale; localStorage.setItem('radarLogScale', radarLogScale); drawRadar()"
+                      x-text="radarLogScale ? 'LOG' : 'LIN'"></button>
+            </div>
             <span class="font-mono text-xs px-2 py-0.5 rounded" style="color:rgba(0,255,80,0.6);border:1px solid rgba(0,255,80,0.2)" x-text="radarNodes.length + ' plotted'"></span>
             <span class="font-mono text-xs animate-pulse" style="color:rgba(0,255,80,0.5)" x-show="geocoding">geocoding…</span>
             <!-- Rotator strip — visible when rotator is enabled -->
@@ -1189,6 +1196,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260616m"></script>
+<script src="app.js?v=20260616n"></script>
 </body>
 </html>
