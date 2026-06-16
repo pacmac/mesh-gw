@@ -648,6 +648,23 @@ class BLEHandler:
         self.is_reconnecting = False
         self.services_ready = False
 
+    def get_rssi(self) -> int | None:
+        """Return last known BLE RSSI (dBm) from bluetoothctl info.
+        Available connected or not — reflects last advertising/connection RSSI."""
+        try:
+            out = subprocess.run(
+                ["bluetoothctl", "info", self.ble_address],
+                capture_output=True, text=True, timeout=3,
+            ).stdout
+            for line in out.splitlines():
+                if "RSSI:" in line:
+                    # "	RSSI: 0xffffff9e (-98)"
+                    part = line.split("(")[-1].rstrip(")")
+                    return int(part)
+        except Exception:
+            pass
+        return None
+
     async def scan_devices(self) -> list:
         """
         Scan for nearby Meshtastic BLE devices.

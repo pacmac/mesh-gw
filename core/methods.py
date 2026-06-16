@@ -70,6 +70,7 @@ async def get_status(bridge: MeshBridge, params: dict):
         "ble_address": bridge.ble_address,
         "ble_state": bridge.ble_state,
         "ble_error": bridge.ble_error,
+        "ble_rssi": bridge.ble.get_rssi() if bridge.ble else None,
         "config_complete": state.config_complete,
         "node_count": len(state.nodes),
         "mqtt_proxy_connected": bool(bridge.mqtt_proxy and bridge.mqtt_proxy.connected),
