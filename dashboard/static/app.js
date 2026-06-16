@@ -12,6 +12,9 @@ function dashboard() {
     drawerOpen: false,
     sidebarPinned: localStorage.getItem('sidebarPinned') !== 'false',
     activeNodeId: localStorage.getItem("activeNodeId") || "",
+    msgFrom: localStorage.getItem("msgFrom") || "",
+    msgIsDirect: false,
+    msgDirectTo: "",
     availableDevices: [],
     status: {},
     info: { my_info: {}, metadata: {} },
@@ -110,6 +113,10 @@ function dashboard() {
         if (!this.activeNodeId && this.availableDevices.length > 0) {
           this.activeNodeId = this.availableDevices[0].node_id;
           localStorage.setItem("activeNodeId", this.activeNodeId);
+        }
+        if (!this.msgFrom || !this.availableDevices.find(d => d.node_id === this.msgFrom)) {
+          this.msgFrom = this.activeNodeId;
+          localStorage.setItem("msgFrom", this.msgFrom);
         }
       } catch (e) {
         console.warn("Failed to load devices", e);
@@ -443,7 +450,13 @@ function dashboard() {
         if (portnum === "TEXT_MESSAGE_APP" && pkt?.decoded?.payload) {
           try {
             const text = b64ToUtf8(pkt.decoded.payload);
-            this.messages.unshift({ from: String(pkt.from ?? "?"), text, time });
+            const toNum = pkt.to >>> 0;
+            this.messages.unshift({
+              fromNum: pkt.from ?? 0, to: toNum,
+              broadcast: toNum === 0xFFFFFFFF || pkt.to == null,
+              channel: pkt.channel ?? 0,
+              text, time, direction: 'rx', ackStatus: null,
+            });
             if (this.messages.length > 50) this.messages.pop();
           } catch (e) { /* ignore decode errors */ }
         }
@@ -679,7 +692,18 @@ function dashboard() {
     async sendMessage() {
       if (!this.msgText.trim()) return;
       this.msgSent = false;
-      await fetchJSON(this.d("/messages"), "POST", { text: this.msgText, channel: Number(this.msgChannel) });
+      const text = this.msgText, channel = Number(this.msgChannel), time = new Date().toLocaleTimeString();
+      const fromId = this.msgFrom || this.activeNodeId;
+      const to = this.msgIsDirect && this.msgDirectTo ? Number(this.msgDirectTo) : 0xFFFFFFFF;
+      const body = { text, channel };
+      if (this.msgIsDirect && this.msgDirectTo) body.to = to;
+      await fetchJSON("/" + fromId + "/messages", "POST", body);
+      const fromNum = parseInt(fromId.replace('!', ''), 16) || 0;
+      this.messages.unshift({
+        fromNum, to: to >>> 0,
+        broadcast: to === 0xFFFFFFFF, channel, text, time, direction: 'tx', ackStatus: 'sent',
+      });
+      if (this.messages.length > 50) this.messages.pop();
       this.msgText = "";
       this.msgSent = true;
       setTimeout(() => (this.msgSent = false), 2000);
@@ -691,6 +715,7 @@ function dashboard() {
       this.msgModal = {
         open: true,
         mode,
+        fromNodeId: this.msgFrom || this.activeNodeId,
         to: mode === "direct" ? node.num : 0xFFFFFFFF,
         label: mode === "direct" ? (node.user?.long_name || node.user?.id || node.num) : "",
         channel: this.msgChannel,
@@ -707,15 +732,37 @@ function dashboard() {
 
     async sendModalMessage() {
       if (!this.msgModal.text.trim()) return;
-      const body = { text: this.msgModal.text, channel: Number(this.msgModal.channel) };
-      if (this.msgModal.mode === "direct") body.to = this.msgModal.to;
-      await fetchJSON(this.d("/messages"), "POST", body);
+      const text = this.msgModal.text, channel = Number(this.msgModal.channel), time = new Date().toLocaleTimeString();
+      const to = this.msgModal.mode === 'direct' ? this.msgModal.to : 0xFFFFFFFF;
+      const fromId = this.msgModal.fromNodeId || this.activeNodeId;
+      const body = { text, channel };
+      if (this.msgModal.mode === "direct") body.to = to;
+      await fetchJSON("/" + fromId + "/messages", "POST", body);
+      const fromNum = parseInt(fromId.replace('!', ''), 16) || 0;
+      this.messages.unshift({
+        fromNum, to: to >>> 0,
+        broadcast: to === 0xFFFFFFFF, channel, text, time, direction: 'tx', ackStatus: 'sent',
+      });
+      if (this.messages.length > 50) this.messages.pop();
       this.msgModal.text = "";
       this.msgModal.sent = true;
       setTimeout(() => (this.msgModal.sent = false), 2000);
     },
 
     // -- Yagi rotator "Point" (future integration: see radar-revamp task goal) -------
+    nodeShortName(num) {
+      const n = this.nodes.find(n => n.num === num);
+      return n?.user?.short_name || ('!' + (num & 0xFFFF).toString(16).toUpperCase());
+    },
+    nodeLongName(num) {
+      const n = this.nodes.find(n => n.num === num);
+      return n?.user?.long_name || n?.user?.short_name || ('!' + (num & 0xFFFF).toString(16).toUpperCase());
+    },
+    avatarColor(num) {
+      const h = ((num >>> 0) * 2654435761 >>> 0) % 360;
+      return `hsl(${h},55%,45%)`;
+    },
+
     async pointAtNode(node) {
       if (node._az == null) return;
       await fetchJSON(this.d("/rpc"), "POST", { method: "yagi_point", params: { az: node._az, node: node.num, name: node.user?.long_name || "" } });

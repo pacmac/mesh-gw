@@ -118,8 +118,11 @@ class DeviceManager:
         for node_id, bridge in self._devices.items():
             gw = bridge.tcp_gateway
             rssi = bridge.ble.get_rssi() if bridge.ble else None
+            local = bridge.state.nodes.get(str(bridge.my_node_num), {}).get("user", {}) if bridge.my_node_num else {}
             result.append({
                 "node_id": node_id,
+                "short_name": local.get("short_name", ""),
+                "long_name": local.get("long_name", ""),
                 "ble_address": bridge.ble_address,
                 "ble_state": bridge.ble_state,
                 "ble_error": bridge.ble_error,

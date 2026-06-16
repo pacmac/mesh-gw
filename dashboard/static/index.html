@@ -220,10 +220,40 @@
         <!-- ===================== MESSAGE MODAL ===================== -->
         <dialog class="modal" x-ref="msgModalDialog" @close="msgModal.open = false">
           <div class="modal-box">
-            <h3 class="font-bold text-lg font-oxanium" x-text="msgModal.mode === 'direct' ? ('Message → ' + (msgModal.label || msgModal.to)) : 'Broadcast message'"></h3>
+            <h3 class="font-bold text-lg font-oxanium" x-text="msgModal.mode === 'direct' ? ('Message → ' + (msgModal.label || msgModal.to)) : 'Broadcast'"></h3>
             <div class="flex flex-col gap-3 mt-3">
+
+              <!-- From device (only when >1 device) -->
+              <div x-show="availableDevices.length > 1" class="flex items-center gap-2 text-sm">
+                <span class="text-base-content/60 w-12 shrink-0">From</span>
+                <div class="join">
+                  <template x-for="dev in availableDevices" :key="dev.node_id">
+                    <button class="join-item btn btn-xs"
+                            :class="msgModal.fromNodeId === dev.node_id ? 'btn-primary' : 'btn-outline'"
+                            @click="msgModal.fromNodeId = dev.node_id"
+                            x-text="dev.short_name || dev.node_id">
+                    </button>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Direct / Broadcast toggle -->
+              <div class="flex items-center gap-2 text-sm">
+                <span class="text-base-content/60 w-12 shrink-0">To</span>
+                <div class="join">
+                  <button class="join-item btn btn-xs" :class="msgModal.mode === 'broadcast' ? 'btn-primary' : 'btn-outline'" @click="msgModal.mode = 'broadcast'; msgModal.to = 0xFFFFFFFF">Broadcast</button>
+                  <button class="join-item btn btn-xs" :class="msgModal.mode === 'direct' ? 'btn-primary' : 'btn-outline'" @click="msgModal.mode = 'direct'">Direct</button>
+                </div>
+                <select x-show="msgModal.mode === 'direct'" class="select select-bordered select-xs flex-1" x-model="msgModal.to">
+                  <option value="" disabled>Select node…</option>
+                  <template x-for="n in filteredNodes" :key="n.num">
+                    <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
+                  </template>
+                </select>
+              </div>
+
               <label class="flex items-center gap-2 text-sm" x-show="msgModal.mode === 'broadcast'">
-                <span class="label-text">Channel</span>
+                <span class="text-base-content/60 w-12 shrink-0">Ch</span>
                 <select class="select select-bordered select-xs" x-model="msgModal.channel">
                   <template x-for="ch in channels" :key="ch.index">
                     <option :value="String(ch.index)" x-text="ch.index + ': ' + (ch.data?.settings?.name || 'default')"></option>
@@ -232,7 +262,7 @@
               </label>
               <textarea class="textarea textarea-bordered w-full" rows="3" placeholder="Message text" x-model="msgModal.text"></textarea>
               <div class="flex items-center gap-2">
-                <button class="btn btn-sm btn-primary" @click="sendModalMessage()" :disabled="!msgModal.text.trim()">Send</button>
+                <button class="btn btn-sm btn-primary" @click="sendModalMessage()" :disabled="!msgModal.text.trim() || (msgModal.mode === 'direct' && !msgModal.to)">Send</button>
                 <span class="text-success text-xs" x-show="msgModal.sent">Sent ✓</span>
               </div>
             </div>
@@ -636,6 +666,36 @@
           <div class="card bg-base-100 shadow">
             <div class="card-body">
               <h2 class="card-title">Send Text</h2>
+
+              <!-- From device -->
+              <div x-show="availableDevices.length > 1" class="flex items-center gap-2">
+                <span class="text-xs text-base-content/60 w-12 shrink-0">From</span>
+                <div class="join">
+                  <template x-for="dev in availableDevices" :key="dev.node_id">
+                    <button class="join-item btn btn-xs"
+                            :class="msgFrom === dev.node_id ? 'btn-primary' : 'btn-outline'"
+                            @click="msgFrom = dev.node_id; localStorage.setItem('msgFrom', dev.node_id)"
+                            x-text="dev.short_name || dev.node_id">
+                    </button>
+                  </template>
+                </div>
+              </div>
+
+              <!-- Direct / Broadcast toggle -->
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-base-content/60 w-12 shrink-0">To</span>
+                <div class="join">
+                  <button class="join-item btn btn-xs" :class="!msgIsDirect ? 'btn-primary' : 'btn-outline'" @click="msgIsDirect = false">Broadcast</button>
+                  <button class="join-item btn btn-xs" :class="msgIsDirect ? 'btn-primary' : 'btn-outline'" @click="msgIsDirect = true">Direct</button>
+                </div>
+                <select x-show="msgIsDirect" class="select select-bordered select-xs flex-1" x-model="msgDirectTo">
+                  <option value="" disabled>Select node…</option>
+                  <template x-for="n in filteredNodes" :key="n.num">
+                    <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
+                  </template>
+                </select>
+              </div>
+
               <div class="form-control">
                 <label class="label"><span class="label-text">Channel</span></label>
                 <select class="select select-bordered select-sm" x-model="msgChannel">
@@ -648,21 +708,32 @@
                 <label class="label"><span class="label-text">Message</span></label>
                 <textarea class="textarea textarea-bordered" rows="3" x-model="msgText" placeholder="Type a message…"></textarea>
               </div>
-              <button class="btn btn-primary btn-sm mt-2" @click="sendMessage()" :disabled="!msgText.trim()">Send</button>
+              <button class="btn btn-primary btn-sm mt-2" @click="sendMessage()" :disabled="!msgText.trim() || (msgIsDirect && !msgDirectTo)">Send</button>
               <span class="text-success text-sm mt-1" x-show="msgSent" x-transition>Sent ✓</span>
             </div>
           </div>
           <div class="card bg-base-100 shadow">
             <div class="card-body">
               <h2 class="card-title">Message Feed</h2>
-              <div class="overflow-y-auto max-h-[400px] flex flex-col gap-2">
+              <div class="overflow-y-auto max-h-[400px] divide-y divide-base-200">
                 <template x-for="(m, i) in messages" :key="i">
-                  <div class="chat chat-start">
-                    <div class="chat-header text-xs opacity-50" x-text="m.from + ' · ' + m.time"></div>
-                    <div class="chat-bubble chat-bubble-neutral text-sm" x-text="m.text"></div>
+                  <div class="flex items-start gap-3 py-2">
+                    <div class="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white"
+                         :style="`background:${avatarColor(m.fromNum)}`"
+                         x-text="nodeShortName(m.fromNum)">
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-1.5 text-xs">
+                        <span class="font-semibold text-base-content" x-text="nodeLongName(m.fromNum)"></span>
+                        <span class="badge badge-xs" :class="m.broadcast ? 'badge-ghost' : 'badge-info'" x-text="m.broadcast ? 'BC' : 'DM'"></span>
+                        <span class="ml-auto text-base-content/50 shrink-0" x-text="m.time"></span>
+                        <span x-show="m.direction==='tx'" class="text-success shrink-0" title="Sent">✓</span>
+                      </div>
+                      <div class="text-sm text-base-content mt-0.5 break-words" x-text="m.text"></div>
+                    </div>
                   </div>
                 </template>
-                <div x-show="messages.length===0" class="text-base-content/40 italic">No messages yet…</div>
+                <div x-show="messages.length===0" class="text-base-content/40 italic py-4">No messages yet…</div>
               </div>
             </div>
           </div>
