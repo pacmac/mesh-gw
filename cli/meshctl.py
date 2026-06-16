@@ -8,6 +8,7 @@ Environment:
     MESHCTL_URL   Base URL of the server  (default: http://localhost:8000)
 
 Commands:
+    help                            API reference (fetched from server)
     status                          Server health + connected devices
     devices                         List connected devices
     scan                            BLE scan for nearby Meshtastic devices
@@ -204,6 +205,12 @@ def cmd_channels(args):
     _print_json(_get(f"/{args.node_id}/channels"))
 
 
+def cmd_help(_args):
+    r = httpx.get(f"{BASE_URL}/help", timeout=10)
+    r.raise_for_status()
+    print(r.text)
+
+
 def cmd_bridge_config(_args):
     _print_json(_get("/bridge_config"))
 
@@ -227,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--url", default=None, help="Override MESHCTL_URL")
     sub = p.add_subparsers(dest="command", metavar="command")
 
+    sub.add_parser("help", help="Show API reference (fetched from server)")
     sub.add_parser("status", help="Server health + connected devices")
     sub.add_parser("devices", help="List connected devices")
     sub.add_parser("scan", help="BLE scan for nearby Meshtastic devices")
@@ -266,6 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 COMMANDS = {
+    "help": cmd_help,
     "status": cmd_status,
     "devices": cmd_devices,
     "scan": cmd_scan,

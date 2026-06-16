@@ -11,13 +11,14 @@ import logging
 from bleak import BleakScanner
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
 from core.methods import METHODS
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
 from core.schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
 from .device_manager import DeviceManager
+from .help import HELP_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
     # =========================================================================
     # Server-level routes
     # =========================================================================
+
+    @app.get("/help", response_class=PlainTextResponse)
+    async def help_text():
+        return HELP_TEXT
 
     @app.get("/status")
     async def server_status():
