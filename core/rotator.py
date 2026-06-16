@@ -1,82 +1,41 @@
-"""Persistent async WebSocket client for the v4 rotator firmware.
+"""Rotator driver interface and factory.
 
-Reconnects automatically on disconnect. Caches the latest status dict and
-broadcasts it to registered callbacks so the dashboard WS feed stays live.
+To add a new driver: subclass RotatorBase, implement all abstract methods,
+then register the name in load_rotator().
 """
-import asyncio
-import json
-import logging
-
-import websockets
-
-logger = logging.getLogger(__name__)
-
-_RECONNECT_DELAY = 5.0
+from abc import ABC, abstractmethod
 
 
-class RotatorClient:
-    def __init__(self, ws_url: str):
-        self.ws_url = ws_url
-        self.status: dict = {}
-        self.connected: bool = False
-        self.on_status = None          # async callback(status_dict)
-        self._ws = None
-        self._task: asyncio.Task | None = None
+class RotatorBase(ABC):
+    """Common interface all rotator drivers must implement."""
 
-    # -- lifecycle ------------------------------------------------------------
+    on_status = None    # async callable(status_dict) — set by bridge
 
-    def start(self):
-        self._task = asyncio.create_task(self._run())
+    @abstractmethod
+    def start(self): ...
 
-    async def stop(self):
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        if self._ws:
-            await self._ws.close()
+    @abstractmethod
+    async def stop(self): ...
 
-    # -- commands -------------------------------------------------------------
+    @abstractmethod
+    async def move(self, az: float): ...
 
-    async def move(self, az: float):
-        await self._send({"action": "move2az", "args": [az]})
+    @abstractmethod
+    async def set_mode(self, mode: int): ...
 
-    async def seek(self, az: float):
-        await self._send({"action": "seek2az", "args": [az]})
+    @property
+    @abstractmethod
+    def connected(self) -> bool: ...
 
-    async def set_mode(self, mode: int):
-        await self._send({"action": "mode", "args": [mode]})
+    @property
+    @abstractmethod
+    def status(self) -> dict: ...
 
-    # -- internals ------------------------------------------------------------
 
-    async def _send(self, msg: dict):
-        if not self._ws:
-            raise RuntimeError("Rotator not connected")
-        await self._ws.send(json.dumps(msg))
-
-    async def _run(self):
-        while True:
-            try:
-                async with websockets.connect(self.ws_url) as ws:
-                    self._ws = ws
-                    self.connected = True
-                    logger.info(f"Rotator connected: {self.ws_url}")
-                    async for raw in ws:
-                        try:
-                            data = json.loads(raw)
-                        except Exception:
-                            continue
-                        if data.get("evt") == "status" or "az" in data:
-                            self.status = data
-                            if self.on_status:
-                                await self.on_status(data)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.warning(f"Rotator WS error: {e}")
-            finally:
-                self._ws = None
-                self.connected = False
-            await asyncio.sleep(_RECONNECT_DELAY)
+def load_rotator(cfg: dict) -> RotatorBase:
+    """Instantiate the driver named in cfg['driver'] (default 'v4_ws')."""
+    driver = cfg.get("driver", "v4_ws")
+    if driver == "v4_ws":
+        from .rotator_v4ws import V4WsRotator
+        return V4WsRotator(cfg["ws_url"])
+    raise ValueError(f"Unknown rotator driver: {driver!r}")

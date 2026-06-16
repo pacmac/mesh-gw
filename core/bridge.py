@@ -11,7 +11,7 @@ from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 from . import bridge_config, geo
 from .ble_handler import BLEHandler
 from .mqtt_proxy import MqttProxy
-from .rotator import RotatorClient
+from .rotator import RotatorBase, load_rotator
 from .stats import StatsCollector
 from .state import MeshState
 from .tcp_gateway import TcpGateway
@@ -39,7 +39,7 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
         self.ble_error: str | None = None
-        self.rotator: RotatorClient | None = self._init_rotator()
+        self.rotator: RotatorBase | None = self._init_rotator()
 
         # node IDs known to have a retained <nodeinfo_root>/nodeinfo/<id>
         # cache entry (seeded from retained docs, grown as we publish new ones)
@@ -49,16 +49,17 @@ class MeshBridge:
         if ble_address:
             self._init_ble(ble_address)
 
-    def _init_rotator(self) -> RotatorClient | None:
+    def _init_rotator(self) -> RotatorBase | None:
         cfg = bridge_config.load().get("rotator", {})
         if not cfg.get("enabled"):
             return None
-        ws_url = cfg.get("ws_url")
-        if not ws_url:
+        try:
+            r = load_rotator(cfg)
+            r.on_status = self._on_rotator_status
+            return r
+        except Exception as e:
+            logger.error(f"Failed to load rotator driver: {e}")
             return None
-        r = RotatorClient(ws_url)
-        r.on_status = self._on_rotator_status
-        return r
 
     async def _on_rotator_status(self, status: dict):
         await self.state._broadcast({"type": "rotator", "data": status})

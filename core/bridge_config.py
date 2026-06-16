@@ -26,6 +26,7 @@ DEFAULTS = {
     },
     "rotator": {
         "enabled": False,
+        "driver": "v4_ws",
         "ws_url": "ws://192.168.10.186:81",
         "beam_width_deg": 35,
     },
