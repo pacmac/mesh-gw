@@ -196,6 +196,9 @@ function dashboard() {
       await this.loadRotatorState();
       this.connectWS();
       setInterval(() => { this.refreshStatus(); this.loadDevices(); }, 5000);
+      // Radar merges all bridge nodes — re-fetch every 30s so EG5y-only nodes
+      // stay current without needing a manual refresh.
+      setInterval(() => { if (this.tab === "radar" && this.homePos) this.loadNodes().then(() => this.refreshRadar()); }, 30000);
       if (this.tab === "radar") this.$nextTick(() => this.initRadar());
       else if (this.tab === "cfg") this.switchCfgTab(this.cfgTab);
       else if (this.tab === "range") this.loadRangeTest();
@@ -546,6 +549,14 @@ function dashboard() {
       // Rotator events come from the YAGI bridge (not necessarily the active device);
       // process them first before the per-device filter.
       if (ev.type === "rotator") { this._onRotatorEvent(ev.data || {}); return; }
+
+      // Position/nodeinfo packets from any bridge refresh the radar so nodes
+      // heard only by EG5y appear without a full page reload.
+      if (ev.type === "packet" && this.tab === "radar" && this.homePos) {
+        const portnum = ev.data?.packet?.decoded?.portnum;
+        if (portnum === "POSITION_APP" || portnum === "NODEINFO_APP")
+          this.loadNodes().then(() => this.refreshRadar());
+      }
 
       // All other events: filter to the active device
       if (ev.device && this.activeNodeId && ev.device !== this.activeNodeId) return;
