@@ -1,4 +1,8 @@
 __pycache__/
 *.pyc
 .venv/
+venv/
 .playwright-mcp/
+*.png
+*.jpg
+core/bridge_config.yaml
