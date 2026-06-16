@@ -14,6 +14,7 @@ from .bridge import MeshBridge
 from .methods import METHODS
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
 from .schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
+from . import bridge_config as _bcfg
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,14 @@ def create_app(bridge: MeshBridge) -> FastAPI:
             params["role"] = body["role"]
         return await call("set_channel", params)
 
+    @app.get("/bridge_config")
+    async def get_bridge_config():
+        return await call("get_bridge_config", {})
+
+    @app.put("/bridge_config")
+    async def put_bridge_config(body: dict = Body(...)):
+        return await call("set_bridge_config", body)
+
     @app.get("/config")
     async def get_config():
         return await call("get_config", {})
@@ -128,6 +137,19 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     @app.post("/admin")
     async def post_admin(body: dict = Body(...)):
         return await call("admin", body)
+
+    @app.post("/yagi/point")
+    async def post_yagi_point(body: dict = Body(...)):
+        return await call("yagi_point", body)
+
+    @app.get("/range_test")
+    async def get_range_test():
+        return {"log": list(bridge.state.range_test_log), "count": len(bridge.state.range_test_log)}
+
+    @app.delete("/range_test")
+    async def clear_range_test():
+        bridge.state.range_test_log.clear()
+        return {"cleared": True}
 
     # -- meta -----------------------------------------------------------------
     @app.get("/sections")
@@ -183,11 +205,25 @@ def create_app(bridge: MeshBridge) -> FastAPI:
         pin     = (body.get("pin")     or "").strip()
         if not address:
             raise HTTPException(400, "address required")
+        # Persist address and pin only when auto_connect is requested
+        if body.get("auto_connect", True):
+            cfg = _bcfg.load()
+            cfg["ble"]["address"] = address
+            cfg["ble"]["pin"] = pin
+            _bcfg.save(cfg)
+        else:
+            cfg = _bcfg.load()
+            cfg["ble"]["address"] = None
+            cfg["ble"]["pin"] = ""
+            _bcfg.save(cfg)
         asyncio.create_task(bridge.connect_to(address, pin=pin))
         return {"connecting": True, "address": address}
 
     @app.post("/ble/disconnect")
-    async def ble_disconnect_endpoint():
+    async def ble_disconnect_clear_endpoint():
+        cfg = _bcfg.load()
+        cfg["ble"]["address"] = None
+        _bcfg.save(cfg)
         asyncio.create_task(bridge.disconnect_ble())
         return {"disconnecting": True}
 

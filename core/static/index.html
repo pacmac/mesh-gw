@@ -12,15 +12,16 @@
       document.documentElement.setAttribute('data-theme', e.matches ? 'business' : 'corporate');
     });
   })();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
 </script>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><text y=%22.9em%22 font-size=%2220%22>📡</text></svg>">
 <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=20260616">
 </head>
-<body class="min-h-screen bg-base-200">
-<div x-data="dashboard()" x-init="init()" class="min-h-screen flex flex-col">
+<body class="h-screen overflow-hidden bg-base-200">
+<div x-data="dashboard()" x-init="init()" class="h-screen flex flex-col overflow-hidden">
 
   <!-- Top navbar -->
   <div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-4">
@@ -61,16 +62,20 @@
 
   <!-- Tabs -->
   <div class="tabs tabs-lift px-4 pt-3 bg-base-200">
-    <a class="tab" :class="tab==='overview' && 'tab-active font-semibold'" @click="tab='overview'">Overview</a>
-    <a class="tab" :class="tab==='radar' && 'tab-active font-semibold'" @click="tab='radar'; initRadar()">Radar</a>
-    <a class="tab" :class="tab==='nodes' && 'tab-active font-semibold'" @click="tab='nodes'; loadNodes()">Nodes</a>
-    <a class="tab" :class="tab==='config' && 'tab-active font-semibold'" @click="tab='config'; loadSections()">Radio Config</a>
-    <a class="tab" :class="tab==='channels' && 'tab-active font-semibold'" @click="tab='channels'; loadChannels()">Channels</a>
-    <a class="tab" :class="tab==='owner' && 'tab-active font-semibold'" @click="tab='owner'; loadOwner()">Owner</a>
-    <a class="tab" :class="tab==='messages' && 'tab-active font-semibold'" @click="tab='messages'">Messages</a>
+    <a class="tab" :class="tab==='overview' && 'tab-active font-semibold'" @click="tab='overview'; localStorage.setItem('activeTab','overview')">Overview</a>
+    <a class="tab" :class="tab==='radar' && 'tab-active font-semibold'" @click="tab='radar'; localStorage.setItem('activeTab','radar'); initRadar()">Radar</a>
+    <a class="tab" :class="tab==='nodes' && 'tab-active font-semibold'" @click="tab='nodes'; localStorage.setItem('activeTab','nodes'); loadNodes()">Nodes</a>
+    <a class="tab" :class="tab==='cfg' && 'tab-active font-semibold'" @click="tab='cfg'; localStorage.setItem('activeTab','cfg'); switchCfgTab(cfgTab)">Config</a>
+    <a class="tab" :class="tab==='range' && 'tab-active font-semibold'" @click="tab='range'; localStorage.setItem('activeTab','range'); loadRangeTest()">Range</a>
+    <a class="tab" :class="tab==='messages' && 'tab-active font-semibold'" @click="tab='messages'; localStorage.setItem('activeTab','messages')">Messages</a>
   </div>
 
-  <div class="flex-1 p-4 max-w-[1400px] w-full mx-auto">
+  <!-- Offline banner -->
+  <div x-show="!serverReachable" x-transition class="bg-error text-error-content text-sm font-semibold text-center py-2 px-4 z-50">
+    ⚠ Bridge unreachable — retrying…
+  </div>
+
+  <div class="flex-1 p-4 max-w-[1400px] w-full mx-auto overflow-y-auto">
 
     <!-- ===================== OVERVIEW ===================== -->
     <div x-show="tab==='overview'" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -178,7 +183,7 @@
                       <td class="font-mono text-xs" x-text="d.address"></td>
                       <td x-text="d.rssi + ' dBm'"></td>
                       <td>
-                        <input class="input input-bordered input-xs font-mono w-24" x-model="blePin" placeholder="optional" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
+                        <input class="input input-bordered input-xs font-mono w-24" x-model="blePin" placeholder="123456" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
                       </td>
                       <td>
                         <button class="btn btn-xs btn-primary gap-1" @click="bleConnect(d.address)" :disabled="bleConnecting || bleScanning">
@@ -201,13 +206,19 @@
                   <input class="input input-bordered input-sm font-mono w-52" x-model="bleAddress" placeholder="AA:BB:CC:DD:EE:FF" :disabled="bleConnecting">
                 </div>
                 <div class="form-control">
-                  <label class="label py-0.5"><span class="label-text text-xs">PIN (if required)</span></label>
-                  <input class="input input-bordered input-sm w-28" x-model="blePin" placeholder="optional" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
+                  <label class="label py-0.5"><span class="label-text text-xs">PIN</span></label>
+                  <input class="input input-bordered input-sm w-28" x-model="blePin" placeholder="123456" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
                 </div>
-                <button class="btn btn-sm btn-primary gap-2 self-end" @click="bleConnect()" :disabled="!bleAddress || bleConnecting || bleScanning">
-                  <span x-show="bleConnecting" class="loading loading-spinner loading-xs"></span>
-                  <span x-text="bleConnecting ? 'Connecting…' : 'Connect'"></span>
-                </button>
+                <div class="flex items-center gap-3 self-end">
+                  <label class="flex items-center gap-1.5 cursor-pointer">
+                    <input type="checkbox" class="checkbox checkbox-xs" x-model="bleAutoConnect">
+                    <span class="text-xs whitespace-nowrap">Recon</span>
+                  </label>
+                  <button class="btn btn-sm btn-primary gap-2" @click="bleConnect()" :disabled="!bleAddress || bleConnecting || bleScanning">
+                    <span x-show="bleConnecting" class="loading loading-spinner loading-xs"></span>
+                    <span x-text="bleConnecting ? 'Connecting…' : 'Connect'"></span>
+                  </button>
+                </div>
               </div>
             </details>
 
@@ -260,11 +271,19 @@
     </div>
 
     <!-- ===================== RADAR ===================== -->
-    <div x-show="tab==='radar'" class="flex flex-col gap-4">
-      <div class="flex flex-wrap gap-3 items-center">
+    <!-- data-theme="business" forces the dark daisyUI palette inside this
+         section regardless of the page's light/dark OS setting — a radar
+         scope is always a dark instrument, not a document. -->
+    <div x-show="tab==='radar'" data-theme="business"
+         class="flex flex-col h-full min-h-0 rounded-2xl overflow-hidden"
+         style="box-shadow:0 0 0 1px rgba(0,255,80,0.10),0 8px 40px rgba(0,0,0,0.6)">
+
+      <!-- Instrument panel toolbar -->
+      <div class="flex flex-wrap gap-3 items-center shrink-0 px-4 py-2"
+           style="background:#0a1a0a;border-bottom:1px solid rgba(0,255,80,0.12)">
         <div class="flex items-center gap-2 text-sm">
-          <span class="label-text">Max range</span>
-          <select class="select select-bordered select-xs" x-model="radarRange" @change="drawRadar()">
+          <span class="text-xs font-mono opacity-50 tracking-widest uppercase">Range</span>
+          <select class="select select-bordered select-xs font-mono" x-model="radarRange" @change="saveRadarPref('max_range_km', Number(radarRange)); drawRadar()">
             <option value="25">25 km</option>
             <option value="50">50 km</option>
             <option value="100">100 km</option>
@@ -273,84 +292,189 @@
           </select>
         </div>
         <div class="flex items-center gap-2 text-sm">
-          <span class="label-text">Home</span>
-          <span class="font-mono text-xs opacity-60" x-text="homePos ? homePos.lat.toFixed(4)+', '+homePos.lon.toFixed(4) : 'no GPS fix'"></span>
+          <span class="text-xs font-mono opacity-50 tracking-widest uppercase">Home</span>
+          <span class="font-mono text-xs" style="color:rgba(0,255,80,0.7)" x-text="homePos ? homePos.lat.toFixed(4)+', '+homePos.lon.toFixed(4) : 'no fix'"></span>
         </div>
-        <div class="badge badge-sm badge-ghost" x-text="radarNodes.length + ' plotted'"></div>
-        <div class="ml-auto text-xs opacity-40" x-show="geocoding">geocoding…</div>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <span class="text-xs font-mono opacity-50 tracking-widest uppercase">XHair</span>
+          <input type="checkbox" class="toggle toggle-xs" :checked="radarCrosshair" @change="toggleRadarCrosshair()">
+        </label>
+        <span class="font-mono text-xs px-2 py-0.5 rounded" style="color:rgba(0,255,80,0.6);border:1px solid rgba(0,255,80,0.2)" x-text="radarNodes.length + ' plotted'"></span>
+        <span class="ml-auto font-mono text-xs animate-pulse" style="color:rgba(0,255,80,0.5)" x-show="geocoding">geocoding…</span>
       </div>
 
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <!-- SVG polar plot -->
-        <div class="lg:col-span-2 card bg-base-100 shadow p-4 flex items-center justify-center min-h-[520px]" id="radar-wrap">
-          <div x-show="!homePos" class="text-base-content/40 italic text-sm">No home position — omni needs a GPS fix to compute bearing/distance</div>
-          <div x-show="homePos" id="radar-svg-container" class="w-full"></div>
+      <!-- PPI scope display -->
+      <div class="flex-1 min-h-0 flex items-center justify-center" id="radar-wrap"
+           style="background:radial-gradient(ellipse at 40% 35%,#0c1a0c 0%,#050e05 55%,#020802 100%)">
+        <div x-show="!homePos" class="font-mono text-xs text-center" style="color:rgba(0,255,80,0.35)">
+          NO HOME POSITION<br><span class="opacity-60">set a fixed lat/lon via Device Config</span>
         </div>
-
-        <!-- Selected node detail panel -->
-        <div class="card bg-base-100 shadow">
-          <div class="card-body">
-            <h2 class="card-title">Node detail</h2>
-            <div x-show="!radarSelected" class="text-base-content/40 italic text-sm">Click a node on the radar</div>
-            <template x-if="radarSelected">
-              <div class="flex flex-col gap-2 text-sm">
-                <div class="text-base font-bold font-oxanium" x-text="radarSelected.user?.long_name || '–'"></div>
-                <div class="font-mono text-xs opacity-60" x-text="radarSelected.user?.id || radarSelected.num"></div>
-                <div class="divider my-1"></div>
-                <div class="flex justify-between"><span class="opacity-60">Distance</span> <span x-text="radarSelected._km != null ? radarSelected._km.toFixed(1)+' km' : '–'"></span></div>
-                <div class="flex justify-between"><span class="opacity-60">Bearing</span> <span x-text="radarSelected._az != null ? radarSelected._az.toFixed(0)+'°' : '–'"></span></div>
-                <div class="flex justify-between"><span class="opacity-60">SNR</span> <span x-text="radarSelected.snr != null ? radarSelected.snr+' dB' : '–'"></span></div>
-                <div class="flex justify-between"><span class="opacity-60">RSSI</span> <span x-text="radarSelected.rssi != null ? radarSelected.rssi+' dBm' : '–'"></span></div>
-                <div class="flex justify-between"><span class="opacity-60">Hops</span> <span x-text="radarSelected.hops ?? '–'"></span></div>
-                <div class="flex justify-between"><span class="opacity-60">Battery</span> <span x-text="radarSelected.device_metrics?.battery_level != null ? radarSelected.device_metrics.battery_level+'%' : '–'"></span></div>
-                <div class="flex justify-between"><span class="opacity-60">Last heard</span> <span x-text="fmtAge(radarSelected.last_heard)"></span></div>
-                <div class="divider my-1"></div>
-                <div class="flex flex-col gap-1">
-                  <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Location</span>
-                  <span class="text-xs" x-text="radarSelected._address || (radarSelected.position ? (radarSelected.position.latitude_i/1e7).toFixed(4)+', '+(radarSelected.position.longitude_i/1e7).toFixed(4) : 'no position')"></span>
-                </div>
-                <div class="divider my-1"></div>
-                <div class="flex flex-col gap-1">
-                  <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Hardware</span>
-                  <span x-text="radarSelected.user?.hw_model || '–'"></span>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
+        <div x-show="homePos" id="radar-svg-container" class="w-full h-full"></div>
       </div>
     </div>
+
+    <!-- ===================== MESSAGE MODAL (reusable) ===================== -->
+    <dialog class="modal" x-ref="msgModalDialog" @close="msgModal.open = false">
+      <div class="modal-box">
+        <h3 class="font-bold text-lg font-oxanium" x-text="msgModal.mode === 'direct' ? ('Message → ' + (msgModal.label || msgModal.to)) : 'Broadcast message'"></h3>
+        <div class="flex flex-col gap-3 mt-3">
+          <label class="flex items-center gap-2 text-sm" x-show="msgModal.mode === 'broadcast'">
+            <span class="label-text">Channel</span>
+            <select class="select select-bordered select-xs" x-model="msgModal.channel">
+              <template x-for="ch in channels" :key="ch.index">
+                <option :value="String(ch.index)" x-text="ch.index + ': ' + (ch.data?.settings?.name || 'default')"></option>
+              </template>
+            </select>
+          </label>
+          <textarea class="textarea textarea-bordered w-full" rows="3" placeholder="Message text" x-model="msgModal.text"></textarea>
+          <div class="flex items-center gap-2">
+            <button class="btn btn-sm btn-primary" @click="sendModalMessage()" :disabled="!msgModal.text.trim()">Send</button>
+            <span class="text-success text-xs" x-show="msgModal.sent">Sent ✓</span>
+          </div>
+        </div>
+        <div class="modal-action">
+          <button class="btn btn-sm" @click="closeMessageModal()">Close</button>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
+
+    <!-- ===================== NODE INFO MODAL (reusable) ===================== -->
+    <dialog class="modal" x-ref="nodeInfoDialog">
+      <div class="modal-box">
+        <h3 class="font-bold text-lg font-oxanium" x-text="nodeInfo?.user?.long_name || '–'"></h3>
+        <template x-if="nodeInfo">
+          <div class="flex flex-col gap-2 text-sm mt-2">
+            <div class="font-mono text-xs opacity-60" x-text="nodeInfo.user?.id || nodeInfo.num"></div>
+            <div class="divider my-1"></div>
+            <div class="flex justify-between"><span class="opacity-60">Distance</span> <span x-text="nodeInfo._km != null ? nodeInfo._km.toFixed(1)+' km' : '–'"></span></div>
+            <div class="flex justify-between"><span class="opacity-60">Bearing</span> <span x-text="nodeInfo._az != null ? nodeInfo._az.toFixed(0)+'°' : '–'"></span></div>
+            <div class="flex justify-between"><span class="opacity-60">SNR</span> <span x-text="nodeInfo.snr != null ? nodeInfo.snr+' dB' : '–'"></span></div>
+            <div class="flex justify-between"><span class="opacity-60">RSSI</span> <span x-text="nodeInfo.rssi != null ? nodeInfo.rssi+' dBm' : '–'"></span></div>
+            <div class="flex justify-between"><span class="opacity-60">Hops</span> <span x-text="nodeInfo.hops ?? '–'"></span></div>
+            <div class="flex justify-between"><span class="opacity-60">Battery</span> <span x-text="nodeInfo.device_metrics?.battery_level != null ? nodeInfo.device_metrics.battery_level+'%' : '–'"></span></div>
+            <div class="flex justify-between"><span class="opacity-60">Last heard</span> <span x-text="fmtAge(nodeInfo.last_heard)"></span></div>
+            <div class="divider my-1"></div>
+            <div class="flex flex-col gap-1">
+              <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Location</span>
+              <span class="text-xs" x-text="nodeInfo._address || (nodeInfo.position ? (nodeInfo.position.latitude_i/1e7).toFixed(4)+', '+(nodeInfo.position.longitude_i/1e7).toFixed(4) : 'no position')"></span>
+            </div>
+            <div class="divider my-1"></div>
+            <div class="flex flex-col gap-1">
+              <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Hardware</span>
+              <span x-text="nodeInfo.user?.hw_model || '–'"></span>
+            </div>
+            <div class="divider my-1"></div>
+            <div class="flex flex-nowrap gap-1">
+              <button class="btn btn-xs btn-outline flex-1 px-1 text-[10px] whitespace-nowrap" @click="openMessageModal('broadcast', nodeInfo)">BC Message</button>
+              <button class="btn btn-xs btn-outline flex-1 px-1 text-[10px] whitespace-nowrap" @click="openMessageModal('direct', nodeInfo)">DIR Message</button>
+              <button class="btn btn-xs btn-outline flex-1 px-1 text-[10px] whitespace-nowrap" :disabled="nodeInfo._az == null" @click="pointAtNode(nodeInfo)" title="Command the Yagi rotator to this node's bearing (future integration)">Point</button>
+            </div>
+          </div>
+        </template>
+        <div class="modal-action">
+          <button class="btn btn-sm" @click="$refs.nodeInfoDialog?.close()">Close</button>
+        </div>
+      </div>
+      <form method="dialog" class="modal-backdrop"><button>close</button></form>
+    </dialog>
 
     <!-- ===================== NODES ===================== -->
     <div x-show="tab==='nodes'" class="card bg-base-100 shadow">
       <div class="card-body">
-        <div class="flex items-center justify-between">
-          <h2 class="card-title">NodeDB <span class="badge badge-neutral" x-text="nodes.length"></span></h2>
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <h2 class="card-title">
+            NodeDB
+            <span class="badge badge-neutral" x-text="filteredNodes().length"></span>
+            <span class="text-xs font-normal opacity-50" x-show="filteredNodes().length !== nodes.length" x-text="'of ' + nodes.length"></span>
+          </h2>
           <button class="btn btn-sm btn-outline" @click="loadNodes()">Refresh</button>
         </div>
-        <div class="overflow-x-auto max-h-[70vh]">
+
+        <!-- Filter toolbar -->
+        <div class="flex flex-wrap gap-x-4 gap-y-1 items-center text-sm py-1 border-b border-base-300">
+          <span class="font-semibold text-xs uppercase opacity-50 tracking-wide">Filters</span>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <span class="text-xs">Max hops</span>
+            <select class="select select-xs select-bordered"
+              :value="nodeFilters.maxHops"
+              @change="saveNodeFilter('maxHops', parseInt($event.target.value))">
+              <option value="99">Any</option>
+              <option value="0">Direct (0)</option>
+              <option value="1">≤ 1</option>
+              <option value="2">≤ 2</option>
+            </select>
+          </label>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <span class="text-xs">Last heard</span>
+            <select class="select select-xs select-bordered"
+              :value="nodeFilters.maxAge"
+              @change="saveNodeFilter('maxAge', parseInt($event.target.value))">
+              <option value="0">Any</option>
+              <option value="1800">30 m</option>
+              <option value="3600">1 h</option>
+              <option value="21600">6 h</option>
+              <option value="86400">24 h</option>
+            </select>
+          </label>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.namedOnly" @change="saveNodeFilter('namedOnly', $event.target.checked)">
+            <span class="text-xs">Named</span>
+          </label>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasPos" @change="saveNodeFilter('hasPos', $event.target.checked)">
+            <span class="text-xs">Has position</span>
+          </label>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" class="checkbox checkbox-xs checkbox-error" :checked="nodeFilters.hideMqtt" @change="saveNodeFilter('hideMqtt', $event.target.checked)">
+            <span class="text-xs">Hide MQTT</span>
+          </label>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasSignal" @change="saveNodeFilter('hasSignal', $event.target.checked)">
+            <span class="text-xs">RF signal</span>
+          </label>
+
+          <label class="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasTelem" @change="saveNodeFilter('hasTelem', $event.target.checked)">
+            <span class="text-xs">Telemetry</span>
+          </label>
+
+          <button class="btn btn-xs btn-ghost opacity-50" @click="resetNodeFilters()">Reset</button>
+        </div>
+
+        <div class="overflow-x-auto max-h-[65vh]">
           <table class="table table-zebra table-sm">
             <thead class="sticky top-0 bg-base-100 z-10">
               <tr>
-                <th @click="sortNodes('long_name')" class="cursor-pointer">Name</th>
-                <th @click="sortNodes('short_name')" class="cursor-pointer">Short</th>
-                <th>ID</th>
-                <th>HW</th>
-                <th @click="sortNodes('battery')" class="cursor-pointer">Batt</th>
-                <th @click="sortNodes('snr')" class="cursor-pointer">SNR</th>
-                <th @click="sortNodes('hops')" class="cursor-pointer">Hops</th>
-                <th @click="sortNodes('last_heard')" class="cursor-pointer">Last heard</th>
+                <template x-for="col in [
+                  {k:'long_name',l:'Name'},{k:'short_name',l:'Short'},{k:'id',l:'ID'},
+                  {k:'battery',l:'Batt'},{k:'snr',l:'SNR'},{k:'rssi',l:'SS%'},
+                  {k:'km',l:'KM'},{k:'az',l:'AZ'},{k:'hops',l:'Hops'},{k:'last_heard',l:'Last heard'}
+                ]" :key="col.k">
+                  <th class="cursor-pointer select-none" @click="sortNodes(col.k)">
+                    <span x-text="col.l"></span>
+                    <span x-show="nodeSort.key===col.k" class="ml-0.5 opacity-60" x-text="nodeSort.dir===-1?'▼':'▲'"></span>
+                  </th>
+                </template>
               </tr>
             </thead>
             <tbody>
-              <template x-for="n in nodes" :key="n.num">
-                <tr>
+              <template x-for="n in filteredNodes()" :key="n.num">
+                <tr class="cursor-pointer hover" @click="openNodeInfo(n)">
                   <td x-text="(n.user && n.user.long_name) || '–'"></td>
                   <td x-text="(n.user && n.user.short_name) || '–'"></td>
                   <td class="font-mono text-xs" x-text="(n.user && n.user.id) || n.num"></td>
-                  <td class="text-xs" x-text="(n.user && n.user.hw_model) || '–'"></td>
                   <td x-text="n.device_metrics?.battery_level != null ? (n.device_metrics.battery_level + '%') : '–'"></td>
                   <td x-text="n.snr ?? '–'"></td>
+                  <td x-text="n.rssi != null ? rssiPercent(n.rssi)+'%' : '–'"></td>
+                  <td x-text="nodeKm(n) != null ? nodeKm(n).toFixed(1) : '–'"></td>
+                  <td x-text="nodeAz(n) != null ? nodeAz(n).toFixed(0)+'°' : '–'"></td>
                   <td x-text="n.hops ?? '–'"></td>
                   <td class="text-xs" x-text="fmtAge(n.last_heard)"></td>
                 </tr>
@@ -361,8 +485,18 @@
       </div>
     </div>
 
-    <!-- ===================== RADIO CONFIG ===================== -->
-    <div x-show="tab==='config'" class="flex flex-col gap-3">
+    <!-- ===================== CONFIG (sub-tabbed) ===================== -->
+    <div x-show="tab==='cfg'" class="flex flex-col gap-3 min-h-0">
+      <!-- Sub-tab bar -->
+      <div class="tabs tabs-bordered">
+        <a class="tab" :class="cfgTab==='device' && 'tab-active font-semibold'" @click="switchCfgTab('device')">Device</a>
+        <a class="tab" :class="cfgTab==='bridge' && 'tab-active font-semibold'" @click="switchCfgTab('bridge')">Bridge</a>
+        <a class="tab" :class="cfgTab==='channels' && 'tab-active font-semibold'" @click="switchCfgTab('channels')">Channels</a>
+        <a class="tab" :class="cfgTab==='owner' && 'tab-active font-semibold'" @click="switchCfgTab('owner')">Owner</a>
+      </div>
+
+      <!-- Device sub-tab -->
+      <div x-show="cfgTab==='device'" class="flex flex-col gap-3">
       <div class="alert alert-info shadow-sm text-sm">
         <span>Forms are generated directly from the device's protobuf schema. Saving sends the <b>entire</b> section back to the radio (Meshtastic admin SetConfig replaces the whole section).</span>
       </div>
@@ -409,10 +543,182 @@
           </div>
         </div>
       </template>
-    </div>
+      </div><!-- end Device sub-tab -->
 
-    <!-- ===================== CHANNELS ===================== -->
-    <div x-show="tab==='channels'" class="flex flex-col gap-3">
+      <!-- Bridge sub-tab -->
+      <div x-show="cfgTab==='bridge'" class="flex flex-col gap-3 max-w-2xl">
+      <div class="alert alert-info shadow-sm text-sm">
+        <span>App-level settings stored by the bridge itself (<code>core/bridge_config.yaml</code>), separate from the radio's own protobuf config on the Device Config tab.</span>
+      </div>
+
+      <template x-if="bridgeConfig">
+        <div class="flex flex-col gap-4">
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title text-base">Radar defaults</h2>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Max range (km)</span></div>
+                  <input type="number" min="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.radar.max_range_km">
+                </label>
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Heatmap max age (sec)</span></div>
+                  <input type="number" min="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.radar.heatmap_max_age_sec">
+                </label>
+                <label class="flex items-center gap-2 mt-auto pb-2 cursor-pointer">
+                  <input type="checkbox" class="toggle toggle-sm" x-model="bridgeConfig.radar.crosshair_default">
+                  <span class="label-text text-xs">Crosshair on by default</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title text-base">MQTT Topics</h2>
+              <div class="text-xs font-semibold uppercase text-base-content/50 mt-1">Device-stored (radio's MQTT module config)</div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Gateway root topic</span></div>
+                  <input type="text" disabled class="input input-bordered input-sm font-mono" :value="mqttCfg.root || '(unset)'">
+                </label>
+              </div>
+
+              <div class="text-xs font-semibold uppercase text-base-content/50 mt-3">Bridge-managed (this dashboard)</div>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="form-control w-full">
+                  <div class="label py-1">
+                    <span class="label-text text-xs">Nodeinfo cache root</span>
+                    <span class="label-text-alt text-xs opacity-60" x-text="'-> ' + (bridgeConfig.mqtt_topics.nodeinfo_root || '<root>') + '/nodeinfo/&lt;nodeID&gt;'"></span>
+                  </div>
+                  <input type="text" class="input input-bordered input-sm font-mono" x-model="bridgeConfig.mqtt_topics.nodeinfo_root" placeholder="e.g. uk">
+                </label>
+              </div>
+              <div class="text-xs opacity-60 mt-1">
+                Retained per-node position cache, compatible with the v3 ESP32 rotator/virtual-compass
+                (<code>&lt;root&gt;/nodeinfo/&lt;nodeID&gt;</code>, payload <code>{mac, ln, sn, lat, lon, az, km, id, alt}</code>).
+                On MQTT connect the bridge subscribes here to seed positions for nodes it hasn't heard yet,
+                and publishes a retained entry the first time it hears a position for a new node.
+              </div>
+            </div>
+          </div>
+
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title text-base">Rotator / Yagi</h2>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">WebSocket URL</span></div>
+                  <input type="text" class="input input-bordered input-sm font-mono" x-model="bridgeConfig.rotator.ws_url" placeholder="ws://host:port">
+                </label>
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Beam width (°)</span></div>
+                  <input type="number" min="1" max="180" step="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.rotator.beam_width_deg">
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title text-base">Antenna</h2>
+              <div class="grid grid-cols-1 gap-4">
+
+                <!-- Rx antenna (Yagi) -->
+                <div>
+                  <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Rx antenna (this station)</div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <label class="form-control w-full sm:col-span-1">
+                      <div class="label py-1"><span class="label-text text-xs">Type / description</span></div>
+                      <input type="text" class="input input-bordered input-sm" x-model="bridgeConfig.antenna.rx.type" placeholder="e.g. DL6WU 5-element Yagi">
+                    </label>
+                    <label class="form-control w-full">
+                      <div class="label py-1"><span class="label-text text-xs">Gain (dBi)</span></div>
+                      <input type="number" step="0.1" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.rx.gain_dbi">
+                    </label>
+                    <label class="form-control w-full">
+                      <div class="label py-1"><span class="label-text text-xs">Cable loss (dB)</span></div>
+                      <input type="number" step="0.1" min="0" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.rx.cable_loss_db">
+                    </label>
+                  </div>
+                </div>
+
+                <!-- Reference antenna (Omni) -->
+                <div>
+                  <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Reference antenna (for comparison)</div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <label class="form-control w-full sm:col-span-1">
+                      <div class="label py-1"><span class="label-text text-xs">Type / description</span></div>
+                      <input type="text" class="input input-bordered input-sm" x-model="bridgeConfig.antenna.reference.type" placeholder="e.g. Omni collinear">
+                    </label>
+                    <label class="form-control w-full">
+                      <div class="label py-1"><span class="label-text text-xs">Gain (dBi)</span></div>
+                      <input type="number" step="0.1" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.reference.gain_dbi">
+                    </label>
+                    <label class="form-control w-full">
+                      <div class="label py-1"><span class="label-text text-xs">Cable loss (dB)</span></div>
+                      <input type="number" step="0.1" min="0" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.reference.cable_loss_db">
+                    </label>
+                  </div>
+                </div>
+
+                <!-- Remote node defaults -->
+                <div>
+                  <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Remote node defaults (assumed when unknown)</div>
+                  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <label class="form-control w-full sm:col-span-1">
+                      <div class="label py-1"><span class="label-text text-xs">Antenna type</span></div>
+                      <input type="text" class="input input-bordered input-sm" x-model="bridgeConfig.antenna.remote_default.type" placeholder="e.g. Stock whip">
+                    </label>
+                    <label class="form-control w-full">
+                      <div class="label py-1"><span class="label-text text-xs">Antenna gain (dBi)</span></div>
+                      <input type="number" step="0.1" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.remote_default.gain_dbi">
+                    </label>
+                    <label class="form-control w-full">
+                      <div class="label py-1"><span class="label-text text-xs">Tx power (dBm)</span></div>
+                      <input type="number" step="0.5" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.remote_default.tx_power_dbm">
+                    </label>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title text-base">Node filter defaults</h2>
+              <p class="text-xs opacity-60">Applied on first load when the browser has no saved filter preference. Users can override per-session via the Nodes toolbar; Reset restores these values.</p>
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                <label class="form-control w-full">
+                  <div class="label py-1"><span class="label-text text-xs">Default last heard</span></div>
+                  <select class="select select-bordered select-sm" x-model.number="bridgeConfig.node_display.default_max_age_sec">
+                    <option value="0">Any time</option>
+                    <option value="1800">30 minutes</option>
+                    <option value="3600">1 hour</option>
+                    <option value="21600">6 hours</option>
+                    <option value="86400">24 hours</option>
+                  </select>
+                </label>
+                <label class="flex items-center gap-2 mt-auto pb-2 cursor-pointer">
+                  <input type="checkbox" class="toggle toggle-sm" x-model="bridgeConfig.node_display.default_hide_mqtt">
+                  <span class="label-text text-xs">Hide MQTT nodes by default</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button class="btn btn-sm btn-primary" @click="saveBridgeConfig()">Save</button>
+            <span class="text-success text-sm" x-show="bridgeConfigSaved" x-transition>Saved ✓</span>
+            <span class="text-error text-sm" x-show="bridgeConfigError" x-text="bridgeConfigError"></span>
+          </div>
+        </div>
+      </template>
+      </div><!-- end Bridge sub-tab -->
+
+      <!-- Channels sub-tab -->
+      <div x-show="cfgTab==='channels'" class="flex flex-col gap-3">
       <div class="alert alert-warning shadow-sm text-sm">
         <span>Editing <b>psk</b> on the primary channel can break mesh connectivity for this device and all peers using the same PSK. Bytes fields are locked by default — unlock only if you know what you're doing.</span>
       </div>
@@ -435,19 +741,125 @@
           </div>
         </div>
       </template>
-    </div>
+      </div><!-- end Channels sub-tab -->
 
-    <!-- ===================== OWNER ===================== -->
-    <div x-show="tab==='owner'" class="card bg-base-100 shadow max-w-xl">
-      <div class="card-body">
-        <h2 class="card-title">Owner / Identity</h2>
-        <div id="owner_form"></div>
-        <div class="flex items-center gap-2 mt-3">
-          <button class="btn btn-sm btn-primary" @click="saveOwner()">Save</button>
-          <span class="text-success text-sm" x-show="ownerSaved" x-transition>Saved ✓</span>
-          <span class="text-error text-sm" x-show="ownerError" x-text="ownerError"></span>
+      <!-- Owner sub-tab -->
+      <div x-show="cfgTab==='owner'" class="card bg-base-100 shadow max-w-xl">
+        <div class="card-body">
+          <h2 class="card-title">Owner / Identity</h2>
+          <div id="owner_form"></div>
+          <div class="flex items-center gap-2 mt-3">
+            <button class="btn btn-sm btn-primary" @click="saveOwner()">Save</button>
+            <span class="text-success text-sm" x-show="ownerSaved" x-transition>Saved ✓</span>
+            <span class="text-error text-sm" x-show="ownerError" x-text="ownerError"></span>
+          </div>
+        </div>
+      </div><!-- end Owner sub-tab -->
+
+    </div><!-- end Config tab -->
+
+    <!-- ===================== RANGE TEST ===================== -->
+    <div x-show="tab==='range'" class="flex flex-col gap-4">
+
+      <!-- Stats bar -->
+      <template x-if="rangeStats()">
+        <div class="stats stats-horizontal shadow bg-base-100 w-full" x-data="{ s: rangeStats() }">
+          <div class="stat">
+            <div class="stat-title">Packets</div>
+            <div class="stat-value text-lg" x-text="s.count"></div>
+            <div class="stat-desc">range test rx</div>
+          </div>
+          <div class="stat">
+            <div class="stat-title">Best RSSI</div>
+            <div class="stat-value text-lg text-success" x-text="s.bestRssi != null ? s.bestRssi + ' dBm' : '–'"></div>
+            <div class="stat-desc" x-text="'median ' + (s.medianRssi ?? '–') + ' dBm'"></div>
+          </div>
+          <div class="stat">
+            <div class="stat-title">Max range</div>
+            <div class="stat-value text-lg" x-text="s.maxDistKm != null ? s.maxDistKm + ' km' : '–'"></div>
+            <div class="stat-desc">of heard packets with position</div>
+          </div>
+          <div class="stat">
+            <div class="stat-title">Median excess loss</div>
+            <div class="stat-value text-lg" :class="s.medianExcessLoss != null && s.medianExcessLoss < 0 ? 'text-success' : 'text-warning'" x-text="s.medianExcessLoss != null ? s.medianExcessLoss + ' dB' : '–'"></div>
+            <div class="stat-desc">vs free-space link budget (−=better)</div>
+          </div>
+        </div>
+      </template>
+
+      <!-- Link budget info banner -->
+      <template x-if="bridgeConfig">
+        <div class="alert alert-info shadow-sm text-xs">
+          <div>
+            <b>Link budget</b>:
+            Rx antenna <span x-text="bridgeConfig.antenna.rx.type"></span>
+            (<span x-text="bridgeConfig.antenna.rx.gain_dbi"></span> dBi),
+            remote default Tx <span x-text="bridgeConfig.antenna.remote_default.tx_power_dbm"></span> dBm +
+            <span x-text="bridgeConfig.antenna.remote_default.gain_dbi"></span> dBi
+            at 868 MHz. Edit in <a class="link" @click="tab='cfg'; switchCfgTab('bridge')">Config → Bridge</a>.
+          </div>
+        </div>
+      </template>
+
+      <!-- Log table -->
+      <div class="card bg-base-100 shadow">
+        <div class="card-body py-3">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <h2 class="card-title text-base">
+              Range test log
+              <span class="badge badge-neutral" x-text="rangeLog.length"></span>
+              <span class="loading loading-spinner loading-xs" x-show="rangeLoading"></span>
+            </h2>
+            <div class="flex gap-2">
+              <button class="btn btn-xs btn-outline" @click="loadRangeTest()">Refresh</button>
+              <button class="btn btn-xs btn-outline btn-error" @click="clearRangeTest()" :disabled="!rangeLog.length">Clear</button>
+            </div>
+          </div>
+
+          <div x-show="!rangeLog.length && !rangeLoading" class="text-base-content/40 italic text-sm py-4 text-center">
+            No range test packets received yet.<br>
+            <span class="text-xs">Enable Range Test module on the remote node and trigger a send.</span>
+          </div>
+
+          <div x-show="rangeLog.length > 0" class="overflow-x-auto max-h-[60vh]">
+            <table class="table table-zebra table-xs">
+              <thead class="sticky top-0 bg-base-100 z-10">
+                <tr>
+                  <th>Time</th>
+                  <th>Node</th>
+                  <th>Seq</th>
+                  <th>Dist (km)</th>
+                  <th>Az (°)</th>
+                  <th>RSSI (dBm)</th>
+                  <th>SNR (dB)</th>
+                  <th>Exp RSSI</th>
+                  <th>Excess loss</th>
+                  <th>Hops</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="(raw, i) in rangeLog" :key="i">
+                  <tr x-data="{ e: rangeEnrich(raw) }">
+                    <td class="font-mono text-xs" x-text="fmtAge(e.ts)"></td>
+                    <td x-text="e.nodeName"></td>
+                    <td class="font-mono text-xs" x-text="e.seq || '–'"></td>
+                    <td x-text="e.distKm != null ? e.distKm.toFixed(1) : '–'"></td>
+                    <td x-text="e.az != null ? e.az + '°' : '–'"></td>
+                    <td class="font-mono" x-text="e.rssi ?? '–'"></td>
+                    <td class="font-mono" x-text="e.snr ?? '–'"></td>
+                    <td class="font-mono opacity-60" x-text="e.expectedRssi != null ? e.expectedRssi : '–'"></td>
+                    <td class="font-mono font-semibold"
+                        :class="e.excessLoss == null ? '' : e.excessLoss <= 0 ? 'text-success' : e.excessLoss < 10 ? 'text-warning' : 'text-error'"
+                        x-text="e.excessLoss != null ? (e.excessLoss > 0 ? '+' : '') + e.excessLoss + ' dB' : '–'"></td>
+                    <td x-text="e.hops ?? '–'"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
+
     </div>
 
     <!-- ===================== MESSAGES ===================== -->
@@ -498,6 +910,6 @@
     <div>mesh-rest-bridge — schema-driven UI, served straight from the bridge</div>
   </footer>
 </div>
-<script src="app.js"></script>
+<script src="app.js?v=20260616"></script>
 </body>
 </html>

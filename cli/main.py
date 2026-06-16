@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from core.bridge import MeshBridge
 from core.server import create_app
 from core import __version__
+from core import bridge_config as _bcfg
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,8 @@ def setup_logging(verbose: bool):
     )
 
 
-async def run(address: str | None, http_port: int):
-    bridge = MeshBridge(address)
+async def run(address: str | None, http_port: int, ble_pin: str = ""):
+    bridge = MeshBridge(address, ble_pin=ble_pin)
 
     app = create_app(bridge)
     config = uvicorn.Config(app, host="0.0.0.0", port=http_port, log_level="info")
@@ -102,8 +103,18 @@ def main():
     setup_logging(args.verbose)
     logger.info(f"mesh-rest-bridge v{__version__}")
 
+    # Use address from arg, or fall back to the one persisted by /ble/connect
+    address = args.address
+    pin = ""
+    if not address:
+        stored_ble = _bcfg.load().get("ble", {})
+        if stored_ble.get("address"):
+            address = stored_ble["address"]
+            pin = stored_ble.get("pin") or ""
+            logger.info(f"Auto-connecting to persisted BLE address: {address}")
+
     try:
-        asyncio.run(run(args.address, args.http_port))
+        asyncio.run(run(address, args.http_port, ble_pin=pin))
     except KeyboardInterrupt:
         logger.info("Exiting...")
 

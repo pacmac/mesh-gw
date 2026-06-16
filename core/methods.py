@@ -3,6 +3,7 @@
 
 Each method is `async def fn(bridge: MeshBridge, params: dict) -> dict`.
 """
+from . import bridge_config
 from .bridge import MeshBridge
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, config_kind
 
@@ -41,6 +42,23 @@ async def get_channels(bridge: MeshBridge, params: dict):
 @method("get_config")
 async def get_config(bridge: MeshBridge, params: dict):
     return {"config": bridge.state.config, "module_config": bridge.state.module_config}
+
+
+@method("get_bridge_config")
+async def get_bridge_config(bridge: MeshBridge, params: dict):
+    """Bridge-side settings (radar UI defaults, MQTT topic conventions) --
+    persisted in core/bridge_config.yaml, separate from the radio's own
+    Config/ModuleConfig."""
+    return bridge_config.load()
+
+
+@method("set_bridge_config")
+async def set_bridge_config(bridge: MeshBridge, params: dict):
+    """params: a (partial) bridge config dict, deep-merged onto defaults
+    and the existing file, then persisted."""
+    current = bridge_config.load()
+    merged = bridge_config._deep_merge(current, params)
+    return bridge_config.save(merged)
 
 
 @method("get_status")
@@ -148,6 +166,23 @@ async def send_text(bridge: MeshBridge, params: dict):
         to=int(params.get("to", 0xFFFFFFFF)),
         channel=int(params.get("channel", 0)),
     )
+
+
+@method("yagi_point")
+async def yagi_point(bridge: MeshBridge, params: dict):
+    """params: {az, node?, name?}. Publishes the target azimuth for the Yagi
+    rotator over MQTT (full rotator integration is a future task -- this just
+    gets the command onto the broker in a stable shape)."""
+    if not bridge.mqtt_proxy or not bridge.mqtt_proxy.connected:
+        raise RuntimeError("MQTT proxy not connected")
+    import json
+    payload = json.dumps({
+        "az": float(params["az"]),
+        "node": params.get("node"),
+        "name": params.get("name", ""),
+    })
+    bridge.mqtt_proxy.publish("yagi/point", payload.encode(), retained=False)
+    return {"published": True}
 
 
 @method("admin")

@@ -19,12 +19,18 @@ logger = logging.getLogger(__name__)
 
 class MqttProxy:
     def __init__(self, address: str, username: str, password: str,
-                 root: str, use_tls: bool, on_downlink):
+                 root: str, use_tls: bool, on_downlink, nodeinfo_root: str = ""):
         """on_downlink: async callback(topic: str, payload: bytes), scheduled
-        on the asyncio loop running when this is constructed."""
+        on the asyncio loop running when this is constructed.
+
+        nodeinfo_root: if set, also subscribe to
+        "<nodeinfo_root>/nodeinfo/#" -- the v3 ESP32-compatible retained
+        per-node position cache (see core/bridge_config.py)."""
         self.root = root
+        self.nodeinfo_root = nodeinfo_root
         self.on_downlink = on_downlink
         self.on_mqtt_node_update = None   # callback(node_dict) for /json/ parsed nodes
+        self.on_nodeinfo_cache = None     # callback(node_id: str, doc: dict) for retained nodeinfo cache docs
         self.loop = asyncio.get_event_loop()
         self.connected = False
 
@@ -50,6 +56,10 @@ class MqttProxy:
             topic = f"{self.root}/#"
             client.subscribe(topic)
             logger.info(f"MQTT proxy connected to broker, subscribed {topic}")
+            if self.nodeinfo_root:
+                cache_topic = f"{self.nodeinfo_root}/nodeinfo/#"
+                client.subscribe(cache_topic)
+                logger.info(f"Subscribed to nodeinfo cache {cache_topic}")
         else:
             logger.error(f"MQTT proxy connect failed: rc={rc}")
 
@@ -59,9 +69,24 @@ class MqttProxy:
 
     def _on_message(self, client, userdata, msg):
         logger.info(f"MQTT downlink <- {msg.topic} ({len(msg.payload)} bytes)")
+        cache_prefix = f"{self.nodeinfo_root}/nodeinfo/"
+        if self.nodeinfo_root and msg.topic.startswith(cache_prefix):
+            node_id = msg.topic[len(cache_prefix):]
+            if node_id and self.on_nodeinfo_cache:
+                self._try_parse_nodeinfo_cache(node_id, msg.payload)
+            return
         if "/2/json/" in msg.topic and self.on_mqtt_node_update:
             self._try_parse_json_node(msg.payload)
         asyncio.run_coroutine_threadsafe(self.on_downlink(msg.topic, msg.payload), self.loop)
+
+    def _try_parse_nodeinfo_cache(self, node_id: str, payload: bytes):
+        if not payload:
+            return  # empty retained message = topic cleared
+        try:
+            doc = json.loads(payload)
+        except Exception:
+            return
+        self.on_nodeinfo_cache(node_id, doc)
 
     def _try_parse_json_node(self, payload: bytes):
         try:

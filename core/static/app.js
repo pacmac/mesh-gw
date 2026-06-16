@@ -7,16 +7,29 @@ const SENSITIVE_FIELDS = new Set(["psk", "macaddr", "public_key", "private_key",
 
 function dashboard() {
   return {
-    tab: "overview",
+    tab: localStorage.getItem("activeTab") || "overview",
+    cfgTab: localStorage.getItem("activeCfgTab") || "device",
     status: {},
     info: { my_info: {}, metadata: {} },
     nodeSelf: {},
     nodes: [],
     nodeSort: { key: "last_heard", dir: -1 },
+    nodeFilters: {
+      maxHops:    parseInt(localStorage.getItem("nf_maxHops")   ?? "99"),
+      namedOnly:  localStorage.getItem("nf_namedOnly")  === "1",
+      hasPos:     localStorage.getItem("nf_hasPos")     === "1",
+      hasSignal:  localStorage.getItem("nf_hasSignal")  === "1",
+      hasTelem:   localStorage.getItem("nf_hasTelem")   === "1",
+      maxAge:     parseInt(localStorage.getItem("nf_maxAge")    ?? "0"),
+      hideMqtt:   localStorage.getItem("nf_hideMqtt") !== "0",  // default ON
+    },
     mqttProxy: false,
     mqttCfg: {},
     loraCfg: {},
     wsConnected: false,
+    serverReachable: true,
+    yagiAz: null,
+    yagiConnected: false,
     events: [],
     allSections: [],
     channels: [],
@@ -37,27 +50,146 @@ function dashboard() {
     bleConnecting: false,
     bleAddress: "",
     blePin: "",
+    bleAutoConnect: true,
     bleError: "",
 
     // Radar tab state
-    radarRange: "100",
+    radarRange: localStorage.getItem("radarRange") || "100",
     radarNodes: [],
     radarSelected: null,
     homePos: null,
     geocoding: false,
+    radarCrosshair: localStorage.getItem("radarCrosshair") !== "false",
+    heatmapMaxAge: Number(localStorage.getItem("heatmapMaxAge")) || 3600,
+
+    // Node Info modal (reusable, callable from Radar and Nodes table)
+    nodeInfo: null,
+    lastHeardNum: null,
+
+    // Bridge Config tab state (core/bridge_config.yaml via /bridge_config)
+    bridgeConfig: null,
+    bridgeConfigSaved: false,
+    bridgeConfigError: "",
+
+    // Range test tab state
+    rangeLog: [],
+    rangeLoading: false,
+
+    // Message modal state
+    msgModal: { open: false, mode: "broadcast", to: 0xFFFFFFFF, label: "", channel: "0", text: "", sent: false },
 
     async init() {
       await this.refreshStatus();
       await this.loadInfo();
       await this.loadNodes();
+      this.updateHomePos();
+      await this.loadBridgeConfig();
+      // Pre-populate BLE fields from persisted config
+      if (this.bridgeConfig?.ble?.address) this.bleAddress = this.bridgeConfig.ble.address;
+      if (this.bridgeConfig?.ble?.pin) this.blePin = this.bridgeConfig.ble.pin;
       this.connectWS();
+      this.connectYagiWS();
       setInterval(() => this.refreshStatus(), 5000);
+      // Restore last tab state and trigger any needed loaders
+      if (this.tab === "radar") this.$nextTick(() => this.initRadar());
+      else if (this.tab === "cfg") this.switchCfgTab(this.cfgTab);
+      else if (this.tab === "range") this.loadRangeTest();
+    },
+
+    // -- bridge-side config (core/bridge_config.yaml via /bridge_config) ------
+    // Radar UI prefs (max range, crosshair, heatmap max-age) and MQTT topic
+    // conventions; localStorage is kept as an offline fallback/cache.
+    async loadBridgeConfig() {
+      try {
+        this.bridgeConfig = await fetchJSON("/bridge_config");
+        this.radarRange = String(this.bridgeConfig.radar.max_range_km);
+        this.radarCrosshair = this.bridgeConfig.radar.crosshair_default;
+        this.heatmapMaxAge = this.bridgeConfig.radar.heatmap_max_age_sec;
+        localStorage.setItem("radarRange", this.radarRange);
+        localStorage.setItem("radarCrosshair", this.radarCrosshair);
+        localStorage.setItem("heatmapMaxAge", this.heatmapMaxAge);
+        // Apply server-side filter defaults only for filters not yet saved in localStorage
+        const nd = this.bridgeConfig.node_display || {};
+        if (nd.default_max_age_sec != null && localStorage.getItem("nf_maxAge") === null)
+          this.nodeFilters.maxAge = nd.default_max_age_sec;
+        if (nd.default_hide_mqtt != null && localStorage.getItem("nf_hideMqtt") === null)
+          this.nodeFilters.hideMqtt = !!nd.default_hide_mqtt;
+      } catch (e) {
+        console.warn("Failed to load bridge config, using localStorage fallback", e);
+      }
+    },
+
+    resetNodeFilters() {
+      ['maxHops','namedOnly','hasPos','hasSignal','hasTelem','maxAge','hideMqtt'].forEach(k => localStorage.removeItem('nf_'+k));
+      const nd = this.bridgeConfig?.node_display || {};
+      this.nodeFilters = {
+        maxHops:   99,
+        namedOnly: false,
+        hasPos:    false,
+        hasSignal: false,
+        hasTelem:  false,
+        maxAge:    nd.default_max_age_sec ?? 0,
+        hideMqtt:  nd.default_hide_mqtt   ?? true,
+      };
+    },
+
+    async saveBridgeConfig() {
+      this.bridgeConfigSaved = false;
+      this.bridgeConfigError = "";
+      try {
+        this.bridgeConfig = await fetchJSON("/bridge_config", "PUT", this.bridgeConfig);
+        this.bridgeConfigSaved = true;
+        setTimeout(() => { this.bridgeConfigSaved = false; }, 2000);
+      } catch (e) {
+        this.bridgeConfigError = String(e);
+      }
+    },
+
+    // Persist a single radar pref (called on change from the Radar tab).
+    saveRadarPref(key, value) {
+      localStorage.setItem(key === "max_range_km" ? "radarRange" : key, value);
+      if (!this.bridgeConfig) return;
+      this.bridgeConfig.radar[key] = value;
+      fetchJSON("/bridge_config", "PUT", { radar: { [key]: value } }).catch((e) =>
+        console.warn("Failed to save radar pref", e));
+    },
+
+    // -- home position (self GPS fix), used by radar + nodes table ------------
+    updateHomePos() {
+      const selfNum = this.info.my_info?.my_node_num;
+      const self = selfNum != null ? this.nodes.find((n) => n.num === selfNum) : null;
+      if (self?.position?.latitude_i) {
+        this.homePos = {
+          lat: self.position.latitude_i / 1e7,
+          lon: self.position.longitude_i / 1e7,
+        };
+      } else {
+        this.homePos = null;
+      }
+    },
+
+    // KM/AZ from home to a node (for the Nodes table); null if unknown.
+    nodeKm(n) {
+      if (!this.homePos || !n.position?.latitude_i || !n.position?.longitude_i) return null;
+      return haversine(this.homePos.lat, this.homePos.lon, n.position.latitude_i / 1e7, n.position.longitude_i / 1e7);
+    },
+    nodeAz(n) {
+      if (!this.homePos || !n.position?.latitude_i || !n.position?.longitude_i) return null;
+      return bearing(this.homePos.lat, this.homePos.lon, n.position.latitude_i / 1e7, n.position.longitude_i / 1e7);
+    },
+    rssiPercent(rssi) {
+      return rssiPercent(rssi);
     },
 
     // -- polling / status -----------------------------------------------------
     async refreshStatus() {
-      this.status = await fetchJSON("/status");
-      this.mqttProxy = this.status.mqtt_proxy_connected;
+      try {
+        this.status = await fetchJSON("/status");
+        this.mqttProxy = this.status.mqtt_proxy_connected;
+        this.serverReachable = true;
+      } catch (_) {
+        this.serverReachable = false;
+      }
     },
 
     async loadInfo() {
@@ -70,6 +202,7 @@ function dashboard() {
     async loadNodes() {
       const data = await fetchJSON("/nodes");
       this.nodes = Object.values(data.nodes || {});
+      this.updateHomePos();
       this.sortNodes(this.nodeSort.key, true);
       if (this.info.my_info?.my_node_num != null) {
         this.nodeSelf = data.nodes?.[String(this.info.my_info.my_node_num)] || {};
@@ -101,7 +234,7 @@ function dashboard() {
         await fetch("/ble/connect", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ address: addr, pin: this.blePin || "" }),
+          body: JSON.stringify({ address: addr, pin: this.blePin || "", auto_connect: this.bleAutoConnect }),
         });
         // Poll ble_state until it leaves "connecting"
         const deadline = Date.now() + 60000;
@@ -149,8 +282,12 @@ function dashboard() {
         switch (key) {
           case "long_name": return n.user?.long_name || "";
           case "short_name": return n.user?.short_name || "";
+          case "id": return n.user?.id || String(n.num ?? 0);
           case "battery": return n.device_metrics?.battery_level ?? -1;
           case "snr": return n.snr ?? -999;
+          case "rssi": return this.rssiPercent ? rssiPercent(n.rssi ?? -999) : (n.rssi ?? -999);
+          case "km": return this.nodeKm(n) ?? 9999;
+          case "az": return this.nodeAz(n) ?? -1;
           case "hops": return n.hops ?? 999;
           case "last_heard": return n.last_heard ?? 0;
           default: return n[key] ?? "";
@@ -161,6 +298,30 @@ function dashboard() {
         if (av < bv) return -1 * dir;
         if (av > bv) return 1 * dir;
         return 0;
+      });
+    },
+
+    saveNodeFilter(key, val) {
+      this.nodeFilters[key] = val;
+      for (const k of Object.keys(this.nodeFilters)) {
+        const v = this.nodeFilters[k];
+        if (typeof v === "boolean") localStorage.setItem("nf_" + k, v ? "1" : "0");
+        else localStorage.setItem("nf_" + k, String(v));
+      }
+    },
+
+    filteredNodes() {
+      const { maxHops, namedOnly, hasPos, hasSignal, hasTelem, maxAge, hideMqtt } = this.nodeFilters;
+      const now = Math.floor(Date.now() / 1000);
+      return this.nodes.filter(n => {
+        if (hideMqtt && n.via_mqtt === true) return false;
+        if (maxHops < 99 && (n.hops == null || n.hops > maxHops)) return false;
+        if (namedOnly && !n.user?.long_name) return false;
+        if (hasPos && this.nodeKm(n) == null) return false;
+        if (hasSignal && n.snr == null && n.rssi == null) return false;
+        if (hasTelem && n.device_metrics?.battery_level == null) return false;
+        if (maxAge > 0 && (!n.last_heard || (now - n.last_heard) > maxAge)) return false;
+        return true;
       });
     },
 
@@ -180,6 +341,26 @@ function dashboard() {
       };
     },
 
+    // -- Yagi rotator WS (192.168.10.186:81) — live bearing + status ----------
+    connectYagiWS() {
+      const ws = new WebSocket("ws://192.168.10.186:81");
+      ws.onopen  = () => { this.yagiConnected = true; };
+      ws.onclose = () => {
+        this.yagiConnected = false;
+        setTimeout(() => this.connectYagiWS(), 5000);
+      };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (msg) => {
+        try {
+          const d = JSON.parse(msg.data);
+          if (d.type === "status" && d.az != null) {
+            this.yagiAz = d.az;
+            if (this.tab === "radar") this.drawRadar();
+          }
+        } catch (_) {}
+      };
+    },
+
     handleEvent(ev) {
       const time = new Date().toLocaleTimeString();
       const summary = summarizeEvent(ev);
@@ -196,9 +377,18 @@ function dashboard() {
             if (this.messages.length > 50) this.messages.pop();
           } catch (e) { /* ignore decode errors */ }
         }
+        // Track the most recently heard node for the radar's reticle marker
+        if (pkt?.from != null) {
+          this.lastHeardNum = pkt.from;
+          if (this.tab === "radar") this.drawRadar();
+        }
         // Live-refresh node list occasionally on broadcasts
         if (this.tab === "nodes" && ["POSITION_APP", "NODEINFO_APP", "TELEMETRY_APP"].includes(portnum)) {
           this.loadNodes();
+        }
+        // Live-refresh range test log on new range test packets
+        if (portnum === "RANGE_TEST_APP" && this.tab === "range") {
+          this.loadRangeTest();
         }
       }
       if (ev.type === "config_complete_id" || ev.type === "node_info") {
@@ -214,6 +404,15 @@ function dashboard() {
     },
 
     // -- Radio Config tab --------------------------------------------------------
+    switchCfgTab(name) {
+      this.cfgTab = name;
+      localStorage.setItem("activeCfgTab", name);
+      if (name === "device") this.loadSections();
+      else if (name === "bridge") this.loadBridgeConfig();
+      else if (name === "channels") this.loadChannels();
+      else if (name === "owner") this.loadOwner();
+    },
+
     async loadSections() {
       if (this.allSections.length) return;
       const sec = await fetchJSON("/sections");
@@ -416,6 +615,109 @@ function dashboard() {
       setTimeout(() => (this.msgSent = false), 2000);
     },
 
+    // -- Reusable message modal (broadcast / direct), callable from any tab ----------
+    openMessageModal(mode, node) {
+      this.loadChannels();
+      this.msgModal = {
+        open: true,
+        mode,
+        to: mode === "direct" ? node.num : 0xFFFFFFFF,
+        label: mode === "direct" ? (node.user?.long_name || node.user?.id || node.num) : "",
+        channel: this.msgChannel,
+        text: "",
+        sent: false,
+      };
+      this.$nextTick(() => this.$refs.msgModalDialog?.showModal());
+    },
+
+    closeMessageModal() {
+      this.msgModal.open = false;
+      this.$refs.msgModalDialog?.close();
+    },
+
+    async sendModalMessage() {
+      if (!this.msgModal.text.trim()) return;
+      const body = { text: this.msgModal.text, channel: Number(this.msgModal.channel) };
+      if (this.msgModal.mode === "direct") body.to = this.msgModal.to;
+      await fetchJSON("/messages", "POST", body);
+      this.msgModal.text = "";
+      this.msgModal.sent = true;
+      setTimeout(() => (this.msgModal.sent = false), 2000);
+    },
+
+    // -- Yagi rotator "Point" (future integration: see radar-revamp task goal) -------
+    async pointAtNode(node) {
+      if (node._az == null) return;
+      await fetchJSON("/yagi/point", "POST", { az: node._az, node: node.num, name: node.user?.long_name || "" });
+    },
+
+    // -- Range test tab --------------------------------------------------------------
+    async loadRangeTest() {
+      this.rangeLoading = true;
+      try {
+        const data = await fetchJSON("/range_test");
+        this.rangeLog = (data.log || []).slice().reverse(); // newest first for display
+      } catch (e) {
+        console.warn("Range test fetch failed", e);
+      } finally {
+        this.rangeLoading = false;
+      }
+    },
+
+    async clearRangeTest() {
+      await fetchJSON("/range_test", "DELETE");
+      this.rangeLog = [];
+    },
+
+    // Enrich a raw log entry with computed dist/az/link-budget fields.
+    rangeEnrich(e) {
+      const node = this.nodes.find(n => n.num === e.from_num);
+      const lat = node?.position?.latitude_i != null ? node.position.latitude_i / 1e7 : null;
+      const lon = node?.position?.longitude_i != null ? node.position.longitude_i / 1e7 : null;
+      const distKm = (this.homePos && lat != null)
+        ? haversine(this.homePos.lat, this.homePos.lon, lat, lon) : null;
+      const az = (this.homePos && lat != null)
+        ? bearing(this.homePos.lat, this.homePos.lon, lat, lon) : null;
+
+      const ant = this.bridgeConfig?.antenna;
+      let expectedRssi = null, excessLoss = null;
+      if (distKm != null && distKm > 0 && ant) {
+        const fspl = 20 * Math.log10(distKm) + 20 * Math.log10(868) + 32.4;
+        const txPow  = ant.remote_default?.tx_power_dbm ?? 22;
+        const txGain = ant.remote_default?.gain_dbi ?? 2;
+        const rxNet  = (ant.rx?.gain_dbi ?? 9.5) - (ant.rx?.cable_loss_db ?? 0);
+        expectedRssi = Math.round(txPow + txGain + rxNet - fspl);
+        if (e.rssi != null) excessLoss = parseFloat((expectedRssi - e.rssi).toFixed(1));
+      }
+
+      return {
+        ...e,
+        nodeName: node?.user?.long_name || node?.user?.short_name
+          || ("!" + (e.from_num ?? 0).toString(16).slice(-4)),
+        distKm,
+        az: az != null ? Math.round(az) : null,
+        expectedRssi,
+        excessLoss,
+      };
+    },
+
+    rangeStats() {
+      const enriched = this.rangeLog.map(e => this.rangeEnrich(e)).filter(e => e.rssi != null);
+      if (!enriched.length) return null;
+      const rssis  = enriched.map(e => e.rssi).sort((a, b) => a - b);
+      const losses = enriched.filter(e => e.excessLoss != null).map(e => e.excessLoss).sort((a, b) => a - b);
+      const dists  = enriched.filter(e => e.distKm != null).map(e => e.distKm);
+      const median = arr => arr[Math.floor(arr.length / 2)];
+      return {
+        count:          enriched.length,
+        medianRssi:     median(rssis),
+        bestRssi:       rssis[rssis.length - 1],
+        worstRssi:      rssis[0],
+        medianExcessLoss: losses.length ? parseFloat(median(losses).toFixed(1)) : null,
+        maxDistKm:      dists.length ? Math.max(...dists).toFixed(1) : null,
+      };
+    },
+
     // -- BLE signal bars -------------------------------------------------------------
     signalBarFill(n) {
       const snr = this.status.last_rx_snr;
@@ -430,24 +732,14 @@ function dashboard() {
     // -- Radar tab -------------------------------------------------------------------
     async initRadar() {
       await this.loadNodes();
-      const selfNum = this.info.my_info?.my_node_num;
-      const self = selfNum != null ? this.nodes.find((n) => n.num === selfNum) : null;
-      if (self?.position?.latitude_i) {
-        this.homePos = {
-          lat: self.position.latitude_i / 1e7,
-          lon: self.position.longitude_i / 1e7,
-        };
-      } else {
-        this.homePos = null;
-        return;
-      }
+      if (!this.homePos) return;
       this.refreshRadar();
       this.geocodeNodes();
     },
 
     refreshRadar() {
       if (!this.homePos) return;
-      this.radarNodes = this.nodes
+      this.radarNodes = this.filteredNodes()
         .filter((n) => n.position?.latitude_i && n.position?.longitude_i)
         .map((n) => {
           const lat = n.position.latitude_i / 1e7;
@@ -472,9 +764,33 @@ function dashboard() {
       const maxKm = this.radarRange === "0"
         ? (this.radarNodes.length ? Math.max(...this.radarNodes.map((n) => n._km)) * 1.15 : 50)
         : Number(this.radarRange);
-      container.appendChild(buildRadarSVG(this.radarNodes, maxKm, (node) => {
-        this.radarSelected = node;
+      container.appendChild(buildRadarSVG(this.radarNodes, maxKm, {
+        crosshair: this.radarCrosshair,
+        heatmapMaxAge: this.heatmapMaxAge,
+        selectedNum: this.radarSelected?.num,
+        lastHeardNum: this.lastHeardNum,
+        yagiAz: this.yagiAz,
+        beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
+        onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
       }));
+    },
+
+    // -- Reusable Node Info modal, callable from Radar and Nodes table ----------------
+    openNodeInfo(node) {
+      const radarNode = this.radarNodes.find((r) => r.num === node.num);
+      this.nodeInfo = radarNode || { ...node, _km: this.nodeKm(node), _az: this.nodeAz(node) };
+      this.$nextTick(() => this.$refs.nodeInfoDialog?.showModal());
+      if (!this.nodeInfo._address && this.nodeInfo._lat != null && this.nodeInfo._lon != null) {
+        geocodeLatLon(this.nodeInfo._lat, this.nodeInfo._lon).then((addr) => {
+          if (this.nodeInfo?.num === node.num) this.nodeInfo = { ...this.nodeInfo, _address: addr };
+        });
+      }
+    },
+
+    toggleRadarCrosshair() {
+      this.radarCrosshair = !this.radarCrosshair;
+      this.saveRadarPref("crosshair_default", this.radarCrosshair);
+      this.drawRadar();
     },
 
     async geocodeNodes() {
@@ -728,6 +1044,23 @@ function bearing(lat1, lon1, lat2, lon2) {
   return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
+// Map LoRa RSSI (dBm) to a rough signal-strength percentage for display.
+function rssiPercent(rssi) {
+  if (rssi == null) return null;
+  return Math.max(0, Math.min(100, Math.round((rssi + 120) / 70 * 100)));
+}
+
+// Age-based colour: fresh -> bright amber/white, stale -> orange-red.
+// Deliberately avoids green (hue ~120) so blips never blend into the radar grid.
+function ageColor(lastHeard, maxAge = 3600) {
+  if (!lastHeard) return "rgba(255,255,255,0.25)";
+  const ageSec = Math.max(0, Date.now() / 1000 - lastHeard);
+  const t = Math.min(ageSec / maxAge, 1);
+  const hue = 55 - t * 55;        // 55=warm amber (fresh) -> 0=red (stale)
+  const lit  = 82 - t * 32;       // 82% bright fresh -> 50% dimmer stale
+  return `hsl(${hue}, 92%, ${lit}%)`;
+}
+
 function svgElem(tag, attrs = {}) {
   const el = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -737,74 +1070,279 @@ function svgElem(tag, attrs = {}) {
   return el;
 }
 
-function buildRadarSVG(nodes, maxKm, onSelect) {
-  const SIZE = 480;
-  const CX = SIZE / 2, CY = SIZE / 2, R = SIZE / 2 - 36;
+function buildRadarSVG(nodes, maxKm, opts = {}) {
+  const { crosshair = true, heatmapMaxAge = 3600, selectedNum = null, lastHeardNum = null, yagiAz = null, beamWidth = 5, onSelect = () => {} } = opts;
+  const SIZE = 600;
+  const CX = SIZE / 2, CY = SIZE / 2, R = SIZE / 2 - 44;
 
-  const svg = svgElem("svg", { viewBox: `0 0 ${SIZE} ${SIZE}`, width: "100%", style: "max-width:480px;display:block;margin:auto;overflow:visible" });
+  // Radar always renders dark — real radar scopes don't switch to light mode
+  const G0  = "rgba(0,255,80,0.06)";   // almost invisible fill tint
+  const G1  = "rgba(0,255,80,0.45)";   // range rings
+  const G2  = "rgba(0,255,80,0.40)";   // medium labels
+  const G3  = "rgba(0,255,80,0.70)";   // compass, range text
+  const G4  = "rgba(0,255,80,0.95)";   // bright accents / home
+  const AMBER = "rgba(255,200,40,0.90)"; // reticle / last-heard
 
-  // Background
-  svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R, style: "fill:oklch(var(--b2)/0.6);stroke:oklch(var(--bc)/0.10);stroke-width:1" }));
+  const svg = svgElem("svg", {
+    viewBox: `0 0 ${SIZE} ${SIZE}`,
+    width: "100%",
+    // No CSS background — container is already dark; SVG background is an SVG circle element
+    style: "display:block;margin:auto;overflow:visible;max-height:100%",
+  });
 
-  // Concentric rings
+  const defs = svgElem("defs");
+
+  // Radial gradient: slightly brighter centre fading to near-black edge
+  const radGrad = svgElem("radialGradient", { id: "radarBg", cx: "50%", cy: "50%", r: "50%" });
+  for (const [off, col] of [["0%","rgba(0,30,8,1)"],["60%","rgba(0,15,4,1)"],["100%","rgba(0,5,2,1)"]]) {
+    const s = svgElem("stop"); s.setAttribute("offset", off); s.setAttribute("stop-color", col); radGrad.appendChild(s);
+  }
+  defs.appendChild(radGrad);
+
+  // Outer glow filter for the rim
+  const rimGlow = svgElem("filter", { id: "rimGlow", x: "-10%", y: "-10%", width: "120%", height: "120%" });
+  const gb = svgElem("feGaussianBlur", { stdDeviation: "3", result: "blur" });
+  const fm = svgElem("feMerge");
+  [svgElem("feMergeNode"), (() => { const n = svgElem("feMergeNode"); n.setAttribute("in","SourceGraphic"); return n; })()].forEach(n => fm.appendChild(n));
+  rimGlow.appendChild(gb); rimGlow.appendChild(fm);
+  defs.appendChild(rimGlow);
+
+  // Blip glow filter for node dots
+  const blipGlow = svgElem("filter", { id: "blipGlow", x: "-80%", y: "-80%", width: "260%", height: "260%" });
+  const blipBlur = svgElem("feGaussianBlur", { stdDeviation: "2.5", result: "blur" });
+  const blipMerge = svgElem("feMerge");
+  [svgElem("feMergeNode"), (() => { const n = svgElem("feMergeNode"); n.setAttribute("in","SourceGraphic"); return n; })()].forEach(n => blipMerge.appendChild(n));
+  blipGlow.appendChild(blipBlur); blipGlow.appendChild(blipMerge);
+  defs.appendChild(blipGlow);
+
+  // Beam glow filter for Yagi beam line
+  const beamGlow = svgElem("filter", { id: "beamGlow", x: "-20%", y: "-20%", width: "140%", height: "140%" });
+  const beamBlur = svgElem("feGaussianBlur", { stdDeviation: "4", result: "blur" });
+  const beamMerge = svgElem("feMerge");
+  [svgElem("feMergeNode"), (() => { const n = svgElem("feMergeNode"); n.setAttribute("in","SourceGraphic"); return n; })()].forEach(n => beamMerge.appendChild(n));
+  beamGlow.appendChild(beamBlur); beamGlow.appendChild(beamMerge);
+  defs.appendChild(beamGlow);
+
+  // Clip to the radar circle
+  const clip = svgElem("clipPath", { id: "radarClip" });
+  clip.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R }));
+  defs.appendChild(clip);
+
+  svg.appendChild(defs);
+
+  // Background disc
+  svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R, style: "fill:url(#radarBg)" }));
+
+  // Subtle scan-line texture (horizontal lines every 4px clipped to disc)
+  const scanG = svgElem("g", { "clip-path": "url(#radarClip)", style: "pointer-events:none" });
+  for (let yy = CY - R; yy < CY + R; yy += 4) {
+    scanG.appendChild(svgElem("line", { x1: CX - R, y1: yy, x2: CX + R, y2: yy,
+      style: "stroke:rgba(0,0,0,0.10);stroke-width:1" }));
+  }
+  svg.appendChild(scanG);
+
+  // Concentric range rings
   for (let i = 1; i <= 4; i++) {
     const r = R * i / 4;
-    const dash = i < 4 ? "4 6" : "";
-    svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r, style: `fill:none;stroke:oklch(var(--bc)/0.12);stroke-width:1;stroke-dasharray:${dash}` }));
-    const lbl = svgElem("text", { x: CX + 4, y: CY - r + 13, style: "fill:oklch(var(--bc)/0.35);font-size:10px;font-family:monospace" });
-    lbl.textContent = (maxKm * i / 4).toFixed(0) + " km";
+    const isFull = (i === 4);
+    svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r,
+      style: `fill:none;stroke:${isFull ? G2 : G1};stroke-width:${isFull ? 1.2 : 0.9};stroke-dasharray:${isFull ? "" : "5 5"}` }));
+    const lbl = svgElem("text", { x: CX + 5, y: CY - r + 12,
+      style: `fill:${G3};font-size:10px;font-family:'Oxanium',monospace;letter-spacing:0.05em` });
+    lbl.textContent = (maxKm * i / 4 | 0) + " km";
     svg.appendChild(lbl);
   }
 
-  // Cross-hairs
-  svg.appendChild(svgElem("line", { x1: CX, y1: CY - R, x2: CX, y2: CY + R, style: "stroke:oklch(var(--bc)/0.08);stroke-width:0.5" }));
-  svg.appendChild(svgElem("line", { x1: CX - R, y1: CY, x2: CX + R, y2: CY, style: "stroke:oklch(var(--bc)/0.08);stroke-width:0.5" }));
+  // Crosshair lines (N-S and E-W)
+  if (crosshair) {
+    svg.appendChild(svgElem("line", { x1: CX, y1: CY - R, x2: CX, y2: CY + R,
+      style: `stroke:${G1};stroke-width:0.7;stroke-dasharray:2 8` }));
+    svg.appendChild(svgElem("line", { x1: CX - R, y1: CY, x2: CX + R, y2: CY,
+      style: `stroke:${G1};stroke-width:0.7;stroke-dasharray:2 8` }));
+    // Diagonal faint lines at 45°
+    const d45 = R * 0.707;
+    svg.appendChild(svgElem("line", { x1: CX - d45, y1: CY - d45, x2: CX + d45, y2: CY + d45,
+      style: `stroke:${G0};stroke-width:0.6;stroke-dasharray:2 10` }));
+    svg.appendChild(svgElem("line", { x1: CX + d45, y1: CY - d45, x2: CX - d45, y2: CY + d45,
+      style: `stroke:${G0};stroke-width:0.6;stroke-dasharray:2 10` }));
+  }
 
-  // Compass labels
+  // Degree tick marks — radial lines inward from the rim (major every 30°, minor every 10°)
+  for (let deg = 0; deg < 360; deg += 10) {
+    const isMajor = (deg % 30 === 0);
+    const tickLen = isMajor ? 11 : 5;
+    const rad = deg * Math.PI / 180;
+    const ox = CX + Math.sin(rad) * R;
+    const oy = CY - Math.cos(rad) * R;
+    const ix = CX + Math.sin(rad) * (R - tickLen);
+    const iy = CY - Math.cos(rad) * (R - tickLen);
+    svg.appendChild(svgElem("line", { x1: ox, y1: oy, x2: ix, y2: iy,
+      style: `stroke:rgba(0,255,80,${isMajor ? 0.70 : 0.38});stroke-width:${isMajor ? 1.2 : 0.8}` }));
+  }
+
+  // Rim — bright outer border with glow
+  svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R,
+    style: `fill:none;stroke:${G2};stroke-width:1.5;filter:url(#rimGlow)` }));
+  // Subtle secondary ring just outside — gives depth to the bezel
+  svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R + 6,
+    style: `fill:none;stroke:rgba(0,255,80,0.10);stroke-width:3` }));
+  svg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: R + 10,
+    style: `fill:none;stroke:rgba(0,255,80,0.04);stroke-width:2` }));
+
+  // Compass labels (outside the rim, above the bezel rings)
   for (const [label, dx, dy] of [["N", 0, -1], ["E", 1, 0], ["S", 0, 1], ["W", -1, 0]]) {
     const t = svgElem("text", {
-      x: CX + dx * (R + 18),
-      y: CY + dy * (R + 18) + 4,
-      style: "fill:oklch(var(--bc)/0.55);font-size:12px;font-weight:700;font-family:monospace;text-anchor:middle",
+      x: CX + dx * (R + 22), y: CY + dy * (R + 22) + 5,
+      style: `fill:${G4};font-size:13px;font-weight:700;font-family:'Oxanium',monospace;text-anchor:middle;letter-spacing:0.1em`,
     });
     t.textContent = label;
     svg.appendChild(t);
   }
 
-  // Node dots
-  for (const node of nodes) {
+  // Yagi beam — sector wedge + centre line at rotator bearing
+  if (yagiAz != null) {
+    const BEAM_COLOR = "rgba(80,200,255,0.85)";
+    const WEDGE_COLOR = "rgba(80,200,255,0.14)";
+    const HW = (beamWidth / 2) * Math.PI / 180; // half-beamwidth in radians
+    const brad = yagiAz * Math.PI / 180;
+    const brad1 = brad - HW;
+    const brad2 = brad + HW;
+    const ex = CX + Math.sin(brad) * R;
+    const ey = CY - Math.cos(brad) * R;
+    const wx1 = CX + Math.sin(brad1) * R;
+    const wy1 = CY - Math.cos(brad1) * R;
+    const wx2 = CX + Math.sin(brad2) * R;
+    const wy2 = CY - Math.cos(brad2) * R;
+    // Faint sector wedge
+    const wedgePath = svgElem("path", {
+      d: `M ${CX} ${CY} L ${wx1} ${wy1} A ${R} ${R} 0 0 1 ${wx2} ${wy2} Z`,
+      style: `fill:${WEDGE_COLOR};stroke:none;clip-path:url(#radarClip)`,
+    });
+    svg.appendChild(wedgePath);
+    // Beam centre line with glow
+    svg.appendChild(svgElem("line", { x1: CX, y1: CY, x2: ex, y2: ey,
+      style: `stroke:${BEAM_COLOR};stroke-width:1.5;filter:url(#beamGlow)` }));
+    // Bearing readout — outside the disc, between rim glow rings (R+6/10) and NESW labels (R+22)
+    const lblRad = brad;
+    const lblDist = R + 15;
+    const lblX = CX + Math.sin(lblRad) * lblDist;
+    const lblY = CY - Math.cos(lblRad) * lblDist;
+    const bearLbl = svgElem("text", { x: lblX, y: lblY,
+      style: `fill:rgba(255,50,50,0.95);font-size:11px;font-weight:700;font-family:'Oxanium',monospace;text-anchor:middle;dominant-baseline:middle;pointer-events:none` });
+    bearLbl.textContent = Math.round(yagiAz) + "°";
+    svg.appendChild(bearLbl);
+  }
+
+  // Node blips — pass 1: compute screen positions and resolve label collisions
+  const CLUSTER_R = 22;   // px — nodes within this radius share a cluster
+  const BASE_DIAG = 12;   // base diagonal leader length
+  const STEP_DIAG = 14;   // extra length per rank within a cluster
+  const HOR_LEN   = 16;   // horizontal shoulder length
+
+  const npos = nodes.map(node => {
     const az = node._az * Math.PI / 180;
     const normKm = Math.min(node._km / maxKm, 1.0);
-    const x = CX + Math.sin(az) * normKm * R;
-    const y = CY - Math.cos(az) * normKm * R;
+    return {
+      x: CX + Math.sin(az) * normKm * R,
+      y: CY - Math.cos(az) * normKm * R,
+      diagLen: BASE_DIAG,
+      isRight: null,   // null = auto from x position
+    };
+  });
 
-    const snr = node.snr;
-    let dotColor;
-    if (snr == null)     dotColor = "oklch(var(--bc)/0.35)";
-    else if (snr > -7)   dotColor = "oklch(var(--su))";
-    else if (snr > -14)  dotColor = "oklch(var(--wa))";
-    else                 dotColor = "oklch(var(--er))";
+  // Cluster nearby blips and stagger their leader lengths + alternate direction
+  const clusterOf = new Array(npos.length).fill(-1);
+  for (let i = 0; i < npos.length; i++) {
+    if (clusterOf[i] >= 0) continue;
+    const members = [i];
+    clusterOf[i] = i;
+    for (let j = i + 1; j < npos.length; j++) {
+      if (clusterOf[j] >= 0) continue;
+      const dx = npos[i].x - npos[j].x;
+      const dy = npos[i].y - npos[j].y;
+      if (dx * dx + dy * dy < CLUSTER_R * CLUSTER_R) {
+        members.push(j);
+        clusterOf[j] = i;
+      }
+    }
+    if (members.length > 1) {
+      members.forEach((idx, rank) => {
+        npos[idx].diagLen = BASE_DIAG + rank * STEP_DIAG;
+        npos[idx].isRight = (rank % 2 === 0); // alternate left/right within cluster
+      });
+    }
+  }
 
-    const g = svgElem("g", { style: "cursor:pointer" });
-    g.appendChild(svgElem("circle", { cx: x, cy: y, r: 6, style: `fill:${dotColor};stroke:oklch(var(--b1));stroke-width:1.5` }));
+  // Pass 2: draw each node
+  nodes.forEach((node, ni) => {
+    const { x, y, diagLen } = npos[ni];
+    const isRight = npos[ni].isRight !== null ? npos[ni].isRight : x >= CX;
 
+    const dotColor = ageColor(node.last_heard, heatmapMaxAge);
+    const isSelected = node.num === selectedNum;
+    const isLastHeard = node.num === lastHeardNum;
+
+    const g = svgElem("g", { class: "radar-node" + (isSelected ? " radar-node-selected" : ""), style: "cursor:pointer" });
+
+    // Reticle on most-recently-heard node
+    if (isLastHeard) {
+      const rs = "stroke:" + AMBER + ";stroke-width:1.2";
+      g.appendChild(svgElem("circle", { cx: x, cy: y, r: 13, style: `fill:none;${rs};stroke-dasharray:3 4` }));
+      g.appendChild(svgElem("line", { x1: x-17, y1: y, x2: x-7, y2: y, style: rs }));
+      g.appendChild(svgElem("line", { x1: x+7, y1: y, x2: x+17, y2: y, style: rs }));
+      g.appendChild(svgElem("line", { x1: x, y1: y-17, x2: x, y2: y-7, style: rs }));
+      g.appendChild(svgElem("line", { x1: x, y1: y+7, x2: x, y2: y+17, style: rs }));
+    }
+
+    // Selection ring
+    if (isSelected) {
+      g.appendChild(svgElem("circle", { cx: x, cy: y, r: 12,
+        style: `fill:none;stroke:${G4};stroke-width:1.5;stroke-dasharray:4 3` }));
+    }
+
+    // Main blip dot with phosphor glow
+    g.appendChild(svgElem("circle", { cx: x, cy: y, r: isSelected ? 5 : 4,
+      style: `fill:${dotColor};filter:url(#blipGlow)` }));
+
+    const title = svgElem("title");
+    title.textContent = node.user?.long_name || node.user?.id || ("!" + (node.num ?? 0).toString(16).slice(-4));
+    g.appendChild(title);
+
+    // Leader line with collision-resolved diagLen
     const label = node.user?.short_name || ("!" + (node.num ?? 0).toString(16).slice(-4));
+    const diagSign = isRight ? 1 : -1;
+    const elbowX = x + diagSign * diagLen;
+    const elbowY = y - diagLen;
+    const capX = elbowX + diagSign * HOR_LEN;
+    const capY = elbowY;
+    const startX = x + diagSign * 5;
+    const startY = y - 4;
+    g.appendChild(svgElem("line", { x1: startX, y1: startY, x2: elbowX, y2: elbowY,
+      style: `stroke:${dotColor};stroke-width:0.8;opacity:0.7;pointer-events:none` }));
+    g.appendChild(svgElem("line", { x1: elbowX, y1: elbowY, x2: capX, y2: capY,
+      style: `stroke:${dotColor};stroke-width:0.8;opacity:0.7;pointer-events:none` }));
     const txt = svgElem("text", {
-      x: x + 8, y: y + 4,
-      style: "fill:oklch(var(--bc)/0.75);font-size:9px;font-family:monospace;pointer-events:none",
+      class: "radar-node-label",
+      x: capX + diagSign * 3, y: capY + 4,
+      style: `fill:${dotColor};font-size:10px;font-family:'Oxanium',monospace;pointer-events:none;text-anchor:${isRight ? "start" : "end"}`,
     });
     txt.textContent = label;
     g.appendChild(txt);
+
     g.addEventListener("click", (e) => { e.stopPropagation(); onSelect(node); });
     svg.appendChild(g);
-  }
+  });
 
-  // Home marker
-  const hg = svgElem("g");
-  hg.appendChild(svgElem("circle", { cx: CX, cy: CY, r: 8, style: "fill:oklch(var(--p));stroke:oklch(var(--b1));stroke-width:2" }));
-  hg.appendChild(svgElem("line", { x1: CX - 12, y1: CY, x2: CX + 12, y2: CY, style: "stroke:oklch(var(--b1));stroke-width:1.5" }));
-  hg.appendChild(svgElem("line", { x1: CX, y1: CY - 12, x2: CX, y2: CY + 12, style: "stroke:oklch(var(--b1));stroke-width:1.5" }));
-  svg.appendChild(hg);
+  // Home position marker — diamond + crosshair in bright green
+  const hSize = 7;
+  svg.appendChild(svgElem("polygon", {
+    points: `${CX},${CY-hSize} ${CX+hSize},${CY} ${CX},${CY+hSize} ${CX-hSize},${CY}`,
+    style: `fill:${G4};filter:url(#blipGlow)`,
+  }));
+  svg.appendChild(svgElem("line", { x1: CX-16, y1: CY, x2: CX-hSize-1, y2: CY, style: `stroke:${G4};stroke-width:1.2` }));
+  svg.appendChild(svgElem("line", { x1: CX+hSize+1, y1: CY, x2: CX+16, y2: CY, style: `stroke:${G4};stroke-width:1.2` }));
+  svg.appendChild(svgElem("line", { x1: CX, y1: CY-16, x2: CX, y2: CY-hSize-1, style: `stroke:${G4};stroke-width:1.2` }));
+  svg.appendChild(svgElem("line", { x1: CX, y1: CY+hSize+1, x2: CX, y2: CY+16, style: `stroke:${G4};stroke-width:1.2` }));
 
   return svg;
 }

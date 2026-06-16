@@ -258,6 +258,17 @@ class BLEHandler:
         logger.info(f"Connecting to BLE device: {self.ble_address}")
 
         try:
+            # Pre-flight: clear any stale BlueZ GATT connection from a previous
+            # session that didn't clean up (crash, OOM kill, etc.)
+            try:
+                subprocess.run(
+                    ["bluetoothctl", "disconnect", self.ble_address],
+                    capture_output=True, timeout=5,
+                )
+                await asyncio.sleep(1)
+            except Exception:
+                pass
+
             await self._ensure_paired(pin)
 
             # On reconnect after drop: scan to confirm device is back before connecting
@@ -600,6 +611,17 @@ class BLEHandler:
                 logger.info("✅ Disconnected from BLE device")
             except Exception as e:
                 logger.warning(f"Error during BLE disconnect: {e}")
+
+        # Flush BlueZ's internal GATT state — without this, BlueZ can retain
+        # "Connected: yes" for the device even after bleak's disconnect returns,
+        # preventing the radio from re-advertising on next startup.
+        try:
+            subprocess.run(
+                ["bluetoothctl", "disconnect", self.ble_address],
+                capture_output=True, timeout=5,
+            )
+        except Exception:
+            pass
 
         await self.stats.on_ble_disconnected()
 

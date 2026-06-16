@@ -539,6 +539,41 @@ footer {
 .text-success { color: var(--sig) !important; }
 .text-error   { color: var(--red) !important; }
 
+/* ── Radar tab ────────────────────────────────────────────── */
+/* Short-name labels are always visible (the larger radar has room for
+   them); hover/select brightens + bolds for the active node. */
+.radar-node-label {
+  opacity: 0.7;
+  transition: opacity 0.12s ease;
+}
+.radar-node:hover .radar-node-label,
+.radar-node-selected .radar-node-label {
+  opacity: 1;
+  font-weight: 700;
+}
+#radar-wrap {
+  min-height: 360px;
+}
+#radar-svg-container {
+  height: 100%;
+  margin: 0 auto;
+}
+#radar-svg-container svg {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+}
+.radar-sidebar {
+  width: 100%;
+}
+@media (min-width: 1024px) {
+  .radar-sidebar {
+    width: 22rem;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+}
+
 /* ── Light mode (prefers-color-scheme: light / daisyUI "corporate") ─────── */
 @media (prefers-color-scheme: light) {
   :root {

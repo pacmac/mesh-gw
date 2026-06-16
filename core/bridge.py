@@ -1,12 +1,14 @@
 """Orchestrates the BLE link and the decoded mesh state, and builds
 outgoing ToRadio messages from plain dicts (no protobuf in callers)."""
 import asyncio
+import json
 import logging
 import random
 
 from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 
+from . import bridge_config, geo
 from .ble_handler import BLEHandler
 from .mqtt_proxy import MqttProxy
 from .stats import StatsCollector
@@ -23,8 +25,9 @@ def _random_id() -> int:
 
 
 class MeshBridge:
-    def __init__(self, ble_address: str | None = None):
+    def __init__(self, ble_address: str | None = None, ble_pin: str = ""):
         self.ble_address: str | None = ble_address
+        self.ble_pin: str = ble_pin
         self.stats = StatsCollector()
         self.state = MeshState()
         self.ble: BLEHandler | None = None
@@ -33,6 +36,10 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
         self.ble_error: str | None = None
+
+        # node IDs known to have a retained <nodeinfo_root>/nodeinfo/<id>
+        # cache entry (seeded from retained docs, grown as we publish new ones)
+        self._nodeinfo_cached_ids: set[str] = set()
 
         self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
         if ble_address:
@@ -46,8 +53,15 @@ class MeshBridge:
     async def start(self):
         if not self.ble:
             raise RuntimeError("No BLE device configured")
+        self.ble_state = "connecting"
         logger.info(f"Connecting to BLE device: {self.ble_address}")
-        await self.ble.connect()
+        try:
+            await self.ble.connect(pin=self.ble_pin)
+        except Exception as e:
+            self.ble_state = "error"
+            self.ble_error = str(e)
+            raise
+        self.ble_state = "syncing"
         logger.info("BLE connected, requesting config…")
         await self._request_config()
 
@@ -78,6 +92,7 @@ class MeshBridge:
                 if self.ble:
                     await self._ble_disconnect_safe()
                 self.ble_address = address
+                self.ble_pin = pin
                 self.state.config_complete = False
                 self.state.nodes.clear()
                 logger.info(f"Connecting to BLE device: {address}")
@@ -179,6 +194,7 @@ class MeshBridge:
         cfg = self.state.module_config.get("mqtt", {})
         if not (cfg.get("enabled") and cfg.get("proxy_to_client_enabled")):
             return
+        nodeinfo_root = bridge_config.load()["mqtt_topics"]["nodeinfo_root"]
         try:
             self.mqtt_proxy = MqttProxy(
                 address=cfg["address"],
@@ -187,9 +203,12 @@ class MeshBridge:
                 root=cfg.get("root", "msh"),
                 use_tls=cfg.get("tls_enabled", False),
                 on_downlink=self._on_mqtt_downlink,
+                nodeinfo_root=nodeinfo_root,
             )
             self.mqtt_proxy.on_mqtt_node_update = self._on_mqtt_node_update
-            logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')}")
+            self.mqtt_proxy.on_nodeinfo_cache = self._on_nodeinfo_cache
+            logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')} "
+                        f"nodeinfo_root={nodeinfo_root!r}")
         except Exception as e:
             logger.error(f"Failed to start MQTT proxy: {e}")
 
@@ -212,11 +231,85 @@ class MeshBridge:
 
     def _on_mqtt_node_update(self, node: dict):
         """Called from paho thread — sync merge into state then schedule WS broadcast."""
+        # Mark as MQTT-sourced unless the BLE/RF path already cleared the flag
+        existing = self.state.nodes.get(str(node["num"]), {})
+        if existing.get("via_mqtt") is not False:
+            node["via_mqtt"] = True
+        self.state._merge_node_info(node)
+        self._maybe_publish_nodeinfo_cache(str(node["num"]))
+        asyncio.run_coroutine_threadsafe(
+            self.state._broadcast({"type": "mqtt_node", "data": node}),
+            self.mqtt_proxy.loop,
+        )
+
+    def _on_nodeinfo_cache(self, node_id: str, doc: dict):
+        """Called from paho thread for retained <nodeinfo_root>/nodeinfo/<id>
+        docs (v3 ESP32-compatible cache, see core/bridge_config.py). Seeds
+        position/az/km for nodes we haven't heard fresher data from yet."""
+        self._nodeinfo_cached_ids.add(node_id)
+        existing = self.state.nodes.get(node_id, {})
+        node: dict = {"num": int(node_id)} if node_id.lstrip("-").isdigit() else {}
+        if not existing.get("position") and doc.get("lat") is not None and doc.get("lon") is not None:
+            node["position"] = {
+                "latitude_i": int(doc["lat"] * 1e7),
+                "longitude_i": int(doc["lon"] * 1e7),
+            }
+            if doc.get("alt") is not None:
+                node["position"]["altitude"] = doc["alt"]
+        if not existing.get("user") and (doc.get("ln") or doc.get("sn")):
+            node["user"] = {"long_name": doc.get("ln", ""), "short_name": doc.get("sn", "")}
+        if not node or "num" not in node:
+            return
+        existing = self.state.nodes.get(node_id, {})
+        if existing.get("via_mqtt") is not False:
+            node["via_mqtt"] = True
         self.state._merge_node_info(node)
         asyncio.run_coroutine_threadsafe(
             self.state._broadcast({"type": "mqtt_node", "data": node}),
-            asyncio.get_event_loop(),
+            self.mqtt_proxy.loop,
         )
+
+    def _home_pos(self):
+        """(lat, lon) of this bridge's own node, or None if unknown --
+        mirrors updateHomePos() in core/static/app.js."""
+        num = self.my_node_num
+        if num is None:
+            return None
+        pos = self.state.nodes.get(str(num), {}).get("position")
+        if not pos or not pos.get("latitude_i") or not pos.get("longitude_i"):
+            return None
+        return pos["latitude_i"] / 1e7, pos["longitude_i"] / 1e7
+
+    def _maybe_publish_nodeinfo_cache(self, node_id: str):
+        """If we've heard a position for a node with no existing
+        <nodeinfo_root>/nodeinfo/<id> cache entry, publish one (retained)
+        in the v3-compatible format so the ESP32 rotator/virtual-compass
+        benefit too."""
+        if node_id in self._nodeinfo_cached_ids:
+            return
+        if not self.mqtt_proxy or not self.mqtt_proxy.connected or not self.mqtt_proxy.nodeinfo_root:
+            return
+        node = self.state.nodes.get(node_id, {})
+        pos = node.get("position")
+        if not pos or not pos.get("latitude_i") or not pos.get("longitude_i"):
+            return
+        home = self._home_pos()
+        lat, lon = pos["latitude_i"] / 1e7, pos["longitude_i"] / 1e7
+        user = node.get("user", {})
+        doc = {
+            "mac": user.get("id", ""),
+            "ln": user.get("long_name", ""),
+            "sn": user.get("short_name", ""),
+            "lat": lat,
+            "lon": lon,
+            "az": round(geo.bearing_deg(*home, lat, lon), 1) if home else 0,
+            "km": round(geo.haversine_km(*home, lat, lon), 2) if home else 0,
+            "id": node_id,
+            "alt": pos.get("altitude", 0),
+        }
+        topic = f"{self.mqtt_proxy.nodeinfo_root}/nodeinfo/{node_id}"
+        self.mqtt_proxy.publish(topic, json.dumps(doc).encode(), retained=True)
+        self._nodeinfo_cached_ids.add(node_id)
 
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 

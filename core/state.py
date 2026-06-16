@@ -6,6 +6,7 @@ accept the same JSON shape back.
 """
 import asyncio
 import logging
+import time
 
 from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2, telemetry_pb2
@@ -28,6 +29,7 @@ class MeshState:
         self.config = {}          # by config section name
         self.module_config = {}   # by module config section name
         self.config_complete = False
+        self.range_test_log = []  # {ts, from_num, rssi, snr, hops, seq}, newest last, max 500
 
         # request_id -> asyncio.Future, resolved when a matching ADMIN_APP
         # reply (Data.reply_id == request_id) is decoded
@@ -85,7 +87,15 @@ class MeshState:
         elif which == "metadata":
             self.metadata = _to_dict(fr.metadata)
         elif which == "node_info":
-            self._merge_node_info(_to_dict(fr.node_info))
+            node = _to_dict(fr.node_info)
+            # node_info records are the startup NodeDB dump only — live NODEINFO
+            # broadcasts arrive as mesh packets (NODEINFO_APP portnum).  Tag as
+            # MQTT-sourced so the Hide MQTT filter catches nodes the Yagi never
+            # heard directly on RF; a subsequent real RF packet clears the flag.
+            num_key = str(node.get("num", ""))
+            if num_key and self.nodes.get(num_key, {}).get("via_mqtt") is not False:
+                node["via_mqtt"] = True
+            self._merge_node_info(node)
         elif which == "channel":
             ch = _to_dict(fr.channel)
             self.channels[str(fr.channel.index)] = ch
@@ -165,6 +175,23 @@ class MeshState:
             if which:
                 node[which] = _to_dict(getattr(tel, which))
 
+        elif pkt.decoded.portnum == portnums_pb2.PortNum.RANGE_TEST_APP:
+            try:
+                seq_text = pkt.decoded.payload.decode("utf-8", errors="replace")
+            except Exception:
+                seq_text = ""
+            entry = {
+                "ts": int(time.time()),
+                "from_num": pkt_from,
+                "rssi": pkt.rx_rssi if pkt.rx_rssi else None,
+                "snr": round(pkt.rx_snr, 1) if pkt.rx_snr else None,
+                "hops": max(0, pkt.hop_start - pkt.hop_limit) if pkt.hop_start else 0,
+                "seq": seq_text,
+            }
+            self.range_test_log.append(entry)
+            if len(self.range_test_log) > 500:
+                self.range_test_log = self.range_test_log[-500:]
+
         if pkt.rx_snr:
             node["snr"] = pkt.rx_snr
             self.last_rx_snr = pkt.rx_snr
@@ -173,4 +200,9 @@ class MeshState:
             self.last_rx_rssi = pkt.rx_rssi
         if pkt.hop_start:
             node["hops"] = max(0, pkt.hop_start - pkt.hop_limit)
-        node["last_heard_packet"] = True
+        # Track whether this node has ever been heard via RF (not just MQTT)
+        if pkt.via_mqtt:
+            node.setdefault("via_mqtt", True)
+        else:
+            node["via_mqtt"] = False   # RF packet — clear the flag
+        node["last_heard"] = int(time.time())
