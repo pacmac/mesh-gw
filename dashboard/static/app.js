@@ -1037,6 +1037,7 @@ function dashboard() {
     drawRadar() {
       const container = document.getElementById("radar-svg-container");
       if (!container || !this.homePos) return;
+      const prevAz = this._radarBeamAz ?? this.yagiAz;
       container.innerHTML = "";
       const maxKm = this.radarRange === "0"
         ? (this.radarNodes.length ? Math.max(...this.radarNodes.map((n) => n._km)) * 1.15 : 50)
@@ -1051,6 +1052,18 @@ function dashboard() {
         beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
         onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
       }));
+      // Animate beam from previous bearing to new bearing
+      if (this.yagiAz != null) {
+        const beamG = container.querySelector('.radar-beam');
+        if (beamG) {
+          beamG.style.transform = `rotate(${prevAz ?? this.yagiAz}deg)`;
+          requestAnimationFrame(() => {
+            beamG.style.transition = 'transform 0.6s ease';
+            beamG.style.transform = `rotate(${this.yagiAz}deg)`;
+          });
+        }
+        this._radarBeamAz = this.yagiAz;
+      }
     },
 
     // -- Reusable Node Info modal, callable from Radar and Nodes table ----------------
@@ -1478,38 +1491,33 @@ function buildRadarSVG(nodes, maxKm, opts = {}) {
     svg.appendChild(t);
   }
 
-  // Yagi beam — sector wedge + centre line at rotator bearing
+  // Yagi beam — drawn pointing NORTH (0°); CSS transform rotates it with transition
+  // The caller (drawRadar) animates the transform after appending to DOM.
   if (yagiAz != null) {
     const BEAM_COLOR = "rgba(80,200,255,0.85)";
     const WEDGE_COLOR = "rgba(80,200,255,0.14)";
-    const HW = (beamWidth / 2) * Math.PI / 180; // half-beamwidth in radians
-    const brad = yagiAz * Math.PI / 180;
-    const brad1 = brad - HW;
-    const brad2 = brad + HW;
-    const ex = CX + Math.sin(brad) * R;
-    const ey = CY - Math.cos(brad) * R;
-    const wx1 = CX + Math.sin(brad1) * R;
-    const wy1 = CY - Math.cos(brad1) * R;
-    const wx2 = CX + Math.sin(brad2) * R;
-    const wy2 = CY - Math.cos(brad2) * R;
-    // Faint sector wedge
-    const wedgePath = svgElem("path", {
-      d: `M ${CX} ${CY} L ${wx1} ${wy1} A ${R} ${R} 0 0 1 ${wx2} ${wy2} Z`,
-      style: `fill:${WEDGE_COLOR};stroke:none;clip-path:url(#radarClip)`,
+    const HW = (beamWidth / 2) * Math.PI / 180;
+    // Wedge edges at ±HW from north
+    const wx1 = CX + Math.sin(-HW) * R;
+    const wy1 = CY - Math.cos(-HW) * R;
+    const wx2 = CX + Math.sin(HW) * R;
+    const wy2 = CY - Math.cos(HW) * R;
+    const beamG = svgElem("g", {
+      class: "radar-beam",
+      style: `transform-box:view-box;transform-origin:${CX}px ${CY}px`,
     });
-    svg.appendChild(wedgePath);
-    // Beam centre line with glow
-    svg.appendChild(svgElem("line", { x1: CX, y1: CY, x2: ex, y2: ey,
+    beamG.appendChild(svgElem("path", {
+      d: `M ${CX} ${CY} L ${wx1.toFixed(1)} ${wy1.toFixed(1)} A ${R} ${R} 0 0 1 ${wx2.toFixed(1)} ${wy2.toFixed(1)} Z`,
+      style: `fill:${WEDGE_COLOR};stroke:none;clip-path:url(#radarClip)`,
+    }));
+    beamG.appendChild(svgElem("line", { x1: CX, y1: CY, x2: CX, y2: CY - R,
       style: `stroke:${BEAM_COLOR};stroke-width:1.5;filter:url(#beamGlow)` }));
-    // Bearing readout — outside the disc, between rim glow rings (R+6/10) and NESW labels (R+22)
-    const lblRad = brad;
-    const lblDist = R + 15;
-    const lblX = CX + Math.sin(lblRad) * lblDist;
-    const lblY = CY - Math.cos(lblRad) * lblDist;
-    const bearLbl = svgElem("text", { x: lblX, y: lblY,
+    // Bearing label at the tip — rotates with the beam
+    const bearLbl = svgElem("text", { x: CX, y: CY - (R + 15),
       style: `fill:rgba(255,50,50,0.95);font-size:11px;font-weight:700;font-family:'Oxanium',monospace;text-anchor:middle;dominant-baseline:middle;pointer-events:none` });
     bearLbl.textContent = Math.round(yagiAz) + "°";
-    svg.appendChild(bearLbl);
+    beamG.appendChild(bearLbl);
+    svg.appendChild(beamG);
   }
 
   // Node blips — pass 1: compute screen positions and resolve label collisions
