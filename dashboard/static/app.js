@@ -196,9 +196,6 @@ function dashboard() {
       await this.loadRotatorState();
       this.connectWS();
       setInterval(() => { this.refreshStatus(); this.loadDevices(); }, 5000);
-      // Radar merges all bridge nodes — re-fetch every 30s so EG5y-only nodes
-      // stay current without needing a manual refresh.
-      setInterval(() => { if (this.tab === "radar" && this.homePos) this.loadNodes().then(() => this.refreshRadar()); }, 30000);
       if (this.tab === "radar") this.$nextTick(() => this.initRadar());
       else if (this.tab === "cfg") this.switchCfgTab(this.cfgTab);
       else if (this.tab === "range") this.loadRangeTest();
@@ -337,28 +334,15 @@ function dashboard() {
       if (f.hasSignal)        qs.set("has_signal",   "true");
       if (f.hasTelem)         qs.set("has_telemetry","true");
       const query = qs.toString() ? "?" + qs.toString() : "";
-      // Merge nodes from all connected bridges — the rotator listens on all radios
-      // so any node either bridge hears must appear on the radar.
-      // For nodes heard by multiple bridges, keep the most recently heard entry.
-      const results = await Promise.all(
-        this.availableDevices.map(dev =>
-          fetchJSON(`/${dev.node_id}/nodes${query}`).catch(() => ({ nodes: {} }))
-        )
-      );
-      const allNodes = {};
-      for (const data of results) {
-        for (const [k, v] of Object.entries(data.nodes || {})) {
-          if (!allNodes[k] || (v.last_heard || 0) > (allNodes[k].last_heard || 0))
-            allNodes[k] = v;
-        }
-      }
-      this.nodeTotal = Object.keys(allNodes).length;
-      this.nodeCount = this.nodeTotal;
-      this.nodes = Object.values(allNodes);
+      // /nodes aggregates all bridges server-side — same dataset the rotator uses.
+      const data = await fetchJSON("/nodes" + query);
+      this.nodeTotal = data.total ?? Object.keys(data.nodes || {}).length;
+      this.nodeCount = data.count ?? this.nodeTotal;
+      this.nodes = Object.values(data.nodes || {});
       this.updateHomePos();
       this.sortNodes(this.nodeSort.key, true);
       if (this.info.my_info?.my_node_num != null) {
-        this.nodeSelf = allNodes[String(this.info.my_info.my_node_num)] || {};
+        this.nodeSelf = data.nodes?.[String(this.info.my_info.my_node_num)] || {};
       }
     },
 
@@ -546,19 +530,18 @@ function dashboard() {
     },
 
     handleEvent(ev) {
-      // Rotator events come from the YAGI bridge (not necessarily the active device);
-      // process them first before the per-device filter.
+      // Rotator events come from the YAGI bridge (not necessarily the active device).
       if (ev.type === "rotator") { this._onRotatorEvent(ev.data || {}); return; }
 
-      // Position/nodeinfo packets from any bridge refresh the radar so nodes
-      // heard only by EG5y appear without a full page reload.
-      if (ev.type === "packet" && this.tab === "radar" && this.homePos) {
+      // Position/nodeinfo from any bridge: refresh /nodes (aggregated) so nodes
+      // heard only by EG5y appear on the radar without a page reload.
+      if (ev.type === "packet") {
         const portnum = ev.data?.packet?.decoded?.portnum;
         if (portnum === "POSITION_APP" || portnum === "NODEINFO_APP")
-          this.loadNodes().then(() => this.refreshRadar());
+          this.loadNodes().then(() => { if (this.tab === "radar") this.refreshRadar(); });
       }
 
-      // All other events: filter to the active device
+      // Everything else: filter to the active device.
       if (ev.device && this.activeNodeId && ev.device !== this.activeNodeId) return;
       const time = new Date().toLocaleTimeString();
       const summary = summarizeEvent(ev);
@@ -594,8 +577,8 @@ function dashboard() {
           this.lastHeardNum = pkt.from;
           if (this.tab === "radar") this.drawRadar();
         }
-        // Live-refresh node list occasionally on broadcasts
-        if (this.tab === "nodes" && ["POSITION_APP", "NODEINFO_APP", "TELEMETRY_APP"].includes(portnum)) {
+        // Live-refresh node list on telemetry updates (position/nodeinfo handled above)
+        if (this.tab === "nodes" && portnum === "TELEMETRY_APP") {
           this.loadNodes();
         }
         // Live-refresh range test log on new range test packets

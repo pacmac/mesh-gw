@@ -133,6 +133,28 @@ def create_app(dm: DeviceManager) -> FastAPI:
         _bcfg.save(cfg)
         return cfg["node_filter"]
 
+    @app.get("/nodes")
+    async def all_nodes_aggregated(
+        max_age: int = 0, max_hops: int = 99,
+        named_only: bool = False, has_position: bool = False,
+        hide_mqtt: bool = False, has_signal: bool = False,
+        has_telemetry: bool = False,
+    ):
+        """Merged node list from all connected bridges — same dataset the rotator uses."""
+        params = {
+            "max_age": max_age, "max_hops": max_hops,
+            "named_only": named_only, "has_position": has_position,
+            "hide_mqtt": hide_mqtt, "has_signal": has_signal,
+            "has_telemetry": has_telemetry,
+        }
+        merged: dict = {}
+        for bridge in dm._devices.values():
+            data = await get_nodes(bridge, params)
+            for k, v in (data.get("nodes") or {}).items():
+                if k not in merged or (v.get("last_heard") or 0) > (merged[k].get("last_heard") or 0):
+                    merged[k] = v
+        return {"total": len(merged), "count": len(merged), "nodes": merged}
+
     @app.get("/ble/scan")
     async def ble_scan():
         try:
