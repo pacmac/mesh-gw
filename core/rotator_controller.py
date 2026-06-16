@@ -102,6 +102,7 @@ class RotatorController:
 
     async def _run(self):
         q = self._dm.subscribe()
+        watchdog = asyncio.create_task(self._watchdog(), name="rotator-watchdog")
         try:
             while True:
                 ev = await q.get()
@@ -110,7 +111,27 @@ class RotatorController:
         except asyncio.CancelledError:
             pass
         finally:
+            watchdog.cancel()
             self._dm.unsubscribe(q)
+
+    async def _watchdog(self):
+        """Clear point_target if it is no longer in the valid filtered node set."""
+        while True:
+            await asyncio.sleep(10)
+            if self._mode != MODE_ACTIVE or self._point_target is None:
+                continue
+            try:
+                valid = await self._valid_target_nums()
+            except Exception:
+                continue
+            if self._point_target not in valid:
+                logger.info("Watchdog: clearing stale target !%x (no longer in filtered set)",
+                            self._point_target)
+                self._point_target = None
+                await self._broadcast({
+                    "type": "rotator",
+                    "data": {"point_target": None, "mode": MODE_ACTIVE},
+                })
 
     async def _handle_active(self, ev: dict):
         if ev.get("type") != "packet":
