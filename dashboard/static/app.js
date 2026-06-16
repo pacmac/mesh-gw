@@ -472,16 +472,26 @@ function dashboard() {
               if (pktId) { this._seenPacketIds.add(pktId); if (this._seenPacketIds.size > 200) this._seenPacketIds.delete(this._seenPacketIds.values().next().value); }
               const text = b64ToUtf8(pkt.decoded.payload);
               const toNum = pkt.to >>> 0;
-              this.messages.unshift({
-                pktId, fromNum: pkt.from ?? 0, to: toNum,
-                broadcast: toNum === 0xFFFFFFFF || pkt.to == null,
-                channel: pkt.channel ?? 0,
-                replyId: pkt.decoded.reply_id || null,
-                text, time, direction: 'rx', ackStatus: null,
-              });
-              if (this.messages.length > 50) this.messages.pop();
-              try { localStorage.setItem("msgHistory", JSON.stringify(this.messages.slice(0, 20))); } catch (_) {}
-              if (this.tab !== 'messages') { this.unreadMessages++; this.playMsgSound(); }
+              // Absorb TX echo: if the packet is from our own node and we already have an
+              // optimistic 'tx' entry for this text, tag it with the real pktId and skip.
+              const myNum = this.info.my_info?.my_node_num;
+              const opt = (myNum != null && pkt.from === myNum)
+                ? this.messages.find(m => m.direction === 'tx' && m.text === text && !m.pktId)
+                : null;
+              if (opt) {
+                if (pktId) opt.pktId = pktId;
+              } else {
+                this.messages.unshift({
+                  pktId, fromNum: pkt.from ?? 0, to: toNum,
+                  broadcast: toNum === 0xFFFFFFFF || pkt.to == null,
+                  channel: pkt.channel ?? 0,
+                  replyId: pkt.decoded.reply_id || null,
+                  text, time, direction: 'rx', ackStatus: null,
+                });
+                if (this.messages.length > 50) this.messages.pop();
+                try { localStorage.setItem("msgHistory", JSON.stringify(this.messages.slice(0, 20))); } catch (_) {}
+                if (this.tab !== 'messages') { this.unreadMessages++; this.playMsgSound(); }
+              }
             }
           } catch (e) { /* ignore decode errors */ }
         }
