@@ -50,16 +50,23 @@ class MeshBridge:
             self._init_ble(ble_address)
 
     def _init_rotator(self) -> RotatorBase | None:
-        cfg = bridge_config.load().get("rotator", {})
-        if not cfg.get("enabled"):
+        full_cfg = bridge_config.load()
+        rot_cfg = full_cfg.get("rotator", {})
+        if not rot_cfg.get("enabled"):
+            return None
+        # Only activate for the radio tagged role:yagi in bridge_config.devices
+        devices = full_cfg.get("devices") or {}
+        addr = (self.ble_address or "").upper()
+        if not addr or (devices.get(addr) or {}).get("role") != "yagi":
             return None
         try:
-            r = load_rotator(cfg)
+            r = load_rotator(rot_cfg)
             r.on_status = self._on_rotator_status
             r.start()
+            logger.info("Rotator driver started for %s", addr)
             return r
         except Exception as e:
-            logger.error(f"Failed to load rotator driver: {e}")
+            logger.error("Failed to load rotator driver: %s", e)
             return None
 
     async def _on_rotator_status(self, status: dict):

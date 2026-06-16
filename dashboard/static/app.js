@@ -52,6 +52,7 @@ function dashboard() {
     rotatorStatus: {},
     rotatorConnected: false,
     rotatorManualAz: null,
+    yagiRadioAddr: '',
     events: [],
     allSections: [],
     channels: [],
@@ -206,6 +207,10 @@ function dashboard() {
           this.nodeFilters.maxAge = nd.default_max_age_sec;
         if (nd.default_hide_mqtt != null && localStorage.getItem("nf_hideMqtt") === null)
           this.nodeFilters.hideMqtt = !!nd.default_hide_mqtt;
+        // Resolve yagi radio assignment from devices block
+        const devs = this.bridgeConfig.devices || {};
+        this.yagiRadioAddr = (Object.entries(devs)
+          .find(([, v]) => v?.role === 'yagi')?.[0] || '').toUpperCase();
       } catch (e) {
         console.warn("Failed to load bridge config, using localStorage fallback", e);
       }
@@ -415,8 +420,9 @@ function dashboard() {
     // -- websocket live feed ---------------------------------------------------
     connectWS() {
       const apiUrl = window.MESH_API || location.origin;
-      const deviceParam = this.activeNodeId ? "?device=" + encodeURIComponent(this.activeNodeId) : "";
-      const ws = new WebSocket(apiUrl.replace(/^http/, "ws") + "/events" + deviceParam);
+      // No device filter — rotator events come from the YAGI bridge which may differ
+      // from the active device; JS-side filtering handles per-device dispatch.
+      const ws = new WebSocket(apiUrl.replace(/^http/, "ws") + "/events");
       this._ws = ws;
       ws.onopen = () => { this.wsConnected = true; };
       ws.onclose = () => {
@@ -452,14 +458,16 @@ function dashboard() {
     },
 
     handleEvent(ev) {
-      // Unified stream tags events with device; ignore events from other devices
+      // Rotator events come from the YAGI bridge (not necessarily the active device);
+      // process them first before the per-device filter.
+      if (ev.type === "rotator") { this._onRotatorEvent(ev.data || {}); return; }
+
+      // All other events: filter to the active device
       if (ev.device && this.activeNodeId && ev.device !== this.activeNodeId) return;
       const time = new Date().toLocaleTimeString();
       const summary = summarizeEvent(ev);
       this.events.unshift({ type: ev.type, time, summary });
       if (this.events.length > 80) this.events.pop();
-
-      if (ev.type === "rotator") { this._onRotatorEvent(ev.data || {}); return; }
 
       if (ev.type === "packet") {
         const pkt = ev.data?.packet;
@@ -510,12 +518,24 @@ function dashboard() {
       }
     },
 
+    setYagiRadio(addr) {
+      if (!this.bridgeConfig) return;
+      const devices = this.bridgeConfig.devices || {};
+      for (const k of Object.keys(devices)) {
+        if (devices[k]?.role === 'yagi') delete devices[k];
+      }
+      if (addr) devices[addr.toUpperCase()] = { role: 'yagi' };
+      this.bridgeConfig.devices = devices;
+      this.yagiRadioAddr = addr ? addr.toUpperCase() : '';
+    },
+
     // -- Radio Config tab --------------------------------------------------------
     switchCfgTab(name) {
       this.cfgTab = name;
       localStorage.setItem("activeCfgTab", name);
       if (name === "device") this.loadSections();
       else if (name === "bridge") this.loadBridgeConfig();
+      else if (name === "rotator") this.loadBridgeConfig();
       else if (name === "channels") this.loadChannels();
       else if (name === "owner") this.loadOwner();
     },

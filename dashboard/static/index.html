@@ -201,42 +201,6 @@
               </div>
             </div>
           </div>
-          <!-- Rotator panel — hidden when rotator.enabled = false -->
-          <div class="card bg-base-100 shadow" x-show="bridgeConfig?.rotator?.enabled">
-            <div class="card-body">
-              <h2 class="card-title text-base">
-                Rotator
-                <span class="badge badge-xs ml-auto"
-                      :class="rotatorConnected ? 'badge-success' : 'badge-ghost'"
-                      x-text="rotatorConnected ? 'connected' : 'offline'"></span>
-              </h2>
-              <div class="text-sm flex flex-col gap-2">
-                <div class="flex justify-between items-center">
-                  <span class="text-base-content/60">Bearing</span>
-                  <span class="font-mono text-2xl font-bold leading-none"
-                        x-text="rotatorStatus.az != null ? Number(rotatorStatus.az).toFixed(1) + '°' : '–'"></span>
-                </div>
-                <div class="flex justify-between">
-                  <span class="text-base-content/60">Mode</span>
-                  <span x-text="rotatorStatus.mode || '–'"></span>
-                </div>
-                <div class="flex justify-between">
-                  <span class="text-base-content/60">Status</span>
-                  <span :class="rotatorStatus.busy ? 'text-warning' : 'text-base-content/60'"
-                        x-text="rotatorStatus.busy ? 'moving…' : 'idle'"></span>
-                </div>
-              </div>
-              <div class="divider my-1"></div>
-              <div class="flex gap-2">
-                <input type="number" min="0" max="360" step="1" placeholder="0 – 360°"
-                       class="input input-bordered input-sm flex-1"
-                       x-model.number="rotatorManualAz">
-                <button class="btn btn-sm btn-primary"
-                        :disabled="rotatorManualAz == null || !rotatorConnected"
-                        @click="moveRotator(rotatorManualAz)">Point</button>
-              </div>
-            </div>
-          </div>
 
         </div>
 
@@ -265,7 +229,33 @@
               <input type="checkbox" class="toggle toggle-xs" :checked="radarCrosshair" @change="toggleRadarCrosshair()">
             </label>
             <span class="font-mono text-xs px-2 py-0.5 rounded" style="color:rgba(0,255,80,0.6);border:1px solid rgba(0,255,80,0.2)" x-text="radarNodes.length + ' plotted'"></span>
-            <span class="ml-auto font-mono text-xs animate-pulse" style="color:rgba(0,255,80,0.5)" x-show="geocoding">geocoding…</span>
+            <span class="font-mono text-xs animate-pulse" style="color:rgba(0,255,80,0.5)" x-show="geocoding">geocoding…</span>
+            <!-- Rotator strip — visible when rotator is enabled -->
+            <div x-show="bridgeConfig?.rotator?.enabled"
+                 class="flex items-center gap-3 ml-auto pl-3"
+                 style="border-left:1px solid rgba(0,255,80,0.15)">
+              <div class="flex items-center gap-1.5">
+                <span class="text-xs font-mono tracking-widest uppercase" style="color:rgba(0,255,80,0.45)">Rotr</span>
+                <span class="inline-block w-1.5 h-1.5 rounded-full"
+                      :class="rotatorConnected ? 'bg-success animate-pulse' : 'bg-error opacity-60'"></span>
+              </div>
+              <span class="font-mono text-sm font-bold tabular-nums"
+                    style="color:rgba(80,200,255,0.90);min-width:4rem;text-align:right"
+                    x-text="rotatorStatus.az != null ? Number(rotatorStatus.az).toFixed(1) + '°' : '– °'"></span>
+              <span x-show="rotatorStatus.busy"
+                    class="text-xs font-mono animate-pulse"
+                    style="color:rgba(255,200,40,0.85)">moving</span>
+              <div class="flex items-center gap-1.5" x-show="rotatorConnected">
+                <input type="number" min="0" max="360" step="1" placeholder="0–360"
+                       class="input input-xs w-20 font-mono text-center"
+                       style="background:rgba(80,200,255,0.07);border:1px solid rgba(80,200,255,0.25);color:rgba(80,200,255,0.9);border-radius:0.25rem"
+                       x-model.number="rotatorManualAz">
+                <button class="btn btn-xs font-mono"
+                        style="background:rgba(80,200,255,0.12);border:1px solid rgba(80,200,255,0.30);color:rgba(80,200,255,0.9);min-width:3.5rem"
+                        :disabled="rotatorManualAz == null"
+                        @click="moveRotator(rotatorManualAz)">Point</button>
+              </div>
+            </div>
           </div>
           <div class="flex-1 min-h-0 flex items-center justify-center" id="radar-wrap"
                style="background:radial-gradient(ellipse at 40% 35%,#0c1a0c 0%,#050e05 55%,#020802 100%)">
@@ -544,6 +534,7 @@
           <div class="tabs tabs-bordered">
             <a class="tab" :class="cfgTab==='device' && 'tab-active font-semibold'" @click="switchCfgTab('device')">Device</a>
             <a class="tab" :class="cfgTab==='bridge' && 'tab-active font-semibold'" @click="switchCfgTab('bridge')">Bridge</a>
+            <a class="tab" :class="cfgTab==='rotator' && 'tab-active font-semibold'" @click="switchCfgTab('rotator')">Rotator</a>
             <a class="tab" :class="cfgTab==='channels' && 'tab-active font-semibold'" @click="switchCfgTab('channels')">Channels</a>
             <a class="tab" :class="cfgTab==='owner' && 'tab-active font-semibold'" @click="switchCfgTab('owner')">Owner</a>
           </div>
@@ -622,21 +613,6 @@
                 </div>
                 <div class="card bg-base-100 shadow">
                   <div class="card-body">
-                    <h2 class="card-title text-base">Rotator / Yagi</h2>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <label class="form-control w-full">
-                        <div class="label py-1"><span class="label-text text-xs">WebSocket URL</span></div>
-                        <input type="text" class="input input-bordered input-sm font-mono" x-model="bridgeConfig.rotator.ws_url" placeholder="ws://host:port">
-                      </label>
-                      <label class="form-control w-full">
-                        <div class="label py-1"><span class="label-text text-xs">Beam width (°)</span></div>
-                        <input type="number" min="1" max="180" step="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.rotator.beam_width_deg">
-                      </label>
-                    </div>
-                  </div>
-                </div>
-                <div class="card bg-base-100 shadow">
-                  <div class="card-body">
                     <h2 class="card-title text-base">Antenna</h2>
                     <div class="grid grid-cols-1 gap-4">
                       <div>
@@ -702,6 +678,116 @@
                   <span class="text-success text-sm" x-show="bridgeConfigSaved" x-transition>Saved ✓</span>
                   <span class="text-error text-sm" x-show="bridgeConfigError" x-text="bridgeConfigError"></span>
                 </div>
+              </div>
+            </template>
+          </div>
+
+          <!-- ==================== ROTATOR TAB ==================== -->
+          <div x-show="cfgTab==='rotator'" class="flex flex-col gap-3 max-w-2xl">
+            <div class="alert alert-info shadow-sm text-sm">
+              <span>Rotator settings are stored in <code>bridge_config.yaml</code>. Changes take effect after saving and restarting the bridge service.</span>
+            </div>
+            <template x-if="bridgeConfig">
+              <div class="flex flex-col gap-4">
+
+                <!-- Enable + Driver -->
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Driver</h2>
+                    <div class="flex flex-col gap-4">
+                      <label class="flex items-center justify-between cursor-pointer">
+                        <div class="flex flex-col gap-0.5">
+                          <span class="label-text font-medium">Enable rotator</span>
+                          <span class="text-xs text-base-content/50">When disabled, no rotator code runs — zero impact on non-rotator installs.</span>
+                        </div>
+                        <input type="checkbox" class="toggle toggle-primary toggle-sm" x-model="bridgeConfig.rotator.enabled">
+                      </label>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" x-show="bridgeConfig.rotator.enabled">
+                        <label class="form-control w-full">
+                          <div class="label py-1">
+                            <span class="label-text text-xs">Driver</span>
+                          </div>
+                          <select class="select select-bordered select-sm" x-model="bridgeConfig.rotator.driver">
+                            <option value="v4_ws">v4_ws — ESP32 WebSocket (v4 firmware)</option>
+                          </select>
+                        </label>
+                        <label class="form-control w-full">
+                          <div class="label py-1">
+                            <span class="label-text text-xs">WebSocket URL</span>
+                          </div>
+                          <input type="text" class="input input-bordered input-sm font-mono"
+                                 x-model="bridgeConfig.rotator.ws_url"
+                                 placeholder="ws://192.168.x.x:81">
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Radio assignment -->
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Yagi Radio</h2>
+                    <p class="text-sm text-base-content/60 mt-0.5">
+                      The BLE radio attached to the directional Yagi antenna. Only that bridge initialises the rotator driver — other radios are unaffected.
+                    </p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                      <label class="form-control w-full">
+                        <div class="label py-1">
+                          <span class="label-text text-xs">Assigned radio</span>
+                        </div>
+                        <select class="select select-bordered select-sm"
+                                x-model="yagiRadioAddr"
+                                @change="setYagiRadio($event.target.value)">
+                          <option value="">— None —</option>
+                          <template x-for="d in availableDevices" :key="d.node_id">
+                            <option :value="(d.ble_address || '').toUpperCase()"
+                                    x-text="(d.short_name ? d.short_name + ' · ' : '') + (d.long_name ? d.long_name + ' · ' : '') + (d.ble_address || d.node_id)"></option>
+                          </template>
+                        </select>
+                      </label>
+                      <div class="flex flex-col justify-end pb-1 gap-1 text-sm">
+                        <template x-if="yagiRadioAddr">
+                          <div class="flex flex-col gap-1">
+                            <span class="text-xs text-base-content/50 uppercase font-semibold tracking-wide">Assigned</span>
+                            <span class="font-mono text-base-content" x-text="yagiRadioAddr"></span>
+                          </div>
+                        </template>
+                        <div x-show="!yagiRadioAddr" class="text-base-content/40 italic text-xs">No radio assigned — rotator will not start.</div>
+                      </div>
+                    </div>
+                    <div x-show="yagiRadioAddr && !availableDevices.find(d => (d.ble_address||'').toUpperCase() === yagiRadioAddr)"
+                         class="alert alert-warning text-xs mt-3 py-2">
+                      <span>Assigned radio <span class="font-mono" x-text="yagiRadioAddr"></span> is not currently connected.</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Beam parameters -->
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Beam</h2>
+                    <p class="text-sm text-base-content/60 mt-0.5">Visual parameters used on the radar display.</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
+                      <label class="form-control w-full">
+                        <div class="label py-1">
+                          <span class="label-text text-xs">Beam width (°)</span>
+                          <span class="label-text-alt text-base-content/40">3 dB half-power</span>
+                        </div>
+                        <input type="number" min="1" max="180" step="1"
+                               class="input input-bordered input-sm"
+                               x-model.number="bridgeConfig.rotator.beam_width_deg">
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-sm btn-primary" @click="saveBridgeConfig()">Save</button>
+                  <span class="text-success text-sm" x-show="bridgeConfigSaved" x-transition>Saved ✓</span>
+                  <span class="text-error text-sm" x-show="bridgeConfigError" x-text="bridgeConfigError"></span>
+                </div>
+
               </div>
             </template>
           </div>
@@ -991,6 +1077,7 @@
             <ul>
               <li><a :class="tab==='cfg'&&cfgTab==='device'&&'active'" @click="setNav('cfg','device')">Device</a></li>
               <li><a :class="tab==='cfg'&&cfgTab==='bridge'&&'active'" @click="setNav('cfg','bridge')">Bridge</a></li>
+              <li><a :class="tab==='cfg'&&cfgTab==='rotator'&&'active'" @click="setNav('cfg','rotator')">Rotator</a></li>
               <li><a :class="tab==='cfg'&&cfgTab==='channels'&&'active'" @click="setNav('cfg','channels')">Channels</a></li>
               <li><a :class="tab==='cfg'&&cfgTab==='owner'&&'active'" @click="setNav('cfg','owner')">Owner</a></li>
             </ul>
