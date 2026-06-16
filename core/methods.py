@@ -26,12 +26,59 @@ async def get_info(bridge: MeshBridge, params: dict):
 
 @method("get_nodes")
 async def get_nodes(bridge: MeshBridge, params: dict):
+    import time
     if "num" in params:
         node = bridge.state.nodes.get(str(params["num"]))
         if node is None:
             raise KeyError(f"unknown node: {params['num']}")
         return {"node": node}
-    return {"nodes": bridge.state.nodes}
+
+    all_nodes = bridge.state.nodes
+    total = len(all_nodes)
+
+    max_age      = int(params.get("max_age", 0))
+    max_hops     = int(params.get("max_hops", 99))
+    named_only   = bool(params.get("named_only", False))
+    has_position = bool(params.get("has_position", False))
+    hide_mqtt    = bool(params.get("hide_mqtt", False))
+    has_signal   = bool(params.get("has_signal", False))
+    has_telemetry= bool(params.get("has_telemetry", False))
+
+    no_filter = (max_age == 0 and max_hops == 99 and not named_only
+                 and not has_position and not hide_mqtt
+                 and not has_signal and not has_telemetry)
+    if no_filter:
+        return {"total": total, "count": total, "filter": {}, "nodes": all_nodes}
+
+    now = int(time.time())
+    active_filters = {}
+    if max_age:      active_filters["max_age"] = max_age
+    if max_hops < 99: active_filters["max_hops"] = max_hops
+    if named_only:   active_filters["named_only"] = True
+    if has_position: active_filters["has_position"] = True
+    if hide_mqtt:    active_filters["hide_mqtt"] = True
+    if has_signal:   active_filters["has_signal"] = True
+    if has_telemetry:active_filters["has_telemetry"] = True
+
+    filtered = {}
+    for key, node in all_nodes.items():
+        if max_age and (now - (node.get("last_heard") or 0)) > max_age:
+            continue
+        if max_hops < 99 and (node.get("hops") or 0) > max_hops:
+            continue
+        if named_only and not (node.get("user") or {}).get("long_name"):
+            continue
+        if has_position and not node.get("position"):
+            continue
+        if hide_mqtt and node.get("via_mqtt") is True:
+            continue
+        if has_signal and node.get("snr") is None and node.get("rssi") is None:
+            continue
+        if has_telemetry and not node.get("device_metrics"):
+            continue
+        filtered[key] = node
+
+    return {"total": total, "count": len(filtered), "filter": active_filters, "nodes": filtered}
 
 
 @method("get_channels")

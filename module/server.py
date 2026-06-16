@@ -205,8 +205,23 @@ def create_app(dm: DeviceManager) -> FastAPI:
         return await _call(node_id, "get_info", {})
 
     @app.get("/{node_id}/nodes")
-    async def device_nodes(node_id: str):
-        return await _call(node_id, "get_nodes", {})
+    async def device_nodes(
+        node_id: str,
+        max_age: int = 0,
+        max_hops: int = 99,
+        named_only: bool = False,
+        has_position: bool = False,
+        hide_mqtt: bool = False,
+        has_signal: bool = False,
+        has_telemetry: bool = False,
+    ):
+        params = {
+            "max_age": max_age, "max_hops": max_hops,
+            "named_only": named_only, "has_position": has_position,
+            "hide_mqtt": hide_mqtt, "has_signal": has_signal,
+            "has_telemetry": has_telemetry,
+        }
+        return await _call(node_id, "get_nodes", params)
 
     @app.get("/{node_id}/nodes/{num}")
     async def device_node(node_id: str, num: int):
