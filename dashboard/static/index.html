@@ -246,7 +246,7 @@
                 </div>
                 <select x-show="msgModal.mode === 'direct'" class="select select-bordered select-xs flex-1" x-model="msgModal.to">
                   <option value="" disabled>Select node…</option>
-                  <template x-for="n in filteredNodes" :key="n.num">
+                  <template x-for="n in filteredNodes()" :key="n.num">
                     <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
                   </template>
                 </select>
@@ -690,7 +690,7 @@
                 </div>
                 <select x-show="msgIsDirect" class="select select-bordered select-xs flex-1" x-model="msgDirectTo">
                   <option value="" disabled>Select node…</option>
-                  <template x-for="n in filteredNodes" :key="n.num">
+                  <template x-for="n in filteredNodes()" :key="n.num">
                     <option :value="n.num" x-text="(n.user?.short_name || n.num) + ' — ' + (n.user?.long_name || '')"></option>
                   </template>
                 </select>
