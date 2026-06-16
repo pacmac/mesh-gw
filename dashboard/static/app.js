@@ -83,7 +83,7 @@ function dashboard() {
     radarLogScale: localStorage.getItem("radarLogScale") !== "false",
     radarNodes: [],
     radarSelected: null,
-    homePos: null,
+    homePos: JSON.parse(localStorage.getItem("homePos") || "null"),
     geocoding: false,
     radarCrosshair: localStorage.getItem("radarCrosshair") !== "false",
     heatmapMaxAge: Number(localStorage.getItem("heatmapMaxAge")) || 3600,
@@ -284,8 +284,9 @@ function dashboard() {
           lat: self.position.latitude_i / 1e7,
           lon: self.position.longitude_i / 1e7,
         };
-      } else {
-        this.homePos = null;
+        localStorage.setItem("homePos", JSON.stringify(this.homePos));
+      } else if (!this.homePos) {
+        this.homePos = null; // only clear if no cached value
       }
     },
 
