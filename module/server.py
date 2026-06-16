@@ -219,6 +219,37 @@ def create_app(dm: DeviceManager) -> FastAPI:
         except KeyError as e:
             raise HTTPException(404, str(e))
 
+    # -- rotator (server-level, not per-device — must be before /{node_id}/) --
+
+    @app.get("/rotator/status")
+    async def rotator_status():
+        r = dm.get_rotator()
+        if not r:
+            raise HTTPException(503, "Rotator not configured")
+        return {"connected": r.connected, "status": r.status}
+
+    @app.post("/rotator/move")
+    async def rotator_move(body: dict = Body(...)):
+        r = dm.get_rotator()
+        if not r or not r.connected:
+            raise HTTPException(503, "Rotator not connected")
+        az = body.get("az")
+        if az is None:
+            raise HTTPException(400, "az required")
+        await r.move(float(az))
+        return {"moving": True, "az": az}
+
+    @app.post("/rotator/mode")
+    async def rotator_mode(body: dict = Body(...)):
+        r = dm.get_rotator()
+        if not r or not r.connected:
+            raise HTTPException(503, "Rotator not connected")
+        mode = body.get("mode")
+        if mode is None:
+            raise HTTPException(400, "mode required")
+        await r.set_mode(int(mode))
+        return {"mode": mode}
+
     # =========================================================================
     # Device-namespaced routes  — prefix /{node_id}/
     # node_id is the full '!3f172791' string (the '!' is part of the path)

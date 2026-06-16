@@ -109,6 +109,14 @@ class DeviceManager:
         """Look up a bridge by node_id ('!3f172791')."""
         return self._devices.get(node_id)
 
+    def get_rotator(self):
+        """Return the first active rotator client across all bridges, or None."""
+        for bridge in self._devices.values():
+            r = getattr(bridge, "rotator", None)
+            if r is not None:
+                return r
+        return None
+
     def get_by_ble(self, ble_address: str) -> Optional[MeshBridge]:
         node_id = self._by_ble.get(ble_address.upper())
         return self._devices.get(node_id) if node_id else None
