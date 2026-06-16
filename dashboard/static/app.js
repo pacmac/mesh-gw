@@ -456,9 +456,6 @@ function dashboard() {
       if (data.point_target != null) {
         this.yagiPointTarget = data.point_target;
       }
-      if (data.mode != null) {
-        this.rotatorMode = data.mode;
-      }
       if (this.tab === "radar") this.drawRadar();
     },
     async loadRotatorState() {
