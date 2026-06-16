@@ -33,6 +33,7 @@ DEFAULTS = {
         "aim_accumulate_sec": 3, # collect packets this long before picking a winner
         "aim_dwell_sec": 15,     # stay at target; keep collecting for next move during this window
         "aim_deadband_deg": 5,   # minimum az change to trigger a physical move
+        "aim_min_km": 2.0,       # ignore nodes closer than this (not worth pointing yagi at)
     },
     "devices": {
         # BLE address → role tag. Roles: "yagi", "omni" (future multi-radio use).

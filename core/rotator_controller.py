@@ -180,8 +180,9 @@ class RotatorController:
             pos = self._node_pos(cand_num)
             if not pos:
                 continue
-            if _haversine_km(home["lat"], home["lon"], pos["lat"], pos["lon"]) < 0.1:
-                continue  # co-located with home — skip
+            min_km = cfg.get("aim_min_km", 2.0)
+            if _haversine_km(home["lat"], home["lon"], pos["lat"], pos["lon"]) < min_km:
+                continue  # too close to home — not worth pointing yagi at
             winner_num = cand_num
             winner_pos = pos
             break
