@@ -46,6 +46,16 @@ class MeshState:
         self.last_rx_snr: float | None = None
         self.last_rx_rssi: int | None = None
 
+        # packet IDs we sent ourselves; the radio echoes them back and we
+        # suppress that echo from the WS feed (clients already showed it)
+        self._suppress_packet_ids: set[int] = set()
+
+    def suppress_packet_id(self, packet_id: int):
+        """Register a sent packet ID so its TX echo is not re-broadcast on WS."""
+        self._suppress_packet_ids.add(packet_id)
+        if len(self._suppress_packet_ids) > 100:
+            self._suppress_packet_ids.pop()
+
     # -- subscriber management ------------------------------------------------
     def subscribe(self) -> asyncio.Queue:
         q = asyncio.Queue(maxsize=100)
@@ -108,15 +118,17 @@ class MeshState:
         elif which == "mqttClientProxyMessage":
             if self.on_mqtt_proxy_from_radio:
                 await self.on_mqtt_proxy_from_radio(fr.mqttClientProxyMessage)
-        elif which == "packet":
-            await self._handle_mesh_packet(fr.packet)
+        suppress_broadcast = False
+        if which == "packet":
+            suppress_broadcast = await self._handle_mesh_packet(fr.packet)
 
         # Suppress startup NodeDB dump from WS — clients fetch nodedb via
         # GET /nodes. After config_complete, live NODEINFO arrives as packets.
         if which == "node_info" and not self.config_complete:
             return
 
-        await self._broadcast({"type": which, "data": _to_dict(fr)})
+        if not suppress_broadcast:
+            await self._broadcast({"type": which, "data": _to_dict(fr)})
 
     def _merge_config(self, config_msg):
         which = config_msg.WhichOneof("payload_variant")
@@ -136,7 +148,13 @@ class MeshState:
         existing = self.nodes.setdefault(key, {})
         existing.update(node)
 
-    async def _handle_mesh_packet(self, pkt):
+    async def _handle_mesh_packet(self, pkt) -> bool:
+        """Returns True if the WS broadcast for this packet should be suppressed."""
+        # Suppress TX echo: we sent this packet, the radio echoed it back
+        if pkt.id in self._suppress_packet_ids:
+            self._suppress_packet_ids.discard(pkt.id)
+            return True
+
         # Admin replies are correlated to a pending request via request_id
         if pkt.decoded.portnum == portnums_pb2.PortNum.ADMIN_APP:
             req_id = pkt.decoded.reply_id or pkt.decoded.request_id
@@ -211,3 +229,4 @@ class MeshState:
         else:
             node["via_mqtt"] = False   # RF packet — clear the flag
         node["last_heard"] = int(time.time())
+        return False

@@ -349,6 +349,7 @@ class MeshBridge:
 
         to_radio = mesh_pb2.ToRadio()
         to_radio.packet.CopyFrom(packet)
+        self.state.suppress_packet_id(packet.id)
         await self.ble.send(to_radio.SerializeToString())
         return {"sent": True, "id": packet.id}
 
