@@ -447,16 +447,36 @@ function dashboard() {
 
     // -- Rotator (status via bridge WS type:rotator events) ------------------
     _onRotatorEvent(data) {
-      this.rotatorStatus = data;
       this.rotatorConnected = true;
       if (data.az != null) {
+        const azChanged = this.yagiAz !== data.az;
         this.yagiAz = data.az;
         this.yagiConnected = true;
+        if (data.evt != null) this.rotatorStatus = data; // hardware status only
       }
       if (data.point_target != null) {
         this.yagiPointTarget = data.point_target;
+        if (this.tab === "radar") this.drawRadar(); // rebuild for crosshairs
       }
-      if (this.tab === "radar") this.drawRadar();
+      // Animate beam after any potential rebuild — always last
+      if (data.az != null && this.tab === "radar") this._animateBeam(data.az);
+    },
+
+    // Animate only the beam layer — never rebuilds SVG
+    _animateBeam(newAz) {
+      const beamG = document.querySelector('#radar-svg-container .radar-beam');
+      if (!beamG) { this.drawRadar(); return; }
+      const from = this._radarBeamAz ?? newAz;
+      const diff = ((newAz - from + 540) % 360) - 180;
+      const to = from + diff;
+      beamG.style.transition = 'none';
+      beamG.style.transform = `rotate(${from}deg)`;
+      beamG.getBoundingClientRect(); // flush style before transition
+      beamG.style.transition = 'transform 0.8s linear';
+      beamG.style.transform = `rotate(${to}deg)`;
+      this._radarBeamAz = newAz;
+      const lbl = beamG.querySelector('text');
+      if (lbl) lbl.textContent = Math.round(newAz) + '°';
     },
     async loadRotatorState() {
       try {
@@ -1052,21 +1072,15 @@ function dashboard() {
         beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
         onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
       }));
-      // Animate beam: shortest-path rotation with forced reflow so transition fires
+      // Snap beam to last displayed position so _animateBeam can continue from there
       if (this.yagiAz != null) {
         const beamG = container.querySelector('.radar-beam');
+        const snapAz = this._radarBeamAz ?? this.yagiAz;
         if (beamG) {
-          const from = prevAz ?? this.yagiAz;
-          // Shortest angular path — avoids 340° sweep when 20° would do
-          const diff = ((this.yagiAz - from + 540) % 360) - 180;
-          const to = from + diff;
           beamG.style.transition = 'none';
-          beamG.style.transform = `rotate(${from}deg)`;
-          beamG.getBoundingClientRect(); // force reflow — commits initial position
-          beamG.style.transition = 'transform 1.5s ease-in-out';
-          beamG.style.transform = `rotate(${to}deg)`;
+          beamG.style.transform = `rotate(${snapAz}deg)`;
         }
-        this._radarBeamAz = this.yagiAz;
+        if (this._radarBeamAz == null) this._radarBeamAz = this.yagiAz;
       }
     },
 
