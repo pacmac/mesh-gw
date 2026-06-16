@@ -117,11 +117,14 @@ class DeviceManager:
         result = []
         for node_id, bridge in self._devices.items():
             gw = bridge.tcp_gateway
+            rssi = bridge.ble.get_rssi() if bridge.ble else None
             result.append({
                 "node_id": node_id,
                 "ble_address": bridge.ble_address,
                 "ble_state": bridge.ble_state,
                 "ble_error": bridge.ble_error,
+                "ble_rssi": rssi,
+                "ble_rssi_pct": max(0, min(100, round((rssi + 100) / 60 * 100))) if rssi is not None else None,
                 "node_count": len(bridge.state.nodes),
                 "config_complete": bridge.state.config_complete,
                 "tcp_port": gw.port if gw else None,
