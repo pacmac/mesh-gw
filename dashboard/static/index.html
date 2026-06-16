@@ -706,7 +706,10 @@
               </div>
               <div class="form-control mt-2">
                 <label class="label"><span class="label-text">Message</span></label>
-                <textarea class="textarea textarea-bordered" rows="3" x-model="msgText" placeholder="Type a message…"></textarea>
+                <textarea class="textarea textarea-bordered" rows="3" x-model="msgText" placeholder="Type a message…"
+                  autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                  @keydown.up="navigateMsgHistory($event, -1)"
+                  @keydown.down="navigateMsgHistory($event, 1)"></textarea>
               </div>
               <button class="btn btn-primary btn-sm mt-2" @click="sendMessage()" :disabled="!msgText.trim() || (msgIsDirect && !msgDirectTo)">Send</button>
               <span class="text-success text-sm mt-1" x-show="msgSent" x-transition>Sent ✓</span>
@@ -718,8 +721,10 @@
               <div class="overflow-y-auto max-h-[400px] divide-y divide-base-200">
                 <template x-for="(m, i) in messages" :key="i">
                   <div class="flex items-start gap-3 py-2">
-                    <div class="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white"
+                    <div class="w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-bold text-white cursor-pointer"
                          :style="`background:${avatarColor(m.fromNum)}`"
+                         :title="m.broadcast ? '' : 'Reply DM'"
+                         @click="replyTo(m)"
                          x-text="nodeShortName(m.fromNum)">
                     </div>
                     <div class="flex-1 min-w-0">

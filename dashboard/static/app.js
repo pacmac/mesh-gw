@@ -15,6 +15,9 @@ function dashboard() {
     msgFrom: localStorage.getItem("msgFrom") || "",
     msgIsDirect: false,
     msgDirectTo: "",
+    msgInputHistory: JSON.parse(localStorage.getItem('msgInputHistory') || '[]'),
+    msgHistoryIdx: -1,
+    msgDraft: '',
     unreadMessages: 0,
     _seenPacketIds: new Set(),
     availableDevices: [],
@@ -720,6 +723,10 @@ function dashboard() {
         broadcast: to === 0xFFFFFFFF, channel, text, time, direction: 'tx', ackStatus: 'sent',
       });
       if (this.messages.length > 50) this.messages.pop();
+      this.msgInputHistory = [text, ...this.msgInputHistory.filter(t => t !== text)].slice(0, 50);
+      try { localStorage.setItem('msgInputHistory', JSON.stringify(this.msgInputHistory)); } catch (_) {}
+      this.msgHistoryIdx = -1;
+      this.msgDraft = '';
       this.msgText = "";
       this.msgSent = true;
       setTimeout(() => (this.msgSent = false), 2000);
@@ -744,6 +751,30 @@ function dashboard() {
     closeMessageModal() {
       this.msgModal.open = false;
       this.$refs.msgModalDialog?.close();
+    },
+
+    replyTo(m) {
+      if (m.broadcast) return;
+      this.msgIsDirect = true;
+      this.msgDirectTo = m.direction === 'tx' ? m.to : m.fromNum;
+    },
+
+    navigateMsgHistory(e, dir) {
+      const h = this.msgInputHistory;
+      if (!h.length) return;
+      const ta = e.target;
+      if (dir < 0 && ta.selectionStart > 0) return;
+      if (dir > 0 && ta.selectionEnd < ta.value.length) return;
+      e.preventDefault();
+      if (dir < 0) {
+        if (this.msgHistoryIdx === -1) this.msgDraft = this.msgText;
+        this.msgHistoryIdx = Math.min(this.msgHistoryIdx + 1, h.length - 1);
+      } else {
+        if (this.msgHistoryIdx < 0) return;
+        this.msgHistoryIdx--;
+        if (this.msgHistoryIdx < 0) { this.msgText = this.msgDraft; return; }
+      }
+      this.msgText = h[this.msgHistoryIdx];
     },
 
     async sendModalMessage() {
