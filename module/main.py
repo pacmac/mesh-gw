@@ -118,8 +118,8 @@ def main():
             seen.add(addr)
 
     if addresses:
-        for addr, _ in addresses:
-            logger.info("Will connect to: %s", addr)
+        for addr, _, tcp_port in addresses:
+            logger.info("Will connect to: %s (tcp_port=%s)", addr, tcp_port)
     else:
         logger.info("No BLE addresses configured — use POST /devices to connect")
 
