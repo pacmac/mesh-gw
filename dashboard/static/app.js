@@ -431,7 +431,7 @@ function dashboard() {
           .map(d => d.node_id?.startsWith('!') ? parseInt(d.node_id.slice(1), 16) : null)
           .filter(n => n != null && !isNaN(n))
       );
-      return bridgeNums.size ? this.nodes.filter(n => !bridgeNums.has(n.num)) : this.nodes;
+      return bridgeNums.size ? this.nodes.filter(n => !bridgeNums.has(n.num >>> 0)) : this.nodes;
     },
 
     // -- websocket live feed ---------------------------------------------------
@@ -1196,16 +1196,7 @@ function dashboard() {
         const dotColor = ageColor(node.last_heard, this.heatmapMaxAge);
         const isSelected = node.num === selectedNum;
         const isLastHeard = node.num === lastHeardNum;
-        const isPointTarget = node.num === pointTarget;
         const g = svgElem('g', { class: 'radar-node' + (isSelected ? ' radar-node-selected' : ''), style: 'cursor:pointer' });
-        if (isPointTarget) {
-          const rs = 'stroke:rgba(255,30,30,0.95);stroke-width:1.8';
-          g.appendChild(svgElem('circle', { cx: x, cy: y, r: 16, style: `fill:none;${rs};stroke-dasharray:4 3` }));
-          g.appendChild(svgElem('line', { x1: x-22, y1: y, x2: x-10, y2: y, style: rs }));
-          g.appendChild(svgElem('line', { x1: x+10, y1: y, x2: x+22, y2: y, style: rs }));
-          g.appendChild(svgElem('line', { x1: x, y1: y-22, x2: x, y2: y-10, style: rs }));
-          g.appendChild(svgElem('line', { x1: x, y1: y+10, x2: x, y2: y+22, style: rs }));
-        }
         if (isLastHeard) {
           const rs = `stroke:${AMBER};stroke-width:1.2`;
           g.appendChild(svgElem('circle', { cx: x, cy: y, r: 13, style: `fill:none;${rs};stroke-dasharray:3 4` }));
@@ -1240,6 +1231,22 @@ function dashboard() {
       ng.appendChild(svgElem('line', { x1: CX+hSize+1, y1: CY, x2: CX+16, y2: CY, style: `stroke:${G4};stroke-width:1.2` }));
       ng.appendChild(svgElem('line', { x1: CX, y1: CY-16, x2: CX, y2: CY-hSize-1, style: `stroke:${G4};stroke-width:1.2` }));
       ng.appendChild(svgElem('line', { x1: CX, y1: CY+hSize+1, x2: CX, y2: CY+16, style: `stroke:${G4};stroke-width:1.2` }));
+
+      // Crosshairs drawn last so they're always on top of all node blips
+      if (pointTarget) {
+        const ti = nodes.findIndex(n => n.num === pointTarget);
+        if (ti >= 0) {
+          const { x, y } = npos[ti];
+          const rs = 'stroke:rgba(255,30,30,0.95);stroke-width:1.8';
+          const cg = svgElem('g');
+          cg.appendChild(svgElem('circle', { cx: x, cy: y, r: 16, style: `fill:none;${rs};stroke-dasharray:4 3` }));
+          cg.appendChild(svgElem('line', { x1: x-22, y1: y, x2: x-10, y2: y, style: rs }));
+          cg.appendChild(svgElem('line', { x1: x+10, y1: y, x2: x+22, y2: y, style: rs }));
+          cg.appendChild(svgElem('line', { x1: x, y1: y-22, x2: x, y2: y-10, style: rs }));
+          cg.appendChild(svgElem('line', { x1: x, y1: y+10, x2: x, y2: y+22, style: rs }));
+          ng.appendChild(cg);
+        }
+      }
     },
 
     // -- Reusable Node Info modal, callable from Radar and Nodes table ----------------
