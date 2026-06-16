@@ -10,6 +10,7 @@ function dashboard() {
     tab: localStorage.getItem("activeTab") || "overview",
     cfgTab: localStorage.getItem("activeCfgTab") || "device",
     drawerOpen: false,
+    sidebarPinned: localStorage.getItem('sidebarPinned') !== 'false',
     activeNodeId: localStorage.getItem("activeNodeId") || "",
     availableDevices: [],
     status: {},

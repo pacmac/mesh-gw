@@ -23,18 +23,25 @@
 </head>
 <body class="h-screen overflow-hidden bg-base-200">
 
-<div class="drawer lg:drawer-open h-screen" x-data="dashboard()" x-init="init()">
+<div class="drawer h-screen" :class="sidebarPinned ? 'lg:drawer-open' : ''" x-data="dashboard()" x-init="init()">
   <input id="nav-drawer" type="checkbox" class="drawer-toggle" x-model="drawerOpen" />
 
   <!-- ===================== DRAWER CONTENT ===================== -->
   <div class="drawer-content flex flex-col h-screen overflow-hidden">
 
     <!-- Top navbar -->
-    <div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-3">
+    <div class="navbar min-h-0 py-1.5 bg-base-100 shadow-md sticky top-0 z-50 px-3">
+      <!-- Mobile hamburger (always shown on mobile) -->
       <div class="flex-none lg:hidden">
         <label for="nav-drawer" class="btn btn-square btn-ghost">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-5 h-5 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
         </label>
+      </div>
+      <!-- Desktop expand button (shown only when sidebar is collapsed) -->
+      <div class="flex-none hidden" :class="!sidebarPinned && 'lg:flex'">
+        <button class="btn btn-square btn-ghost" @click="sidebarPinned = true; localStorage.setItem('sidebarPinned', 'true')" title="Expand sidebar">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-5 h-5 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        </button>
       </div>
       <div class="flex-1 flex items-center gap-3 lg:hidden">
         <span class="text-base font-bold tracking-wide">mesh-gw</span>
@@ -75,9 +82,9 @@
       No device selected — go to Devices to connect
     </div>
 
-    <!-- Main scrollable content -->
-    <div class="flex-1 overflow-y-auto">
-      <div class="p-4 max-w-[1400px] w-full mx-auto">
+    <!-- Main content — radar gets no padding/scroll so it fills the viewport -->
+    <div class="flex-1 min-h-0" :class="tab==='radar' ? 'overflow-hidden' : 'overflow-y-auto'">
+      <div :class="tab==='radar' ? 'h-full flex flex-col' : 'p-4 max-w-[1400px] w-full mx-auto'">
 
         <!-- ===================== OVERVIEW ===================== -->
         <div x-show="tab==='overview'" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -176,7 +183,7 @@
 
         <!-- ===================== RADAR ===================== -->
         <div x-show="tab==='radar'" data-theme="business"
-             class="flex flex-col h-full min-h-0 rounded-2xl overflow-hidden"
+             class="flex flex-col flex-1 min-h-0 overflow-hidden"
              style="box-shadow:0 0 0 1px rgba(0,255,80,0.10),0 8px 40px rgba(0,0,0,0.6)">
           <div class="flex flex-wrap gap-3 items-center shrink-0 px-4 py-2"
                style="background:#0a1a0a;border-bottom:1px solid rgba(0,255,80,0.12)">
@@ -768,8 +775,8 @@
       </div>
     </div>
 
-    <footer class="footer footer-center p-3 bg-base-100 text-base-content/40 text-xs border-t border-base-200">
-      <div>mesh-gw dashboard · <span x-text="activeNodeId || 'no device'"></span></div>
+    <footer class="footer footer-center py-1 px-3 bg-base-100 text-base-content/40 text-xs border-t border-base-200">
+      <div>mesh-gw · <span x-text="activeNodeId || 'no device'"></span></div>
     </footer>
   </div>
 
@@ -782,10 +789,14 @@
       <div class="px-4 py-4 border-b border-base-200">
         <div class="flex items-center gap-2">
           <span class="text-xl">📡</span>
-          <div class="flex flex-col leading-tight">
+          <div class="flex flex-col leading-tight flex-1">
             <span class="text-sm font-bold tracking-widest uppercase" style="font-family:'Oxanium',sans-serif">mesh-gw</span>
             <span class="text-xs text-base-content/50" x-text="info.metadata.firmware_version ? ('fw ' + info.metadata.firmware_version) : 'dashboard'"></span>
           </div>
+          <!-- Desktop collapse button -->
+          <button class="btn btn-ghost btn-xs hidden lg:flex" @click="sidebarPinned = false; localStorage.setItem('sidebarPinned', 'false')" title="Collapse sidebar">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="w-4 h-4 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 19l-7-7 7-7M18 19l-7-7 7-7"/></svg>
+          </button>
         </div>
         <!-- Active device -->
         <div class="mt-2 flex items-center gap-1" x-show="activeNodeId">
