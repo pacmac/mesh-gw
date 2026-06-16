@@ -1052,15 +1052,19 @@ function dashboard() {
         beamWidth: this.bridgeConfig?.rotator?.beam_width_deg ?? 5,
         onSelect: (node) => { this.radarSelected = node; this.openNodeInfo(node); },
       }));
-      // Animate beam from previous bearing to new bearing
+      // Animate beam: shortest-path rotation with forced reflow so transition fires
       if (this.yagiAz != null) {
         const beamG = container.querySelector('.radar-beam');
         if (beamG) {
-          beamG.style.transform = `rotate(${prevAz ?? this.yagiAz}deg)`;
-          requestAnimationFrame(() => {
-            beamG.style.transition = 'transform 0.6s ease';
-            beamG.style.transform = `rotate(${this.yagiAz}deg)`;
-          });
+          const from = prevAz ?? this.yagiAz;
+          // Shortest angular path — avoids 340° sweep when 20° would do
+          const diff = ((this.yagiAz - from + 540) % 360) - 180;
+          const to = from + diff;
+          beamG.style.transition = 'none';
+          beamG.style.transform = `rotate(${from}deg)`;
+          beamG.getBoundingClientRect(); // force reflow — commits initial position
+          beamG.style.transition = 'transform 1.5s ease-in-out';
+          beamG.style.transform = `rotate(${to}deg)`;
         }
         this._radarBeamAz = this.yagiAz;
       }
@@ -1511,7 +1515,7 @@ function buildRadarSVG(nodes, maxKm, opts = {}) {
       style: `fill:${WEDGE_COLOR};stroke:none;clip-path:url(#radarClip)`,
     }));
     beamG.appendChild(svgElem("line", { x1: CX, y1: CY, x2: CX, y2: CY - R,
-      style: `stroke:${BEAM_COLOR};stroke-width:1.5;filter:url(#beamGlow)` }));
+      style: `stroke:${BEAM_COLOR};stroke-width:2;opacity:0.9` }));
     // Bearing label at the tip — rotates with the beam
     const bearLbl = svgElem("text", { x: CX, y: CY - (R + 15),
       style: `fill:rgba(255,50,50,0.95);font-size:11px;font-weight:700;font-family:'Oxanium',monospace;text-anchor:middle;dominant-baseline:middle;pointer-events:none` });
