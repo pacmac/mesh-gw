@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
-from core.methods import METHODS
+from core.methods import METHODS, get_nodes
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
 from core.schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
 from .device_manager import DeviceManager
