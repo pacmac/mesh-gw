@@ -130,6 +130,37 @@ def create_app(dm: DeviceManager) -> FastAPI:
         except Exception as e:
             raise HTTPException(500, f"Scan failed: {e}")
 
+    # -- BLE pairing for dynamic-PIN devices ------------------------------------
+
+    @app.post("/ble/pair")
+    async def ble_pair(body: dict = Body(...)):
+        """Start connection to a dynamic-PIN device. The pairing process pauses
+        at the passkey prompt. Watch the device screen and call POST /ble/passkey
+        with the PIN shown."""
+        address = (body.get("address") or "").strip()
+        if not address:
+            raise HTTPException(400, "address required")
+        key = await dm.pair_device(address)
+        return {
+            "connecting": True,
+            "key": key,
+            "address": address,
+            "hint": "Watch device screen for PIN, then POST /ble/passkey",
+        }
+
+    @app.post("/ble/passkey")
+    async def ble_passkey(body: dict = Body(...)):
+        """Supply the PIN shown on the device screen to complete pairing."""
+        address = (body.get("address") or "").strip()
+        passkey = str(body.get("passkey") or "").strip()
+        if not address or not passkey:
+            raise HTTPException(400, "address and passkey required")
+        try:
+            dm.resolve_passkey(address, passkey)
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+        return {"accepted": True, "address": address}
+
     # -- Unified WebSocket: all devices, events tagged with device ID ----------
 
     @app.websocket("/events")

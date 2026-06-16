@@ -46,6 +46,11 @@ class BLEHandler:
         self.on_packet_received: Optional[Callable] = None
         self.on_disconnected: Optional[Callable] = None
 
+        # Set to an asyncio.Future before connecting to a dynamic-PIN device.
+        # _bluetoothctl_pair will await it for the passkey instead of using the
+        # fixed pin — the future is resolved by POST /ble/passkey.
+        self.passkey_future: Optional[asyncio.Future] = None
+
         # Packet deduplication
         self.last_packet_hash: Optional[int] = None
         self.last_packet_time: float = 0
@@ -126,7 +131,19 @@ class BLEHandler:
                 lower = text.lower()
 
                 if "enter passkey" in lower or "request passkey" in lower:
-                    proc.stdin.write(f"{pin}\n".encode())
+                    if self.passkey_future and not self.passkey_future.done():
+                        logger.info("Passkey required — waiting for POST /ble/passkey (60s)…")
+                        try:
+                            resolved_pin = await asyncio.wait_for(
+                                asyncio.shield(self.passkey_future), timeout=60.0
+                            )
+                        except asyncio.TimeoutError:
+                            proc.kill()
+                            await proc.wait()
+                            raise RuntimeError("Passkey timeout — user did not supply PIN within 60s")
+                        proc.stdin.write(f"{resolved_pin}\n".encode())
+                    else:
+                        proc.stdin.write(f"{pin}\n".encode())
                     await proc.stdin.drain()
                 elif "confirm passkey" in lower or "(yes/no)" in lower:
                     proc.stdin.write(b"yes\n")

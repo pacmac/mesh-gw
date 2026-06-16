@@ -82,8 +82,12 @@ class MeshBridge:
 
     # -- dashboard-driven connect/disconnect -----------------------------------
 
-    async def connect_to(self, address: str, pin: str = ""):
-        """Connect to BLE device — runs as a background task from the endpoint."""
+    async def connect_to(self, address: str, pin: str = "", passkey_future=None):
+        """Connect to BLE device — runs as a background task from the endpoint.
+
+        passkey_future: asyncio.Future that resolves with the PIN shown on the
+        device screen. Set by POST /ble/pair for dynamic-PIN devices.
+        """
         self._user_disconnect = False
         self.ble_state = "connecting"
         self.ble_error = None
@@ -98,6 +102,8 @@ class MeshBridge:
                 logger.info(f"Connecting to BLE device: {address}")
                 for attempt in range(1, 4):
                     self._init_ble(address)
+                    if passkey_future:
+                        self.ble.passkey_future = passkey_future
                     try:
                         await self.ble.connect(pin=pin)
                         break

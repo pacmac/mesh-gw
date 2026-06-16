@@ -25,10 +25,12 @@ class DeviceManager:
         self._watchers: dict[str, asyncio.Task] = {}
         # unified WS subscriber queues
         self._subscribers: set[asyncio.Queue] = set()
+        # pending passkey futures for dynamic-PIN pairing: addr(upper) -> Future[str]
+        self._passkey_futures: dict[str, asyncio.Future] = {}
 
     # -- device lifecycle -------------------------------------------------------
 
-    async def connect(self, ble_address: str, pin: str = "") -> str:
+    async def connect(self, ble_address: str, pin: str = "", passkey_future=None) -> str:
         """Start a BLE connection. Returns temp key ('ble:<ADDR>') immediately;
         the device is re-keyed to '!{node_id}' once my_info arrives."""
         addr = ble_address.upper()
@@ -51,10 +53,30 @@ class DeviceManager:
         )
         self._watchers[temp_key] = task
 
-        # connect_to() handles its own retries (3 attempts, 5s apart)
-        asyncio.create_task(bridge.connect_to(ble_address, pin=pin))
+        asyncio.create_task(bridge.connect_to(ble_address, pin=pin, passkey_future=passkey_future))
         logger.info("Connecting to %s (temp key: %s)", addr, temp_key)
         return temp_key
+
+    async def pair_device(self, ble_address: str) -> str:
+        """Initiate connection for a dynamic-PIN device. The pairing process
+        will pause at the passkey prompt — call resolve_passkey() with the PIN
+        shown on the device screen to complete it. Returns the temp key."""
+        addr = ble_address.upper()
+        # Cancel any stale future for this address
+        old = self._passkey_futures.pop(addr, None)
+        if old and not old.done():
+            old.cancel()
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._passkey_futures[addr] = future
+        return await self.connect(ble_address, passkey_future=future)
+
+    def resolve_passkey(self, ble_address: str, passkey: str):
+        """Supply the PIN seen on the device screen to complete pairing."""
+        addr = ble_address.upper()
+        future = self._passkey_futures.pop(addr, None)
+        if future is None or future.done():
+            raise ValueError(f"No pending passkey request for {ble_address}")
+        future.set_result(passkey)
 
     async def disconnect(self, node_id: str):
         """Disconnect and remove a device by node_id or temp key."""
