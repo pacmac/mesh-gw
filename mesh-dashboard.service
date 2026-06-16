@@ -1,0 +1,15 @@
+[Unit]
+Description=mesh-gw dashboard (static file server)
+After=network.target mesh-gw.service
+Wants=mesh-gw.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/share/pac/mesh-gw/dashboard
+ExecStart=/usr/bin/python3 -m uvicorn server:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

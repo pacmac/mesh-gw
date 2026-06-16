@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mesh-gw</title>
+<script>
+  (function() {
+    var dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'business' : 'corporate');
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(e) {
+      document.documentElement.setAttribute('data-theme', e.matches ? 'business' : 'corporate');
+    });
+  })();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+</script>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 24 24%22><text y=%22.9em%22 font-size=%2220%22>📡</text></svg>">
+<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.14/dist/full.min.css" rel="stylesheet" type="text/css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+<script src="config.js"></script>
+<link rel="stylesheet" href="style.css?v=20260616">
+</head>
+<body class="h-screen overflow-hidden bg-base-200">
+
+<div class="drawer lg:drawer-open h-screen" x-data="dashboard()" x-init="init()">
+  <input id="nav-drawer" type="checkbox" class="drawer-toggle" x-model="drawerOpen" />
+
+  <!-- ===================== DRAWER CONTENT ===================== -->
+  <div class="drawer-content flex flex-col h-screen overflow-hidden">
+
+    <!-- Top navbar -->
+    <div class="navbar bg-base-100 shadow-md sticky top-0 z-50 px-3">
+      <div class="flex-none lg:hidden">
+        <label for="nav-drawer" class="btn btn-square btn-ghost">
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="inline-block w-5 h-5 stroke-current"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+        </label>
+      </div>
+      <div class="flex-1 flex items-center gap-3 lg:hidden">
+        <span class="text-base font-bold tracking-wide">mesh-gw</span>
+        <span class="font-mono text-xs text-success opacity-70" x-show="activeNodeId" x-text="activeNodeId"></span>
+      </div>
+      <!-- Status indicators (right side) -->
+      <div class="flex-none flex items-center gap-2 ml-auto">
+        <div class="tooltip tooltip-bottom" :data-tip="'BLE · mesh SNR ' + (status.last_rx_snr != null ? status.last_rx_snr.toFixed(1) + ' dB' : 'n/a') + (status.ble_rssi != null ? ' · ' + status.ble_rssi + ' dBm (' + status.ble_rssi_pct + '%)' : '')">
+          <div class="flex items-center gap-1.5 px-2 py-1 rounded border" :class="status.ble_connected ? 'border-success/40' : 'border-error/40'">
+            <svg width="16" height="13" viewBox="0 0 16 13" class="shrink-0">
+              <rect x="0"  y="9"  width="3" height="4"  rx="0.8" :fill="signalBarFill(1)"/>
+              <rect x="4"  y="6"  width="3" height="7"  rx="0.8" :fill="signalBarFill(2)"/>
+              <rect x="8"  y="3"  width="3" height="10" rx="0.8" :fill="signalBarFill(3)"/>
+              <rect x="12" y="0"  width="3" height="13" rx="0.8" :fill="signalBarFill(4)"/>
+            </svg>
+            <span class="text-xs font-bold tracking-widest" :class="status.ble_connected ? 'text-success' : 'text-error'" style="font-family:'Oxanium',sans-serif;font-size:0.62rem">BLE</span>
+            <span class="inline-block w-1.5 h-1.5 rounded-full" :class="status.ble_connected ? 'bg-success animate-pulse' : 'bg-error'"></span>
+          </div>
+        </div>
+        <div class="tooltip tooltip-bottom" data-tip="MQTT proxy to broker">
+          <div class="badge gap-1" :class="mqttProxy ? 'badge-success' : 'badge-ghost'">
+            <span class="inline-block w-2 h-2 rounded-full" :class="mqttProxy ? 'bg-success-content animate-pulse' : ''"></span>
+            MQTT
+          </div>
+        </div>
+        <div class="badge badge-info" x-text="(status.node_count ?? '–') + ' nodes'"></div>
+        <div class="badge" :class="wsConnected ? 'badge-primary' : 'badge-ghost'" x-text="wsConnected ? 'live' : 'offline'"></div>
+      </div>
+    </div>
+
+    <!-- Offline banner -->
+    <div x-show="!serverReachable" x-transition class="bg-error text-error-content text-sm font-semibold text-center py-2 px-4 z-40">
+      Bridge unreachable — retrying…
+    </div>
+
+    <!-- No device selected banner -->
+    <div x-show="!activeNodeId && serverReachable" x-transition class="bg-warning text-warning-content text-sm font-semibold text-center py-2 px-4 z-40 cursor-pointer" @click="setNav('devices')">
+      No device selected — go to Devices to connect
+    </div>
+
+    <!-- Main scrollable content -->
+    <div class="flex-1 overflow-y-auto">
+      <div class="p-4 max-w-[1400px] w-full mx-auto">
+
+        <!-- ===================== OVERVIEW ===================== -->
+        <div x-show="tab==='overview'" class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+
+          <div class="stats stats-vertical sm:stats-horizontal shadow lg:col-span-3 bg-base-100">
+            <div class="stat">
+              <div class="stat-title">Device</div>
+              <div class="stat-value text-lg" x-text="(nodeSelf.user && nodeSelf.user.long_name) || '–'"></div>
+              <div class="stat-desc" x-text="info.metadata.hw_model || ''"></div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Battery</div>
+              <div class="stat-value text-lg" x-text="(nodeSelf.device_metrics?.battery_level ?? '–') + '%'"></div>
+              <div class="stat-desc" x-text="nodeSelf.device_metrics ? (nodeSelf.device_metrics.voltage.toFixed(2) + ' V') : ''"></div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Uptime</div>
+              <div class="stat-value text-lg" x-text="fmtUptime(nodeSelf.device_metrics?.uptime_seconds)"></div>
+              <div class="stat-desc">since last boot</div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Channel Util</div>
+              <div class="stat-value text-lg" x-text="(nodeSelf.device_metrics?.channel_utilization?.toFixed(1) ?? '–') + '%'"></div>
+              <div class="stat-desc" x-text="'air tx ' + (nodeSelf.device_metrics?.air_util_tx?.toFixed(2) ?? '–') + '%'"></div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Heap Free</div>
+              <div class="stat-value text-lg" x-text="fmtBytes(nodeSelf.local_stats?.heap_free_bytes)"></div>
+              <div class="stat-desc" x-text="'of ' + fmtBytes(nodeSelf.local_stats?.heap_total_bytes)"></div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Config</div>
+              <div class="stat-value text-lg" :class="status.config_complete ? 'text-success' : 'text-warning'" x-text="status.config_complete ? 'complete' : 'syncing…'"></div>
+              <div class="stat-desc" x-text="(status.node_count ?? 0) + ' nodes in db'"></div>
+            </div>
+          </div>
+
+          <!-- Environment sensor stats -->
+          <div class="stats stats-vertical sm:stats-horizontal shadow lg:col-span-3 bg-base-100" x-show="nodeSelf.environment_metrics">
+            <div class="stat">
+              <div class="stat-title">Temperature</div>
+              <div class="stat-value text-lg" x-text="nodeSelf.environment_metrics?.temperature != null ? nodeSelf.environment_metrics.temperature.toFixed(1) + ' °C' : '–'"></div>
+              <div class="stat-desc">onboard sensor</div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Humidity</div>
+              <div class="stat-value text-lg" x-text="nodeSelf.environment_metrics?.relative_humidity != null ? nodeSelf.environment_metrics.relative_humidity.toFixed(1) + ' %' : '–'"></div>
+              <div class="stat-desc">relative</div>
+            </div>
+            <div class="stat">
+              <div class="stat-title">Dew Point</div>
+              <div class="stat-value text-lg" x-text="dewPoint(nodeSelf.environment_metrics?.temperature, nodeSelf.environment_metrics?.relative_humidity) != null ? dewPoint(nodeSelf.environment_metrics.temperature, nodeSelf.environment_metrics.relative_humidity).toFixed(1) + ' °C' : '–'"></div>
+              <div class="stat-desc">calculated</div>
+            </div>
+          </div>
+
+          <div class="card bg-base-100 shadow lg:col-span-2">
+            <div class="card-body">
+              <h2 class="card-title">Live Event Feed</h2>
+              <div class="overflow-y-auto max-h-[480px] font-mono text-xs flex flex-col gap-1" x-ref="feed">
+                <template x-for="(ev, i) in events" :key="i">
+                  <div class="flex gap-2 items-start border-b border-base-200 pb-1">
+                    <span class="text-base-content/40 shrink-0" x-text="ev.time"></span>
+                    <span class="badge badge-sm" :class="badgeForType(ev.type)" x-text="ev.type"></span>
+                    <span class="text-base-content/80" x-text="ev.summary"></span>
+                  </div>
+                </template>
+                <div x-show="events.length===0" class="text-base-content/40 italic">Waiting for events…</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title">MQTT Proxy</h2>
+              <div class="text-sm flex flex-col gap-2">
+                <div class="flex justify-between"><span class="text-base-content/60">Status</span>
+                  <span class="badge" :class="mqttProxy ? 'badge-success' : 'badge-ghost'" x-text="mqttProxy ? 'connected' : 'inactive'"></span>
+                </div>
+                <div class="flex justify-between"><span class="text-base-content/60">Broker</span><span x-text="mqttCfg.address || '–'"></span></div>
+                <div class="flex justify-between"><span class="text-base-content/60">Root topic</span><span class="font-mono" x-text="mqttCfg.root || '–'"></span></div>
+                <div class="flex justify-between"><span class="text-base-content/60">Encryption</span><span x-text="mqttCfg.encryption_enabled ? 'on' : 'off'"></span></div>
+                <div class="flex justify-between"><span class="text-base-content/60">JSON output</span><span x-text="mqttCfg.json_enabled ? 'on' : 'off'"></span></div>
+              </div>
+              <div class="divider my-1"></div>
+              <h3 class="font-semibold text-sm mb-1">Node identity</h3>
+              <div class="text-sm flex flex-col gap-2">
+                <div class="flex justify-between"><span class="text-base-content/60">Node ID</span><span class="font-mono" x-text="(nodeSelf.user && nodeSelf.user.id) || '–'"></span></div>
+                <div class="flex justify-between"><span class="text-base-content/60">Num</span><span class="font-mono" x-text="info.my_info.my_node_num ?? '–'"></span></div>
+                <div class="flex justify-between"><span class="text-base-content/60">Region</span><span x-text="loraCfg.region || '–'"></span></div>
+                <div class="flex justify-between"><span class="text-base-content/60">Modem preset</span><span x-text="loraCfg.modem_preset || '–'"></span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== RADAR ===================== -->
+        <div x-show="tab==='radar'" data-theme="business"
+             class="flex flex-col h-full min-h-0 rounded-2xl overflow-hidden"
+             style="box-shadow:0 0 0 1px rgba(0,255,80,0.10),0 8px 40px rgba(0,0,0,0.6)">
+          <div class="flex flex-wrap gap-3 items-center shrink-0 px-4 py-2"
+               style="background:#0a1a0a;border-bottom:1px solid rgba(0,255,80,0.12)">
+            <div class="flex items-center gap-2 text-sm">
+              <span class="text-xs font-mono opacity-50 tracking-widest uppercase">Range</span>
+              <select class="select select-bordered select-xs font-mono" x-model="radarRange" @change="saveRadarPref('max_range_km', Number(radarRange)); drawRadar()">
+                <option value="25">25 km</option>
+                <option value="50">50 km</option>
+                <option value="100">100 km</option>
+                <option value="250">250 km</option>
+                <option value="0">Auto</option>
+              </select>
+            </div>
+            <div class="flex items-center gap-2 text-sm">
+              <span class="text-xs font-mono opacity-50 tracking-widest uppercase">Home</span>
+              <span class="font-mono text-xs" style="color:rgba(0,255,80,0.7)" x-text="homePos ? homePos.lat.toFixed(4)+', '+homePos.lon.toFixed(4) : 'no fix'"></span>
+            </div>
+            <label class="flex items-center gap-2 cursor-pointer">
+              <span class="text-xs font-mono opacity-50 tracking-widest uppercase">XHair</span>
+              <input type="checkbox" class="toggle toggle-xs" :checked="radarCrosshair" @change="toggleRadarCrosshair()">
+            </label>
+            <span class="font-mono text-xs px-2 py-0.5 rounded" style="color:rgba(0,255,80,0.6);border:1px solid rgba(0,255,80,0.2)" x-text="radarNodes.length + ' plotted'"></span>
+            <span class="ml-auto font-mono text-xs animate-pulse" style="color:rgba(0,255,80,0.5)" x-show="geocoding">geocoding…</span>
+          </div>
+          <div class="flex-1 min-h-0 flex items-center justify-center" id="radar-wrap"
+               style="background:radial-gradient(ellipse at 40% 35%,#0c1a0c 0%,#050e05 55%,#020802 100%)">
+            <div x-show="!homePos" class="font-mono text-xs text-center" style="color:rgba(0,255,80,0.35)">
+              NO HOME POSITION<br><span class="opacity-60">set a fixed lat/lon via Device Config</span>
+            </div>
+            <div x-show="homePos" id="radar-svg-container" class="w-full h-full"></div>
+          </div>
+        </div>
+
+        <!-- ===================== MESSAGE MODAL ===================== -->
+        <dialog class="modal" x-ref="msgModalDialog" @close="msgModal.open = false">
+          <div class="modal-box">
+            <h3 class="font-bold text-lg font-oxanium" x-text="msgModal.mode === 'direct' ? ('Message → ' + (msgModal.label || msgModal.to)) : 'Broadcast message'"></h3>
+            <div class="flex flex-col gap-3 mt-3">
+              <label class="flex items-center gap-2 text-sm" x-show="msgModal.mode === 'broadcast'">
+                <span class="label-text">Channel</span>
+                <select class="select select-bordered select-xs" x-model="msgModal.channel">
+                  <template x-for="ch in channels" :key="ch.index">
+                    <option :value="String(ch.index)" x-text="ch.index + ': ' + (ch.data?.settings?.name || 'default')"></option>
+                  </template>
+                </select>
+              </label>
+              <textarea class="textarea textarea-bordered w-full" rows="3" placeholder="Message text" x-model="msgModal.text"></textarea>
+              <div class="flex items-center gap-2">
+                <button class="btn btn-sm btn-primary" @click="sendModalMessage()" :disabled="!msgModal.text.trim()">Send</button>
+                <span class="text-success text-xs" x-show="msgModal.sent">Sent ✓</span>
+              </div>
+            </div>
+            <div class="modal-action">
+              <button class="btn btn-sm" @click="closeMessageModal()">Close</button>
+            </div>
+          </div>
+          <form method="dialog" class="modal-backdrop"><button>close</button></form>
+        </dialog>
+
+        <!-- ===================== NODE INFO MODAL ===================== -->
+        <dialog class="modal" x-ref="nodeInfoDialog">
+          <div class="modal-box">
+            <h3 class="font-bold text-lg font-oxanium" x-text="nodeInfo?.user?.long_name || '–'"></h3>
+            <template x-if="nodeInfo">
+              <div class="flex flex-col gap-2 text-sm mt-2">
+                <div class="font-mono text-xs opacity-60" x-text="nodeInfo.user?.id || nodeInfo.num"></div>
+                <div class="divider my-1"></div>
+                <div class="flex justify-between"><span class="opacity-60">Distance</span> <span x-text="nodeInfo._km != null ? nodeInfo._km.toFixed(1)+' km' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Bearing</span> <span x-text="nodeInfo._az != null ? nodeInfo._az.toFixed(0)+'°' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">SNR</span> <span x-text="nodeInfo.snr != null ? nodeInfo.snr+' dB' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">RSSI</span> <span x-text="nodeInfo.rssi != null ? nodeInfo.rssi+' dBm' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Hops</span> <span x-text="nodeInfo.hops ?? '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Battery</span> <span x-text="nodeInfo.device_metrics?.battery_level != null ? nodeInfo.device_metrics.battery_level+'%' : '–'"></span></div>
+                <div class="flex justify-between"><span class="opacity-60">Last heard</span> <span x-text="fmtAge(nodeInfo.last_heard)"></span></div>
+                <div class="divider my-1"></div>
+                <div class="flex flex-col gap-1">
+                  <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Location</span>
+                  <span class="text-xs" x-text="nodeInfo._address || (nodeInfo.position ? (nodeInfo.position.latitude_i/1e7).toFixed(4)+', '+(nodeInfo.position.longitude_i/1e7).toFixed(4) : 'no position')"></span>
+                </div>
+                <div class="divider my-1"></div>
+                <div class="flex flex-col gap-1">
+                  <span class="opacity-60 text-xs uppercase" style="font-family:'Oxanium',sans-serif;letter-spacing:.08em">Hardware</span>
+                  <span x-text="nodeInfo.user?.hw_model || '–'"></span>
+                </div>
+                <div class="divider my-1"></div>
+                <div class="flex flex-nowrap gap-1">
+                  <button class="btn btn-xs btn-outline flex-1 px-1 text-[10px] whitespace-nowrap" @click="openMessageModal('broadcast', nodeInfo)">BC Message</button>
+                  <button class="btn btn-xs btn-outline flex-1 px-1 text-[10px] whitespace-nowrap" @click="openMessageModal('direct', nodeInfo)">DIR Message</button>
+                  <button class="btn btn-xs btn-outline flex-1 px-1 text-[10px] whitespace-nowrap" :disabled="nodeInfo._az == null" @click="pointAtNode(nodeInfo)" title="Command the Yagi rotator to this node's bearing">Point</button>
+                </div>
+              </div>
+            </template>
+            <div class="modal-action">
+              <button class="btn btn-sm" @click="$refs.nodeInfoDialog?.close()">Close</button>
+            </div>
+          </div>
+          <form method="dialog" class="modal-backdrop"><button>close</button></form>
+        </dialog>
+
+        <!-- ===================== NODES ===================== -->
+        <div x-show="tab==='nodes'" class="card bg-base-100 shadow">
+          <div class="card-body">
+            <div class="flex items-center justify-between flex-wrap gap-2">
+              <h2 class="card-title">
+                NodeDB
+                <span class="badge badge-neutral" x-text="filteredNodes().length"></span>
+                <span class="text-xs font-normal opacity-50" x-show="filteredNodes().length !== nodes.length" x-text="'of ' + nodes.length"></span>
+              </h2>
+              <button class="btn btn-sm btn-outline" @click="loadNodes()">Refresh</button>
+            </div>
+            <div class="flex flex-wrap gap-x-4 gap-y-1 items-center text-sm py-1 border-b border-base-300">
+              <span class="font-semibold text-xs uppercase opacity-50 tracking-wide">Filters</span>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <span class="text-xs">Max hops</span>
+                <select class="select select-xs select-bordered" :value="nodeFilters.maxHops" @change="saveNodeFilter('maxHops', parseInt($event.target.value))">
+                  <option value="99">Any</option>
+                  <option value="0">Direct (0)</option>
+                  <option value="1">≤ 1</option>
+                  <option value="2">≤ 2</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <span class="text-xs">Last heard</span>
+                <select class="select select-xs select-bordered" :value="nodeFilters.maxAge" @change="saveNodeFilter('maxAge', parseInt($event.target.value))">
+                  <option value="0">Any</option>
+                  <option value="1800">30 m</option>
+                  <option value="3600">1 h</option>
+                  <option value="21600">6 h</option>
+                  <option value="86400">24 h</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.namedOnly" @change="saveNodeFilter('namedOnly', $event.target.checked)">
+                <span class="text-xs">Named</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasPos" @change="saveNodeFilter('hasPos', $event.target.checked)">
+                <span class="text-xs">Has position</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs checkbox-error" :checked="nodeFilters.hideMqtt" @change="saveNodeFilter('hideMqtt', $event.target.checked)">
+                <span class="text-xs">Hide MQTT</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasSignal" @change="saveNodeFilter('hasSignal', $event.target.checked)">
+                <span class="text-xs">RF signal</span>
+              </label>
+              <label class="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasTelem" @change="saveNodeFilter('hasTelem', $event.target.checked)">
+                <span class="text-xs">Telemetry</span>
+              </label>
+              <button class="btn btn-xs btn-ghost opacity-50" @click="resetNodeFilters()">Reset</button>
+            </div>
+            <div class="overflow-x-auto max-h-[65vh]">
+              <table class="table table-zebra table-sm">
+                <thead class="sticky top-0 bg-base-100 z-10">
+                  <tr>
+                    <template x-for="col in [
+                      {k:'long_name',l:'Name'},{k:'short_name',l:'Short'},{k:'id',l:'ID'},
+                      {k:'battery',l:'Batt'},{k:'snr',l:'SNR'},{k:'rssi',l:'SS%'},
+                      {k:'km',l:'KM'},{k:'az',l:'AZ'},{k:'hops',l:'Hops'},{k:'last_heard',l:'Last heard'}
+                    ]" :key="col.k">
+                      <th class="cursor-pointer select-none" @click="sortNodes(col.k)">
+                        <span x-text="col.l"></span>
+                        <span x-show="nodeSort.key===col.k" class="ml-0.5 opacity-60" x-text="nodeSort.dir===-1?'▼':'▲'"></span>
+                      </th>
+                    </template>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="n in filteredNodes()" :key="n.num">
+                    <tr class="cursor-pointer hover" @click="openNodeInfo(n)">
+                      <td x-text="(n.user && n.user.long_name) || '–'"></td>
+                      <td x-text="(n.user && n.user.short_name) || '–'"></td>
+                      <td class="font-mono text-xs" x-text="(n.user && n.user.id) || n.num"></td>
+                      <td x-text="n.device_metrics?.battery_level != null ? (n.device_metrics.battery_level + '%') : '–'"></td>
+                      <td x-text="n.snr ?? '–'"></td>
+                      <td x-text="n.rssi != null ? rssiPercent(n.rssi)+'%' : '–'"></td>
+                      <td x-text="nodeKm(n) != null ? nodeKm(n).toFixed(1) : '–'"></td>
+                      <td x-text="nodeAz(n) != null ? nodeAz(n).toFixed(0)+'°' : '–'"></td>
+                      <td x-text="n.hops ?? '–'"></td>
+                      <td class="text-xs" x-text="fmtAge(n.last_heard)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== CONFIG ===================== -->
+        <div x-show="tab==='cfg'" class="flex flex-col gap-3 min-h-0">
+          <div class="tabs tabs-bordered">
+            <a class="tab" :class="cfgTab==='device' && 'tab-active font-semibold'" @click="switchCfgTab('device')">Device</a>
+            <a class="tab" :class="cfgTab==='bridge' && 'tab-active font-semibold'" @click="switchCfgTab('bridge')">Bridge</a>
+            <a class="tab" :class="cfgTab==='channels' && 'tab-active font-semibold'" @click="switchCfgTab('channels')">Channels</a>
+            <a class="tab" :class="cfgTab==='owner' && 'tab-active font-semibold'" @click="switchCfgTab('owner')">Owner</a>
+          </div>
+
+          <div x-show="cfgTab==='device'" class="flex flex-col gap-3">
+            <div class="alert alert-info shadow-sm text-sm">
+              <span>Forms are generated directly from the device's protobuf schema. Saving sends the <b>entire</b> section back to the radio (Meshtastic admin SetConfig replaces the whole section).</span>
+            </div>
+            <template x-for="sec in allSections" :key="sec.name">
+              <div class="collapse collapse-arrow bg-base-100 shadow">
+                <input type="checkbox" @change="onSectionToggle(sec)" />
+                <div class="collapse-title text-md font-semibold capitalize flex items-center gap-2">
+                  <span x-text="sec.name.replace(/_/g,' ')"></span>
+                  <span class="badge badge-ghost badge-sm" x-text="sec.kind"></span>
+                  <span class="loading loading-spinner loading-xs" x-show="sec.loading"></span>
+                </div>
+                <div class="collapse-content">
+                  <div x-ref="'sec_' + sec.name" :id="'sec_' + sec.name"></div>
+                  <div class="flex items-center gap-2 mt-3" x-show="sec.loaded">
+                    <button class="btn btn-sm btn-primary" @click="saveSection(sec)">Save</button>
+                    <span class="text-success text-sm" x-show="sec.saved" x-transition>Saved ✓</span>
+                    <span class="text-error text-sm" x-show="sec.error" x-text="sec.error"></span>
+                  </div>
+                  <div x-show="sec.name === 'position' && sec.loaded" class="col-span-1 sm:col-span-2 border border-base-300 rounded-lg p-3 mt-3">
+                    <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Fixed Position (lat / lon / alt)</div>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Latitude</span></div>
+                        <input type="number" step="any" class="input input-bordered input-sm" x-model.number="fixedPosition.lat" placeholder="e.g. 51.50735">
+                      </label>
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Longitude</span></div>
+                        <input type="number" step="any" class="input input-bordered input-sm" x-model.number="fixedPosition.lon" placeholder="e.g. -0.12776">
+                      </label>
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Altitude (m)</span></div>
+                        <input type="number" step="1" class="input input-bordered input-sm" x-model.number="fixedPosition.alt" placeholder="e.g. 35">
+                      </label>
+                    </div>
+                    <div class="flex items-center gap-2 mt-3">
+                      <button class="btn btn-sm btn-primary" @click="saveFixedPosition()">Save Position</button>
+                      <button class="btn btn-sm btn-outline" @click="clearFixedPosition()">Clear</button>
+                      <span class="text-success text-sm" x-show="fixedPosition.saved" x-transition>Saved ✓</span>
+                      <span class="text-error text-sm" x-show="fixedPosition.error" x-text="fixedPosition.error"></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div x-show="cfgTab==='bridge'" class="flex flex-col gap-3 max-w-2xl">
+            <div class="alert alert-info shadow-sm text-sm">
+              <span>App-level settings stored by the bridge itself (<code>bridge_config.yaml</code>), separate from the radio's protobuf config on the Device tab.</span>
+            </div>
+            <template x-if="bridgeConfig">
+              <div class="flex flex-col gap-4">
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Radar defaults</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Max range (km)</span></div>
+                        <input type="number" min="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.radar.max_range_km">
+                      </label>
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Heatmap max age (sec)</span></div>
+                        <input type="number" min="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.radar.heatmap_max_age_sec">
+                      </label>
+                      <label class="flex items-center gap-2 mt-auto pb-2 cursor-pointer">
+                        <input type="checkbox" class="toggle toggle-sm" x-model="bridgeConfig.radar.crosshair_default">
+                        <span class="label-text text-xs">Crosshair on by default</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Rotator / Yagi</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">WebSocket URL</span></div>
+                        <input type="text" class="input input-bordered input-sm font-mono" x-model="bridgeConfig.rotator.ws_url" placeholder="ws://host:port">
+                      </label>
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Beam width (°)</span></div>
+                        <input type="number" min="1" max="180" step="1" class="input input-bordered input-sm" x-model.number="bridgeConfig.rotator.beam_width_deg">
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Antenna</h2>
+                    <div class="grid grid-cols-1 gap-4">
+                      <div>
+                        <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Rx antenna (this station)</div>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <label class="form-control w-full sm:col-span-1">
+                            <div class="label py-1"><span class="label-text text-xs">Type / description</span></div>
+                            <input type="text" class="input input-bordered input-sm" x-model="bridgeConfig.antenna.rx.type">
+                          </label>
+                          <label class="form-control w-full">
+                            <div class="label py-1"><span class="label-text text-xs">Gain (dBi)</span></div>
+                            <input type="number" step="0.1" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.rx.gain_dbi">
+                          </label>
+                          <label class="form-control w-full">
+                            <div class="label py-1"><span class="label-text text-xs">Cable loss (dB)</span></div>
+                            <input type="number" step="0.1" min="0" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.rx.cable_loss_db">
+                          </label>
+                        </div>
+                      </div>
+                      <div>
+                        <div class="text-xs font-semibold uppercase text-base-content/50 mb-2">Remote node defaults</div>
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <label class="form-control w-full sm:col-span-1">
+                            <div class="label py-1"><span class="label-text text-xs">Antenna type</span></div>
+                            <input type="text" class="input input-bordered input-sm" x-model="bridgeConfig.antenna.remote_default.type">
+                          </label>
+                          <label class="form-control w-full">
+                            <div class="label py-1"><span class="label-text text-xs">Gain (dBi)</span></div>
+                            <input type="number" step="0.1" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.remote_default.gain_dbi">
+                          </label>
+                          <label class="form-control w-full">
+                            <div class="label py-1"><span class="label-text text-xs">Tx power (dBm)</span></div>
+                            <input type="number" step="0.5" class="input input-bordered input-sm" x-model.number="bridgeConfig.antenna.remote_default.tx_power_dbm">
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="card bg-base-100 shadow">
+                  <div class="card-body">
+                    <h2 class="card-title text-base">Node filter defaults</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+                      <label class="form-control w-full">
+                        <div class="label py-1"><span class="label-text text-xs">Default last heard</span></div>
+                        <select class="select select-bordered select-sm" x-model.number="bridgeConfig.node_display.default_max_age_sec">
+                          <option value="0">Any time</option>
+                          <option value="1800">30 minutes</option>
+                          <option value="3600">1 hour</option>
+                          <option value="21600">6 hours</option>
+                          <option value="86400">24 hours</option>
+                        </select>
+                      </label>
+                      <label class="flex items-center gap-2 mt-auto pb-2 cursor-pointer">
+                        <input type="checkbox" class="toggle toggle-sm" x-model="bridgeConfig.node_display.default_hide_mqtt">
+                        <span class="label-text text-xs">Hide MQTT nodes by default</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button class="btn btn-sm btn-primary" @click="saveBridgeConfig()">Save</button>
+                  <span class="text-success text-sm" x-show="bridgeConfigSaved" x-transition>Saved ✓</span>
+                  <span class="text-error text-sm" x-show="bridgeConfigError" x-text="bridgeConfigError"></span>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div x-show="cfgTab==='channels'" class="flex flex-col gap-3">
+            <div class="alert alert-warning shadow-sm text-sm">
+              <span>Editing <b>psk</b> on the primary channel can break mesh connectivity. Bytes fields are locked — unlock only if you know what you're doing.</span>
+            </div>
+            <template x-for="ch in channels" :key="ch.index">
+              <div class="collapse collapse-arrow bg-base-100 shadow">
+                <input type="checkbox" @change="onChannelToggle(ch)" />
+                <div class="collapse-title text-md font-semibold flex items-center gap-2">
+                  <span x-text="'Channel ' + ch.index"></span>
+                  <span class="badge badge-sm" :class="ch.data.role==='PRIMARY' ? 'badge-primary' : (ch.data.role==='SECONDARY' ? 'badge-secondary':'badge-ghost')" x-text="ch.data.role || 'DISABLED'"></span>
+                  <span class="text-sm text-base-content/50" x-text="ch.data.settings?.name || ''"></span>
+                  <span class="loading loading-spinner loading-xs" x-show="ch.loading"></span>
+                </div>
+                <div class="collapse-content">
+                  <div :id="'ch_' + ch.index"></div>
+                  <div class="flex items-center gap-2 mt-3" x-show="ch.loaded">
+                    <button class="btn btn-sm btn-primary" @click="saveChannel(ch)">Save</button>
+                    <span class="text-success text-sm" x-show="ch.saved" x-transition>Saved ✓</span>
+                    <span class="text-error text-sm" x-show="ch.error" x-text="ch.error"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </div>
+
+          <div x-show="cfgTab==='owner'" class="card bg-base-100 shadow max-w-xl">
+            <div class="card-body">
+              <h2 class="card-title">Owner / Identity</h2>
+              <div id="owner_form"></div>
+              <div class="flex items-center gap-2 mt-3">
+                <button class="btn btn-sm btn-primary" @click="saveOwner()">Save</button>
+                <span class="text-success text-sm" x-show="ownerSaved" x-transition>Saved ✓</span>
+                <span class="text-error text-sm" x-show="ownerError" x-text="ownerError"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== RANGE TEST ===================== -->
+        <div x-show="tab==='range'" class="flex flex-col gap-4">
+          <template x-if="rangeStats()">
+            <div class="stats stats-horizontal shadow bg-base-100 w-full" x-data="{ s: rangeStats() }">
+              <div class="stat"><div class="stat-title">Packets</div><div class="stat-value text-lg" x-text="s.count"></div><div class="stat-desc">range test rx</div></div>
+              <div class="stat"><div class="stat-title">Best RSSI</div><div class="stat-value text-lg text-success" x-text="s.bestRssi != null ? s.bestRssi + ' dBm' : '–'"></div><div class="stat-desc" x-text="'median ' + (s.medianRssi ?? '–') + ' dBm'"></div></div>
+              <div class="stat"><div class="stat-title">Max range</div><div class="stat-value text-lg" x-text="s.maxDistKm != null ? s.maxDistKm + ' km' : '–'"></div><div class="stat-desc">of heard packets with position</div></div>
+              <div class="stat"><div class="stat-title">Median excess loss</div><div class="stat-value text-lg" :class="s.medianExcessLoss != null && s.medianExcessLoss < 0 ? 'text-success' : 'text-warning'" x-text="s.medianExcessLoss != null ? s.medianExcessLoss + ' dB' : '–'"></div><div class="stat-desc">vs free-space link budget (−=better)</div></div>
+            </div>
+          </template>
+          <template x-if="bridgeConfig">
+            <div class="alert alert-info shadow-sm text-xs">
+              <div><b>Link budget</b>: Rx <span x-text="bridgeConfig.antenna.rx.type"></span> (<span x-text="bridgeConfig.antenna.rx.gain_dbi"></span> dBi), remote Tx <span x-text="bridgeConfig.antenna.remote_default.tx_power_dbm"></span> dBm + <span x-text="bridgeConfig.antenna.remote_default.gain_dbi"></span> dBi at 868 MHz. Edit in <a class="link" @click="setNav('cfg','bridge')">Config → Bridge</a>.</div>
+            </div>
+          </template>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body py-3">
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <h2 class="card-title text-base">Range test log <span class="badge badge-neutral" x-text="rangeLog.length"></span><span class="loading loading-spinner loading-xs" x-show="rangeLoading"></span></h2>
+                <div class="flex gap-2">
+                  <button class="btn btn-xs btn-outline" @click="loadRangeTest()">Refresh</button>
+                  <button class="btn btn-xs btn-outline btn-error" @click="clearRangeTest()" :disabled="!rangeLog.length">Clear</button>
+                </div>
+              </div>
+              <div x-show="!rangeLog.length && !rangeLoading" class="text-base-content/40 italic text-sm py-4 text-center">No range test packets received yet.</div>
+              <div x-show="rangeLog.length > 0" class="overflow-x-auto max-h-[60vh]">
+                <table class="table table-zebra table-xs">
+                  <thead class="sticky top-0 bg-base-100 z-10">
+                    <tr><th>Time</th><th>Node</th><th>Seq</th><th>Dist (km)</th><th>Az (°)</th><th>RSSI (dBm)</th><th>SNR (dB)</th><th>Exp RSSI</th><th>Excess loss</th><th>Hops</th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="(raw, i) in rangeLog" :key="i">
+                      <tr x-data="{ e: rangeEnrich(raw) }">
+                        <td class="font-mono text-xs" x-text="fmtAge(e.ts)"></td>
+                        <td x-text="e.nodeName"></td>
+                        <td class="font-mono text-xs" x-text="e.seq || '–'"></td>
+                        <td x-text="e.distKm != null ? e.distKm.toFixed(1) : '–'"></td>
+                        <td x-text="e.az != null ? e.az + '°' : '–'"></td>
+                        <td class="font-mono" x-text="e.rssi ?? '–'"></td>
+                        <td class="font-mono" x-text="e.snr ?? '–'"></td>
+                        <td class="font-mono opacity-60" x-text="e.expectedRssi != null ? e.expectedRssi : '–'"></td>
+                        <td class="font-mono font-semibold" :class="e.excessLoss == null ? '' : e.excessLoss <= 0 ? 'text-success' : e.excessLoss < 10 ? 'text-warning' : 'text-error'" x-text="e.excessLoss != null ? (e.excessLoss > 0 ? '+' : '') + e.excessLoss + ' dB' : '–'"></td>
+                        <td x-text="e.hops ?? '–'"></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== MESSAGES ===================== -->
+        <div x-show="tab==='messages'" class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title">Send Text</h2>
+              <div class="form-control">
+                <label class="label"><span class="label-text">Channel</span></label>
+                <select class="select select-bordered select-sm" x-model="msgChannel">
+                  <option value="0">0 — Primary</option>
+                  <option value="1">1</option><option value="2">2</option><option value="3">3</option>
+                  <option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option>
+                </select>
+              </div>
+              <div class="form-control mt-2">
+                <label class="label"><span class="label-text">Message</span></label>
+                <textarea class="textarea textarea-bordered" rows="3" x-model="msgText" placeholder="Type a message…"></textarea>
+              </div>
+              <button class="btn btn-primary btn-sm mt-2" @click="sendMessage()" :disabled="!msgText.trim()">Send</button>
+              <span class="text-success text-sm mt-1" x-show="msgSent" x-transition>Sent ✓</span>
+            </div>
+          </div>
+          <div class="card bg-base-100 shadow">
+            <div class="card-body">
+              <h2 class="card-title">Message Feed</h2>
+              <div class="overflow-y-auto max-h-[400px] flex flex-col gap-2">
+                <template x-for="(m, i) in messages" :key="i">
+                  <div class="chat chat-start">
+                    <div class="chat-header text-xs opacity-50" x-text="m.from + ' · ' + m.time"></div>
+                    <div class="chat-bubble chat-bubble-neutral text-sm" x-text="m.text"></div>
+                  </div>
+                </template>
+                <div x-show="messages.length===0" class="text-base-content/40 italic">No messages yet…</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== DEVICES ===================== -->
+        <div x-show="tab==='devices'" class="flex flex-col gap-4">
+
+          <!-- Connected devices table -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body py-4">
+              <div class="flex items-center justify-between flex-wrap gap-2">
+                <h2 class="card-title">Connected Devices</h2>
+                <button class="btn btn-sm btn-outline" @click="loadDevices()">Refresh</button>
+              </div>
+              <div x-show="availableDevices.length === 0" class="text-sm opacity-50 italic py-2">No devices connected.</div>
+              <div x-show="availableDevices.length > 0" class="overflow-x-auto">
+                <table class="table table-sm">
+                  <thead>
+                    <tr><th>Node ID</th><th>BLE Address</th><th>State</th><th>RSSI</th><th>Nodes</th><th>TCP</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="d in availableDevices" :key="d.node_id">
+                      <tr :class="d.node_id === activeNodeId && 'outline outline-1 outline-success/30 bg-success/5'">
+                        <td class="font-mono text-xs font-bold" x-text="d.node_id"></td>
+                        <td class="font-mono text-xs" x-text="d.ble_address"></td>
+                        <td>
+                          <span class="badge badge-sm"
+                            :class="d.ble_state==='active'?'badge-success':d.ble_state==='syncing'?'badge-warning':d.ble_state==='error'?'badge-error':'badge-ghost'"
+                            x-text="d.ble_state"></span>
+                        </td>
+                        <td x-text="d.ble_rssi != null ? d.ble_rssi + ' dBm (' + d.ble_rssi_pct + '%)' : '–'"></td>
+                        <td x-text="d.node_count ?? '–'"></td>
+                        <td x-text="d.tcp_port ? d.tcp_port + ' (' + d.tcp_clients + ')' : '–'"></td>
+                        <td class="flex gap-1">
+                          <button class="btn btn-xs btn-outline" :class="d.node_id===activeNodeId&&'btn-success'" :disabled="d.node_id===activeNodeId" @click="selectDevice(d.node_id)">
+                            <span x-text="d.node_id===activeNodeId ? 'Active' : 'Select'"></span>
+                          </button>
+                          <button class="btn btn-xs btn-outline btn-error" @click="disconnectDevice(d.node_id)">Disconnect</button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Connect new device -->
+          <div class="card bg-base-100 shadow">
+            <div class="card-body py-4">
+              <h2 class="card-title">Connect Device</h2>
+
+              <div class="flex flex-wrap gap-2 items-center mb-3">
+                <button class="btn btn-sm btn-outline gap-2" @click="bleScan()" :disabled="bleScanning">
+                  <span x-show="bleScanning" class="loading loading-spinner loading-xs"></span>
+                  <span x-text="bleScanning ? 'Scanning…' : 'Scan for devices'"></span>
+                </button>
+                <span class="text-xs opacity-40" x-show="bleDevices.length > 0" x-text="bleDevices.length + ' Meshtastic device' + (bleDevices.length!==1?'s':'') + ' found'"></span>
+              </div>
+
+              <div x-show="bleDevices.length > 0" class="overflow-x-auto mb-4">
+                <table class="table table-sm w-full max-w-2xl">
+                  <thead><tr><th>Name</th><th>Address</th><th>RSSI</th><th>PIN</th><th></th></tr></thead>
+                  <tbody>
+                    <template x-for="d in bleDevices" :key="d.address">
+                      <tr>
+                        <td class="font-semibold" x-text="d.name"></td>
+                        <td class="font-mono text-xs" x-text="d.address"></td>
+                        <td x-text="d.rssi + ' dBm'"></td>
+                        <td><input class="input input-bordered input-xs font-mono w-24" x-model="blePin" placeholder="123456" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting"></td>
+                        <td>
+                          <button class="btn btn-xs btn-primary gap-1" @click="bleConnect(d.address)" :disabled="bleConnecting || bleScanning">
+                            <span x-show="bleConnecting && bleAddress === d.address" class="loading loading-spinner loading-xs" x-cloak></span>
+                            Connect
+                          </button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+
+              <details class="text-sm" :open="bleDevices.length === 0">
+                <summary class="cursor-pointer opacity-50 hover:opacity-80 select-none text-xs mb-2">Enter address manually</summary>
+                <div class="flex flex-wrap gap-3 items-end mt-2">
+                  <div class="form-control">
+                    <label class="label py-0.5"><span class="label-text text-xs">BLE Address</span></label>
+                    <input class="input input-bordered input-sm font-mono w-52" x-model="bleAddress" placeholder="AA:BB:CC:DD:EE:FF" :disabled="bleConnecting">
+                  </div>
+                  <div class="form-control">
+                    <label class="label py-0.5"><span class="label-text text-xs">PIN</span></label>
+                    <input class="input input-bordered input-sm w-28" x-model="blePin" placeholder="123456" type="text" inputmode="numeric" maxlength="6" :disabled="bleConnecting">
+                  </div>
+                  <button class="btn btn-sm btn-primary gap-2 self-end" @click="bleConnect()" :disabled="!bleAddress || bleConnecting || bleScanning">
+                    <span x-show="bleConnecting" class="loading loading-spinner loading-xs"></span>
+                    <span x-text="bleConnecting ? 'Connecting…' : 'Connect'"></span>
+                  </button>
+                </div>
+              </details>
+
+              <div x-show="bleError" class="alert alert-error mt-3 py-2 text-sm flex items-center gap-2">
+                <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9 9-4.03 9-9-4.03-9-9-9z"/></svg>
+                <span x-text="bleError"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <footer class="footer footer-center p-3 bg-base-100 text-base-content/40 text-xs border-t border-base-200">
+      <div>mesh-gw dashboard · <span x-text="activeNodeId || 'no device'"></span></div>
+    </footer>
+  </div>
+
+  <!-- ===================== DRAWER SIDEBAR ===================== -->
+  <div class="drawer-side z-50">
+    <label for="nav-drawer" aria-label="close sidebar" class="drawer-overlay"></label>
+    <aside class="w-56 bg-base-100 min-h-screen flex flex-col">
+
+      <!-- Logo -->
+      <div class="px-4 py-4 border-b border-base-200">
+        <div class="flex items-center gap-2">
+          <span class="text-xl">📡</span>
+          <div class="flex flex-col leading-tight">
+            <span class="text-sm font-bold tracking-widest uppercase" style="font-family:'Oxanium',sans-serif">mesh-gw</span>
+            <span class="text-xs text-base-content/50" x-text="info.metadata.firmware_version ? ('fw ' + info.metadata.firmware_version) : 'dashboard'"></span>
+          </div>
+        </div>
+        <!-- Active device -->
+        <div class="mt-2 flex items-center gap-1" x-show="activeNodeId">
+          <span class="inline-block w-1.5 h-1.5 rounded-full bg-success animate-pulse" x-show="status.ble_connected"></span>
+          <span class="font-mono text-xs text-success" x-text="activeNodeId"></span>
+        </div>
+        <!-- Device selector (shown when multiple devices) -->
+        <div class="mt-2" x-show="availableDevices.length > 1">
+          <select class="select select-xs select-bordered w-full font-mono" x-model="activeNodeId" @change="selectDevice(activeNodeId)">
+            <template x-for="d in availableDevices" :key="d.node_id">
+              <option :value="d.node_id" x-text="d.node_id"></option>
+            </template>
+          </select>
+        </div>
+      </div>
+
+      <!-- Nav menu -->
+      <ul class="menu menu-sm px-2 py-3 gap-0.5 flex-1">
+        <li><a :class="tab==='overview' && 'active'" @click="setNav('overview')">Overview</a></li>
+        <li><a :class="tab==='radar' && 'active'" @click="setNav('radar')">Radar</a></li>
+        <li><a :class="tab==='nodes' && 'active'" @click="setNav('nodes')">Nodes</a></li>
+        <li>
+          <details :open="tab==='cfg'">
+            <summary @click.prevent="setNav('cfg')">Config</summary>
+            <ul>
+              <li><a :class="tab==='cfg'&&cfgTab==='device'&&'active'" @click="setNav('cfg','device')">Device</a></li>
+              <li><a :class="tab==='cfg'&&cfgTab==='bridge'&&'active'" @click="setNav('cfg','bridge')">Bridge</a></li>
+              <li><a :class="tab==='cfg'&&cfgTab==='channels'&&'active'" @click="setNav('cfg','channels')">Channels</a></li>
+              <li><a :class="tab==='cfg'&&cfgTab==='owner'&&'active'" @click="setNav('cfg','owner')">Owner</a></li>
+            </ul>
+          </details>
+        </li>
+        <li><a :class="tab==='range' && 'active'" @click="setNav('range')">Range Test</a></li>
+        <li><a :class="tab==='messages' && 'active'" @click="setNav('messages')">Messages</a></li>
+        <li class="mt-2 border-t border-base-200 pt-2">
+          <a :class="tab==='devices' && 'active'" @click="setNav('devices')">
+            Devices
+            <span class="badge badge-sm ml-auto" :class="availableDevices.length ? 'badge-success' : 'badge-ghost'" x-text="availableDevices.length"></span>
+          </a>
+        </li>
+      </ul>
+
+      <!-- Status footer inside sidebar -->
+      <div class="p-3 border-t border-base-200 text-xs flex flex-col gap-1 opacity-70">
+        <div class="flex justify-between">
+          <span class="opacity-60">BLE</span>
+          <span :class="status.ble_connected ? 'text-success' : 'text-error'" x-text="status.ble_state || '–'"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="opacity-60">RSSI</span>
+          <span x-text="status.ble_rssi != null ? status.ble_rssi + ' dBm' : '–'"></span>
+        </div>
+        <div class="flex justify-between">
+          <span class="opacity-60">WS</span>
+          <span :class="wsConnected ? 'text-success' : 'text-error'" x-text="wsConnected ? 'live' : 'offline'"></span>
+        </div>
+      </div>
+
+    </aside>
+  </div>
+</div>
+
+<script src="app.js?v=20260616"></script>
+</body>
+</html>
