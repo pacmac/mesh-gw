@@ -133,6 +133,11 @@ class DeviceManager:
         node_id = self._by_ble.get(ble_address.upper())
         return self._devices.get(node_id) if node_id else None
 
+    @property
+    def bridge_node_nums(self) -> set:
+        """Node nums of all connected bridge radios — used to exclude own devices."""
+        return {b.my_node_num for b in self._devices.values() if b.my_node_num}
+
     def list_devices(self) -> list[dict]:
         result = []
         for node_id, bridge in self._devices.items():
