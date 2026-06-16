@@ -472,6 +472,7 @@ function dashboard() {
                 pktId, fromNum: pkt.from ?? 0, to: toNum,
                 broadcast: toNum === 0xFFFFFFFF || pkt.to == null,
                 channel: pkt.channel ?? 0,
+                replyId: pkt.decoded.reply_id || null,
                 text, time, direction: 'rx', ackStatus: null,
               });
               if (this.messages.length > 50) this.messages.pop();
