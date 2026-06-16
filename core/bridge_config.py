@@ -34,6 +34,7 @@ DEFAULTS = {
         "aim_dwell_sec": 15,     # stay at target; keep collecting for next move during this window
         "aim_deadband_deg": 5,   # minimum az change to trigger a physical move
         "aim_min_km": 2.0,       # ignore nodes closer than this (not worth pointing yagi at)
+        "exclude_targets": [],   # node IDs never targeted (e.g. "!da5af428")
     },
     "devices": {
         # BLE address → role tag. Roles: "yagi", "omni" (future multi-radio use).
@@ -75,11 +76,6 @@ DEFAULTS = {
         "hide_mqtt":    True,
         "has_signal":   False,
         "has_telemetry": False,
-    },
-    "rotator": {
-        # node IDs (e.g. "!da5af428") that the rotator will never target,
-        # even if they pass all other filters (own mobile radios, local nodes, etc.)
-        "exclude_targets": [],
     },
 }
 

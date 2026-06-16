@@ -241,9 +241,8 @@ class RotatorController:
             result.update(int(k) for k in data.get("nodes", {}).keys())
         # Exclude our own bridge radios
         result -= self._dm.bridge_node_nums
-        # Exclude any manually excluded targets (own mobile radios, local nodes, etc.)
-        excludes = cfg.get("rotator", {}).get("exclude_targets", [])
-        for node_id in excludes:
+        # Exclude any manually excluded targets
+        for node_id in cfg.get("rotator", {}).get("exclude_targets", []):
             if isinstance(node_id, str) and node_id.startswith("!"):
                 try:
                     result.discard(int(node_id[1:], 16))

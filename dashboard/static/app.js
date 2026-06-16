@@ -323,7 +323,7 @@ function dashboard() {
     },
 
     async loadNodes() {
-      if (!this.activeNodeId) return;
+      if (!this.availableDevices.length) return;
       const f = this.nodeFilters;
       const qs = new URLSearchParams();
       if (f.maxAge)           qs.set("max_age",      f.maxAge);
@@ -334,14 +334,28 @@ function dashboard() {
       if (f.hasSignal)        qs.set("has_signal",   "true");
       if (f.hasTelem)         qs.set("has_telemetry","true");
       const query = qs.toString() ? "?" + qs.toString() : "";
-      const data = await fetchJSON(this.d("/nodes") + query);
-      this.nodeTotal = data.total ?? Object.keys(data.nodes || {}).length;
-      this.nodeCount = data.count ?? this.nodeTotal;
-      this.nodes = Object.values(data.nodes || {});
+      // Merge nodes from all connected bridges — the rotator listens on all radios
+      // so any node either bridge hears must appear on the radar.
+      // For nodes heard by multiple bridges, keep the most recently heard entry.
+      const results = await Promise.all(
+        this.availableDevices.map(dev =>
+          fetchJSON(`/${dev.node_id}/nodes${query}`).catch(() => ({ nodes: {} }))
+        )
+      );
+      const allNodes = {};
+      for (const data of results) {
+        for (const [k, v] of Object.entries(data.nodes || {})) {
+          if (!allNodes[k] || (v.last_heard || 0) > (allNodes[k].last_heard || 0))
+            allNodes[k] = v;
+        }
+      }
+      this.nodeTotal = Object.keys(allNodes).length;
+      this.nodeCount = this.nodeTotal;
+      this.nodes = Object.values(allNodes);
       this.updateHomePos();
       this.sortNodes(this.nodeSort.key, true);
       if (this.info.my_info?.my_node_num != null) {
-        this.nodeSelf = data.nodes?.[String(this.info.my_info.my_node_num)] || {};
+        this.nodeSelf = allNodes[String(this.info.my_info.my_node_num)] || {};
       }
     },
 
@@ -485,7 +499,7 @@ function dashboard() {
         this.yagiConnected = true;
         if (data.evt != null) this.rotatorStatus = data; // hardware status only
       }
-      if (data.point_target != null) {
+      if ('point_target' in data) {
         this.yagiPointTarget = data.point_target;
         if (this.tab === "radar") this.drawRadar(); // rebuild for crosshairs
       }
@@ -516,7 +530,7 @@ function dashboard() {
       try {
         const d = await fetchJSON("/rotator/state");
         this.rotatorMode = d.mode ?? 0;
-        if (d.point_target != null) this.yagiPointTarget = d.point_target;
+        this.yagiPointTarget = d.point_target ?? null;
       } catch (_) {}
     },
     async setRotatorMode(m) {
