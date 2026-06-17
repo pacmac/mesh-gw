@@ -119,6 +119,23 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     # -- MQTT publisher --------------------------------------------------------
 
+    @app.get("/bridge_config")
+    async def get_bridge_config():
+        cfg = _bcfg.load()
+        return {k: v for k, v in cfg.items() if k != "ble_devices"}
+
+    @app.put("/bridge_config")
+    async def put_bridge_config(body: dict = Body(...)):
+        cfg = _bcfg.load()
+        body.pop("ble_devices", None)
+        for k, v in body.items():
+            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                cfg[k] = _bcfg._deep_merge(cfg[k], v)
+            else:
+                cfg[k] = v
+        saved = _bcfg.save(cfg)
+        return {k: v for k, v in saved.items() if k != "ble_devices"}
+
     @app.get("/mqtt_publish")
     async def get_mqtt_publish():
         return _bcfg.load().get("mqtt_publish", {})
