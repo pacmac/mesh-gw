@@ -1,0 +1,721 @@
+/* ============================================================
+   mesh-rest-bridge dashboard  —  Radio Control Dark aesthetic
+   Oxanium headings · DM Sans body · JetBrains Mono data
+   Electric teal signal accent on daisyUI "business" dark
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@400;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* ── CSS tokens ─────────────────────────────────────────── */
+:root {
+  --sig:          #00d4c8;
+  --sig-dim:      #00968d;
+  --sig-glow:     rgba(0, 212, 200, 0.22);
+  --sig-glow-xs:  rgba(0, 212, 200, 0.08);
+  --amber:        #f5a623;
+  --amber-glow:   rgba(245, 166, 35, 0.22);
+  --red:          #f87171;
+  --grid:         rgba(255, 255, 255, 0.032);
+  --border:       rgba(255, 255, 255, 0.07);
+  --border-hi:    rgba(255, 255, 255, 0.13);
+  --border-hover: rgba(255, 255, 255, 0.2);
+  --overlay-1:    rgba(255, 255, 255, 0.02);
+  --overlay-2:    rgba(255, 255, 255, 0.03);
+  --overlay-3:    rgba(255, 255, 255, 0.04);
+  --toggle-off:   rgba(255, 255, 255, 0.08);
+  --skeleton-1:   rgba(255, 255, 255, 0.05);
+  --skeleton-2:   rgba(255, 255, 255, 0.10);
+  --t-fast:       140ms cubic-bezier(.4,0,.2,1);
+  --t-base:       220ms cubic-bezier(.4,0,.2,1);
+  --t-spring:     320ms cubic-bezier(.34,1.56,.64,1);
+}
+
+/* ── Typography ─────────────────────────────────────────── */
+body {
+  font-family: 'DM Sans', system-ui, sans-serif;
+  letter-spacing: 0.01em;
+}
+
+.navbar-start span,
+.card-title,
+.stat-value,
+.collapse-title,
+h1, h2, h3 {
+  font-family: 'Oxanium', sans-serif;
+}
+
+.font-mono,
+.table td.mono,
+[data-field],
+input[type="number"],
+input[type="text"].font-mono,
+.stat-value {
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 0.875em;
+}
+
+/* ── PCB grid background ─────────────────────────────────── */
+body {
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ── Navbar ─────────────────────────────────────────────── */
+.navbar {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+
+.navbar .text-lg {
+  font-family: 'Oxanium', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.navbar .text-xs {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* ── Status badges ───────────────────────────────────────── */
+.badge {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+  border-radius: 4px;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+
+/* live pulse dot */
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.4; transform: scale(0.7); }
+}
+
+.animate-pulse {
+  animation: live-pulse 1.4s ease-in-out infinite;
+}
+
+/* signal-strength glow on the BLE-connected badge */
+.badge-success {
+  box-shadow: 0 0 8px rgba(74, 222, 128, 0.35);
+}
+
+.badge-primary {
+  box-shadow: 0 0 8px var(--sig-glow);
+}
+
+/* ── Sidebar nav ─────────────────────────────────────────── */
+.drawer-side aside {
+  border-right: 1px solid var(--border);
+}
+
+.menu li > a,
+.menu li > details > summary {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.75rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  font-weight: 600;
+  border-radius: 6px;
+  transition: background var(--t-fast), color var(--t-fast);
+  padding: 0.45rem 0.75rem;
+}
+
+.menu li > a.active,
+.menu li > a:focus {
+  color: var(--sig) !important;
+  background: var(--sig-glow-xs) !important;
+}
+
+.menu li > a:hover,
+.menu li > details > summary:hover {
+  color: var(--sig);
+  background: var(--sig-glow-xs);
+}
+
+.menu .menu li > a {
+  font-size: 0.7rem;
+  padding-left: 1.2rem;
+  opacity: 0.8;
+}
+
+.menu .menu li > a.active {
+  opacity: 1;
+}
+
+/* ── Tabs (kept for any remaining usage) ─────────────────── */
+.tabs-lift .tab {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  font-weight: 600;
+  border-radius: 6px 6px 0 0;
+  transition: color var(--t-fast), background var(--t-fast);
+  padding-left: 1.2rem;
+  padding-right: 1.2rem;
+}
+
+.tabs-lift .tab-active {
+  color: var(--sig) !important;
+  border-top: 2px solid var(--sig) !important;
+  text-shadow: 0 0 12px var(--sig-glow);
+}
+
+/* ── Cards ───────────────────────────────────────────────── */
+.card {
+  border: 1px solid var(--border);
+  transition: border-color var(--t-base), box-shadow var(--t-base), transform var(--t-base);
+}
+
+.card:hover {
+  border-color: var(--border-hi);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  transform: translateY(-1px);
+}
+
+.card-title {
+  font-size: 0.9rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--sig);
+}
+
+/* ── Stats component ─────────────────────────────────────── */
+.stats {
+  border: 1px solid var(--border);
+}
+
+.stat {
+  border-right: 1px solid var(--border) !important;
+  transition: background var(--t-fast);
+}
+
+.stat:hover {
+  background: var(--overlay-2);
+}
+
+.stat-title {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 600;
+  opacity: 0.5;
+}
+
+.stat-value {
+  font-size: 1.4rem !important;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--sig);
+}
+
+.stat-desc {
+  font-size: 0.7rem;
+  opacity: 0.45;
+  letter-spacing: 0.04em;
+}
+
+/* ── Collapse / accordion ────────────────────────────────── */
+.collapse {
+  border: 1px solid var(--border);
+  border-radius: 8px !important;
+  transition: border-color var(--t-base), box-shadow var(--t-base);
+  overflow: hidden;
+}
+
+.collapse:has(input:checked) {
+  border-color: var(--border-hi);
+  box-shadow: 0 0 0 1px var(--sig-glow-xs), 0 4px 20px rgba(0,0,0,0.3);
+}
+
+.collapse-title {
+  font-size: 0.82rem;
+  letter-spacing: 0.07em;
+  text-transform: capitalize;
+  font-weight: 600;
+  transition: color var(--t-fast);
+}
+
+.collapse:has(input:checked) .collapse-title {
+  color: var(--sig);
+}
+
+/* ── Nodes table ─────────────────────────────────────────── */
+.table thead th {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-weight: 700;
+  opacity: 0.55;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  background: inherit;
+}
+
+.table thead th:hover {
+  opacity: 1;
+  color: var(--sig);
+}
+
+.table tbody tr {
+  border-bottom: 1px solid var(--border) !important;
+  transition: background var(--t-fast);
+}
+
+.table tbody tr:hover {
+  background: var(--sig-glow-xs) !important;
+}
+
+.table-zebra tbody tr:nth-child(even) {
+  background: var(--overlay-1);
+}
+
+.overflow-x-auto.max-h-\[70vh\] {
+  overflow-y: auto;
+}
+
+/* sticky table header */
+.overflow-x-auto thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ── Custom scrollbars ───────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 99px;
+  transition: background var(--t-fast);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sig-dim);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.12) transparent;
+}
+
+/* ── Form controls ───────────────────────────────────────── */
+.input, .select, .textarea {
+  border-color: var(--border-hi) !important;
+  background: rgba(255,255,255,0.04) !important;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast), background var(--t-fast);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.82rem !important;
+}
+
+.input:focus, .select:focus, .textarea:focus {
+  border-color: var(--sig) !important;
+  box-shadow: 0 0 0 3px var(--sig-glow), 0 0 12px var(--sig-glow-xs) !important;
+  background: rgba(0,212,200,0.04) !important;
+  outline: none !important;
+}
+
+.input:hover, .select:hover, .textarea:hover {
+  border-color: var(--border-hover) !important;
+}
+
+.input:disabled, .select:disabled, .input[disabled] {
+  opacity: 0.35 !important;
+  cursor: not-allowed;
+}
+
+.label-text {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+/* Toggle switch */
+.toggle {
+  --tglbg: var(--toggle-off);
+  transition: background var(--t-base);
+}
+
+.toggle-primary:checked {
+  --tglbg: var(--sig);
+  box-shadow: 0 0 8px var(--sig-glow);
+}
+
+/* form grid inside collapse */
+.collapse-content .grid {
+  padding: 0.25rem 0;
+}
+
+.collapse-content .form-control {
+  gap: 0;
+}
+
+/* nested object fieldset */
+.collapse-content .border.border-base-300 {
+  border-color: var(--border) !important;
+  background: rgba(255,255,255,0.015);
+  border-radius: 6px;
+}
+
+/* ── Buttons ─────────────────────────────────────────────── */
+.btn {
+  font-family: 'Oxanium', sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 700;
+  border-radius: 6px;
+  transition: all var(--t-fast);
+}
+
+.btn-primary {
+  background: var(--sig) !important;
+  border-color: var(--sig) !important;
+  color: #0a1628 !important;
+  box-shadow: 0 2px 12px var(--sig-glow);
+}
+
+.btn-primary:hover {
+  background: var(--sig-dim) !important;
+  border-color: var(--sig-dim) !important;
+  box-shadow: 0 4px 20px var(--sig-glow);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-outline {
+  border-color: var(--border-hi) !important;
+}
+
+.btn-outline:hover {
+  border-color: var(--sig) !important;
+  color: var(--sig) !important;
+  background: var(--sig-glow-xs) !important;
+}
+
+.btn-sm { height: 2rem; min-height: 2rem; padding: 0 0.85rem; }
+
+/* ── Alert ───────────────────────────────────────────────── */
+.alert {
+  border-radius: 8px;
+  font-size: 0.82rem;
+  border: 1px solid;
+}
+
+.alert-info {
+  border-color: rgba(96, 165, 250, 0.25);
+  background: rgba(96, 165, 250, 0.07);
+}
+
+.alert-warning {
+  border-color: rgba(245, 166, 35, 0.3);
+  background: rgba(245, 166, 35, 0.07);
+  color: var(--amber);
+}
+
+/* ── Live event feed ─────────────────────────────────────── */
+.overflow-y-auto.max-h-\[480px\] {
+  scrollbar-gutter: stable;
+}
+
+.overflow-y-auto.max-h-\[480px\] .flex.gap-2 {
+  padding: 4px 2px;
+  border-radius: 4px;
+  transition: background var(--t-fast);
+}
+
+.overflow-y-auto.max-h-\[480px\] .flex.gap-2:hover {
+  background: var(--overlay-3);
+}
+
+/* ── Divider ─────────────────────────────────────────────── */
+.divider {
+  opacity: 0.35;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* ── Chat bubbles (messages tab) ─────────────────────────── */
+.chat-bubble {
+  font-size: 0.85rem;
+  max-width: 85%;
+  border-radius: 4px 12px 12px 12px !important;
+}
+
+.chat-bubble-neutral {
+  background: rgba(255,255,255,0.07) !important;
+  border: 1px solid var(--border) !important;
+}
+
+.chat-header {
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+footer {
+  border-top: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.65rem !important;
+  letter-spacing: 0.08em;
+}
+
+/* ── Skeleton loading ────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-1) 25%,
+    var(--skeleton-2) 50%,
+    var(--skeleton-1) 75%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s infinite linear;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+/* ── Tooltip ─────────────────────────────────────────────── */
+.tooltip::before {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.72rem;
+  border-radius: 4px;
+}
+
+/* ── Entrance animations ─────────────────────────────────── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.card, .collapse, .stats, .alert {
+  animation: fade-up 240ms cubic-bezier(.4,0,.2,1) both;
+}
+
+.card:nth-child(2)  { animation-delay:  40ms; }
+.card:nth-child(3)  { animation-delay:  80ms; }
+.card:nth-child(4)  { animation-delay: 120ms; }
+.collapse:nth-child(2)  { animation-delay:  30ms; }
+.collapse:nth-child(3)  { animation-delay:  60ms; }
+.collapse:nth-child(4)  { animation-delay:  90ms; }
+.collapse:nth-child(5)  { animation-delay: 120ms; }
+
+/* ── Signal line — decorative header underline ───────────── */
+.navbar::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    var(--sig) 20%,
+    var(--sig-glow) 50%,
+    var(--sig) 80%,
+    transparent 100%
+  );
+  opacity: 0.35;
+  pointer-events: none;
+}
+
+.navbar { position: relative; }
+
+/* ── Live WS badge glow ───────────────────────────────────── */
+.badge-primary.badge[x-text*="live"] {
+  color: var(--sig);
+  border-color: var(--sig);
+  box-shadow: 0 0 10px var(--sig-glow);
+}
+
+/* ── Section kind badge ──────────────────────────────────── */
+.badge-ghost {
+  border: 1px solid var(--border-hi);
+  font-size: 0.6rem;
+}
+
+/* ── Scrollable feed timestamp ───────────────────────────── */
+.text-base-content\/40 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+}
+
+/* ── Loading spinner accent ───────────────────────────────── */
+.loading {
+  color: var(--sig) !important;
+}
+
+/* ── Success / error feedback text ──────────────────────────*/
+.text-success { color: var(--sig) !important; }
+.text-error   { color: var(--red) !important; }
+
+/* ── Radar tab ────────────────────────────────────────────── */
+/* Short-name labels are always visible (the larger radar has room for
+   them); hover/select brightens + bolds for the active node. */
+.radar-node-label {
+  opacity: 0.7;
+  transition: opacity 0.12s ease;
+}
+.radar-node:hover .radar-node-label,
+.radar-node-selected .radar-node-label {
+  opacity: 1;
+  font-weight: 700;
+}
+#radar-wrap {
+  min-height: 360px;
+}
+#radar-svg-container {
+  height: 100%;
+  margin: 0 auto;
+}
+#radar-svg-container svg {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+}
+.radar-sidebar {
+  width: 100%;
+}
+@media (min-width: 1024px) {
+  .radar-sidebar {
+    width: 22rem;
+    flex-shrink: 0;
+    overflow-y: auto;
+  }
+}
+
+/* ── Light mode (prefers-color-scheme: light / daisyUI "corporate") ─────── */
+@media (prefers-color-scheme: light) {
+  :root {
+    /* slightly darker teal so it reads on white backgrounds */
+    --sig:          #0097a7;
+    --sig-dim:      #00838f;
+    --sig-glow:     rgba(0, 151, 167, 0.18);
+    --sig-glow-xs:  rgba(0, 151, 167, 0.07);
+    --amber:        #b45309;
+    --amber-glow:   rgba(180, 83, 9, 0.15);
+    --red:          #dc2626;
+    /* invert the grid and borders for a light canvas */
+    --grid:         rgba(0, 0, 0, 0.045);
+    --border:       rgba(0, 0, 0, 0.09);
+    --border-hi:    rgba(0, 0, 0, 0.18);
+    --border-hover: rgba(0, 0, 0, 0.2);
+    /* invert hover/zebra/skeleton overlays for a light canvas */
+    --overlay-1:    rgba(0, 0, 0, 0.02);
+    --overlay-2:    rgba(0, 0, 0, 0.03);
+    --overlay-3:    rgba(0, 0, 0, 0.04);
+    --toggle-off:   rgba(0, 0, 0, 0.08);
+    --skeleton-1:   rgba(0, 0, 0, 0.04);
+    --skeleton-2:   rgba(0, 0, 0, 0.08);
+  }
+
+  /* PCB grid on light background */
+  body {
+    background-image:
+      linear-gradient(var(--grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  /* Teal signal line on navbar lighter for light bg */
+  .navbar::after { opacity: 0.25; }
+
+  /* Form inputs on light bg */
+  .input, .select, .textarea {
+    background: rgba(0, 0, 0, 0.025) !important;
+  }
+  .input:focus, .select:focus, .textarea:focus {
+    background: rgba(0, 151, 167, 0.04) !important;
+  }
+
+  /* Stat values — keep teal but readable on white */
+  .stat-value { color: var(--sig); }
+
+  /* Card titles */
+  .card-title { color: var(--sig); }
+
+  /* Active tab indicator */
+  .tabs-lift .tab-active { color: var(--sig) !important; border-top-color: var(--sig) !important; }
+
+  /* btn-primary — dark text stays legible on teal */
+  .btn-primary {
+    background: var(--sig) !important;
+    border-color: var(--sig) !important;
+    color: #fff !important;
+  }
+  .btn-primary:hover {
+    background: var(--sig-dim) !important;
+    border-color: var(--sig-dim) !important;
+  }
+
+  /* Alert info on light */
+  .alert-info {
+    border-color: rgba(0, 151, 167, 0.3);
+    background: rgba(0, 151, 167, 0.06);
+    color: var(--sig);
+  }
+
+  /* Scrollbar thumb on light */
+  ::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.18);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--sig-dim);
+  }
+  * { scrollbar-color: rgba(0,0,0,0.18) transparent; }
+
+  /* Collapse open glow on light */
+  .collapse:has(input:checked) {
+    box-shadow: 0 0 0 1px rgba(0,151,167,0.12), 0 4px 20px rgba(0,0,0,0.08);
+  }
+
+  /* table header on light — sticky backdrop */
+  .overflow-x-auto thead th {
+    background: rgba(255,255,255,0.85);
+  }
+
+  /* card hover shadow lighter on light */
+  .card:hover {
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  }
+
+  /* nested object fieldset on light */
+  .collapse-content .border.border-base-300 {
+    background: rgba(0,0,0,0.018);
+  }
+
+  /* chat bubbles on light */
+  .chat-bubble-neutral {
+    background: rgba(0,0,0,0.05) !important;
+    border-color: var(--border) !important;
+  }
+}
