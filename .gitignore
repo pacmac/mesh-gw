@@ -8,3 +8,5 @@ venv/
 core/bridge_config.yaml
 archive/
 dashboard/
+.claude/
+.codex/

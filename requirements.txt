@@ -5,3 +5,4 @@ uvicorn[standard]>=0.29
 paho-mqtt>=1.6,<2
 aiofiles>=23.0
 PyYAML>=6.0
+mcp>=1.26
