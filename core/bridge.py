@@ -251,12 +251,14 @@ class MeshBridge:
 
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 
-    async def send_text(self, text: str, to: int = BROADCAST_NUM, channel: int = 0):
+    async def send_text(self, text: str, to: int = BROADCAST_NUM, channel: int = 0, reply_id: int = None):
         if not self.ble:
             raise RuntimeError("BLE not connected")
         data = mesh_pb2.Data()
         data.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
         data.payload = text.encode("utf-8")
+        if reply_id:
+            data.reply_id = reply_id
 
         hop_limit = self.state.config.get("lora", {}).get("hop_limit", 3)
         is_dm = to != BROADCAST_NUM

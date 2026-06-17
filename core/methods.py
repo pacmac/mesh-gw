@@ -225,6 +225,7 @@ async def send_text(bridge: MeshBridge, params: dict):
         text=params["text"],
         to=_parse_node_num(params.get("to")),
         channel=int(params.get("channel", 0)),
+        reply_id=int(params["reply_id"]) if params.get("reply_id") else None,
     )
 
 
