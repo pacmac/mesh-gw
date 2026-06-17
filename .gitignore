@@ -6,3 +6,5 @@ venv/
 *.png
 *.jpg
 core/bridge_config.yaml
+archive/
+dashboard/

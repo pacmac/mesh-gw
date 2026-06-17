@@ -27,8 +27,6 @@ class DeviceManager:
         self._subscribers: set[asyncio.Queue] = set()
         # pending passkey futures for dynamic-PIN pairing: addr(upper) -> Future[str]
         self._passkey_futures: dict[str, asyncio.Future] = {}
-        # rotator mode state machine (optional — started by main.py)
-        self._rotator_ctrl = None
 
     # -- device lifecycle -------------------------------------------------------
 
@@ -110,24 +108,6 @@ class DeviceManager:
     def get(self, node_id: str) -> Optional[MeshBridge]:
         """Look up a bridge by node_id ('!3f172791')."""
         return self._devices.get(node_id)
-
-    def start_rotator_controller(self):
-        """Instantiate and start the rotator mode state machine."""
-        from core.rotator_controller import RotatorController
-        self._rotator_ctrl = RotatorController(self, self._broadcast)
-        self._rotator_ctrl.start()
-        return self._rotator_ctrl
-
-    def get_rotator_controller(self):
-        return self._rotator_ctrl
-
-    def get_rotator(self):
-        """Return the first active rotator client across all bridges, or None."""
-        for bridge in self._devices.values():
-            r = getattr(bridge, "rotator", None)
-            if r is not None:
-                return r
-        return None
 
     def get_by_ble(self, ble_address: str) -> Optional[MeshBridge]:
         node_id = self._by_ble.get(ble_address.upper())

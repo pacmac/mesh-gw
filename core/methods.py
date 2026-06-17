@@ -3,7 +3,6 @@
 
 Each method is `async def fn(bridge: MeshBridge, params: dict) -> dict`.
 """
-from . import bridge_config
 from .bridge import MeshBridge
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, config_kind
 
@@ -97,23 +96,6 @@ async def get_channels(bridge: MeshBridge, params: dict):
 @method("get_config")
 async def get_config(bridge: MeshBridge, params: dict):
     return {"config": bridge.state.config, "module_config": bridge.state.module_config}
-
-
-@method("get_bridge_config")
-async def get_bridge_config(bridge: MeshBridge, params: dict):
-    """Bridge-side settings (radar UI defaults, MQTT topic conventions) --
-    persisted in core/bridge_config.yaml, separate from the radio's own
-    Config/ModuleConfig."""
-    return bridge_config.load()
-
-
-@method("set_bridge_config")
-async def set_bridge_config(bridge: MeshBridge, params: dict):
-    """params: a (partial) bridge config dict, deep-merged onto defaults
-    and the existing file, then persisted."""
-    current = bridge_config.load()
-    merged = bridge_config._deep_merge(current, params)
-    return bridge_config.save(merged)
 
 
 @method("get_status")
@@ -229,18 +211,6 @@ async def send_text(bridge: MeshBridge, params: dict):
         to=int(params.get("to", 0xFFFFFFFF)),
         channel=int(params.get("channel", 0)),
     )
-
-
-@method("yagi_point")
-async def yagi_point(bridge: MeshBridge, params: dict):
-    """params: {az, node?, name?}. Sends move2az to the rotator via WS."""
-    if not bridge.rotator:
-        raise RuntimeError("Rotator not configured")
-    if not bridge.rotator.connected:
-        raise RuntimeError("Rotator not connected")
-    az = float(params["az"])
-    await bridge.rotator.move(az)
-    return {"moving": True, "az": az}
 
 
 @method("admin")

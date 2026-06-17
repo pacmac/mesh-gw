@@ -1,17 +1,14 @@
 """Orchestrates the BLE link and the decoded mesh state, and builds
 outgoing ToRadio messages from plain dicts (no protobuf in callers)."""
 import asyncio
-import json
 import logging
 import random
 
 from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 
-from . import bridge_config, geo
 from .ble_handler import BLEHandler
 from .mqtt_proxy import MqttProxy
-from .rotator import RotatorBase, load_rotator
 from .stats import StatsCollector
 from .state import MeshState
 from .tcp_gateway import TcpGateway
@@ -39,37 +36,10 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
         self.ble_error: str | None = None
-        self.rotator: RotatorBase | None = self._init_rotator()
-
-        # node IDs known to have a retained <nodeinfo_root>/nodeinfo/<id>
-        # cache entry (seeded from retained docs, grown as we publish new ones)
-        self._nodeinfo_cached_ids: set[str] = set()
 
         self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
         if ble_address:
             self._init_ble(ble_address)
-
-    def _init_rotator(self) -> RotatorBase | None:
-        full_cfg = bridge_config.load()
-        rot_cfg = full_cfg.get("rotator", {})
-        if not rot_cfg.get("enabled"):
-            return None
-        devices = full_cfg.get("devices") or {}
-        addr = (self.ble_address or "").upper()
-        if not addr or (devices.get(addr) or {}).get("role") != "yagi":
-            return None
-        try:
-            r = load_rotator(rot_cfg)
-            r.on_status = self._on_rotator_status
-            r.start()
-            logger.info("Rotator driver started for %s", addr)
-            return r
-        except Exception as e:
-            logger.error("Failed to load rotator driver: %s", e)
-            return None
-
-    async def _on_rotator_status(self, status: dict):
-        await self.state._broadcast({"type": "rotator", "data": status})
 
     def _init_ble(self, address: str):
         self.ble = BLEHandler(address, self.stats)
@@ -81,8 +51,6 @@ class MeshBridge:
             raise RuntimeError("No BLE device configured")
         if self.tcp_gateway:
             await self.tcp_gateway.start()
-        if self.rotator:
-            self.rotator.start()
         self.ble_state = "connecting"
         logger.info(f"Connecting to BLE device: {self.ble_address}")
         try:
@@ -96,15 +64,13 @@ class MeshBridge:
         await self._request_config()
 
     async def stop(self):
-        """Full shutdown — stop TCP gateway, MQTT proxy, rotator, and disconnect BLE."""
+        """Full shutdown — stop TCP gateway, MQTT proxy, and disconnect BLE."""
         self._user_disconnect = True
         if self.tcp_gateway:
             await self.tcp_gateway.stop()
         if self.mqtt_proxy:
             self.mqtt_proxy.stop()
             self.mqtt_proxy = None
-        if self.rotator:
-            await self.rotator.stop()
         if self.ble:
             await self._ble_disconnect_safe()
 
@@ -113,8 +79,6 @@ class MeshBridge:
             await asyncio.wait_for(self.ble.disconnect(), timeout=8.0)
         except Exception as e:
             logger.warning(f"BLE disconnect warning: {e}")
-
-    # -- dashboard-driven connect/disconnect -----------------------------------
 
     async def connect_to(self, address: str, pin: str = "", passkey_future=None):
         """Connect to BLE device — runs as a background task from the endpoint.
@@ -158,7 +122,6 @@ class MeshBridge:
 
     async def _safe_request_config(self):
         """Request config with timeout; retries once if TORADIO write is slow."""
-        # Wait for BLE stack to fully stabilise after connect before writing
         await asyncio.sleep(2.0)
         for attempt in range(1, 4):
             try:
@@ -174,7 +137,7 @@ class MeshBridge:
         logger.error("All config request attempts failed — stuck in syncing")
 
     async def disconnect_ble(self):
-        """Disconnect BLE and clear address — called from dashboard."""
+        """Disconnect BLE and clear address."""
         self._user_disconnect = True
         self.ble_address = None
         self.ble_state = "idle"
@@ -242,7 +205,6 @@ class MeshBridge:
         cfg = self.state.module_config.get("mqtt", {})
         if not (cfg.get("enabled") and cfg.get("proxy_to_client_enabled")):
             return
-        nodeinfo_root = bridge_config.load()["mqtt_topics"]["nodeinfo_root"]
         try:
             self.mqtt_proxy = MqttProxy(
                 address=cfg["address"],
@@ -251,12 +213,9 @@ class MeshBridge:
                 root=cfg.get("root", "msh"),
                 use_tls=cfg.get("tls_enabled", False),
                 on_downlink=self._on_mqtt_downlink,
-                nodeinfo_root=nodeinfo_root,
             )
             self.mqtt_proxy.on_mqtt_node_update = self._on_mqtt_node_update
-            self.mqtt_proxy.on_nodeinfo_cache = self._on_nodeinfo_cache
-            logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')} "
-                        f"nodeinfo_root={nodeinfo_root!r}")
+            logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')}")
         except Exception as e:
             logger.error(f"Failed to start MQTT proxy: {e}")
 
@@ -279,85 +238,14 @@ class MeshBridge:
 
     def _on_mqtt_node_update(self, node: dict):
         """Called from paho thread — sync merge into state then schedule WS broadcast."""
-        # Mark as MQTT-sourced unless the BLE/RF path already cleared the flag
         existing = self.state.nodes.get(str(node["num"]), {})
         if existing.get("via_mqtt") is not False:
             node["via_mqtt"] = True
         self.state._merge_node_info(node)
-        self._maybe_publish_nodeinfo_cache(str(node["num"]))
         asyncio.run_coroutine_threadsafe(
             self.state._broadcast({"type": "mqtt_node", "data": node}),
             self.mqtt_proxy.loop,
         )
-
-    def _on_nodeinfo_cache(self, node_id: str, doc: dict):
-        """Called from paho thread for retained <nodeinfo_root>/nodeinfo/<id>
-        docs (v3 ESP32-compatible cache, see core/bridge_config.py). Seeds
-        position/az/km for nodes we haven't heard fresher data from yet."""
-        self._nodeinfo_cached_ids.add(node_id)
-        existing = self.state.nodes.get(node_id, {})
-        node: dict = {"num": int(node_id)} if node_id.lstrip("-").isdigit() else {}
-        if not existing.get("position") and doc.get("lat") is not None and doc.get("lon") is not None:
-            node["position"] = {
-                "latitude_i": int(doc["lat"] * 1e7),
-                "longitude_i": int(doc["lon"] * 1e7),
-            }
-            if doc.get("alt") is not None:
-                node["position"]["altitude"] = doc["alt"]
-        if not existing.get("user") and (doc.get("ln") or doc.get("sn")):
-            node["user"] = {"long_name": doc.get("ln", ""), "short_name": doc.get("sn", "")}
-        if not node or "num" not in node:
-            return
-        existing = self.state.nodes.get(node_id, {})
-        if existing.get("via_mqtt") is not False:
-            node["via_mqtt"] = True
-        self.state._merge_node_info(node)
-        asyncio.run_coroutine_threadsafe(
-            self.state._broadcast({"type": "mqtt_node", "data": node}),
-            self.mqtt_proxy.loop,
-        )
-
-    def _home_pos(self):
-        """(lat, lon) of this bridge's own node, or None if unknown --
-        mirrors updateHomePos() in core/static/app.js."""
-        num = self.my_node_num
-        if num is None:
-            return None
-        pos = self.state.nodes.get(str(num), {}).get("position")
-        if not pos or not pos.get("latitude_i") or not pos.get("longitude_i"):
-            return None
-        return pos["latitude_i"] / 1e7, pos["longitude_i"] / 1e7
-
-    def _maybe_publish_nodeinfo_cache(self, node_id: str):
-        """If we've heard a position for a node with no existing
-        <nodeinfo_root>/nodeinfo/<id> cache entry, publish one (retained)
-        in the v3-compatible format so the ESP32 rotator/virtual-compass
-        benefit too."""
-        if node_id in self._nodeinfo_cached_ids:
-            return
-        if not self.mqtt_proxy or not self.mqtt_proxy.connected or not self.mqtt_proxy.nodeinfo_root:
-            return
-        node = self.state.nodes.get(node_id, {})
-        pos = node.get("position")
-        if not pos or not pos.get("latitude_i") or not pos.get("longitude_i"):
-            return
-        home = self._home_pos()
-        lat, lon = pos["latitude_i"] / 1e7, pos["longitude_i"] / 1e7
-        user = node.get("user", {})
-        doc = {
-            "mac": user.get("id", ""),
-            "ln": user.get("long_name", ""),
-            "sn": user.get("short_name", ""),
-            "lat": lat,
-            "lon": lon,
-            "az": round(geo.bearing_deg(*home, lat, lon), 1) if home else 0,
-            "km": round(geo.haversine_km(*home, lat, lon), 2) if home else 0,
-            "id": node_id,
-            "alt": pos.get("altitude", 0),
-        }
-        topic = f"{self.mqtt_proxy.nodeinfo_root}/nodeinfo/{node_id}"
-        self.mqtt_proxy.publish(topic, json.dumps(doc).encode(), retained=True)
-        self._nodeinfo_cached_ids.add(node_id)
 
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 
@@ -384,12 +272,7 @@ class MeshBridge:
     async def send_admin(self, message: dict, to: int = None, want_response: bool = True):
         if not self.ble:
             raise RuntimeError("BLE not connected")
-        """Send an AdminMessage built from a plain dict (same shape as
-        protobuf json_format / `meshtastic --export-config` JSON).
-
-        Example message: {"set_owner": {"long_name": "..."}}
-        Example message: {"get_config_request": "LORA_CONFIG"}
-        """
+        """Send an AdminMessage built from a plain dict."""
         admin = admin_pb2.AdminMessage()
         json_format.ParseDict(message, admin)
 

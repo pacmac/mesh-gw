@@ -1,116 +1,121 @@
-# mesh-rest-bridge
+# mesh-gw — Meshtastic Multi-Device BLE Bridge
 
-A Meshtastic BLE-to-JSON bridge: connects to a Meshtastic radio over BLE
-and exposes it as JSON-RPC 2.0, plain REST, and a WebSocket event stream.
-Clients never see protobuf.
+A pure BLE-to-JSON bridge for Meshtastic radios. Connects to N radios simultaneously over BLE and exposes a unified JSON REST API and WebSocket event stream. Consumers (dashboard servers, logging tools, automation) never see protobuf.
 
-The BLE connection handling (`core/ble_handler.py`, `core/stats.py`) is
-adapted from [Yeraze/meshtastic-ble-bridge](https://github.com/Yeraze/meshtastic-ble-bridge),
-which proxies raw protobuf frames over TCP. This project replaces that
-TCP/protobuf surface with JSON, using `google.protobuf.json_format` to
-convert protobuf messages (`meshtastic` package) to/from plain dicts.
+Multi-device BLE bridging is the core feature — most existing Meshtastic bridges connect to one device at a time.
+
+The BLE connection handling (`core/ble_handler.py`, `core/stats.py`) is adapted from [Yeraze/meshtastic-ble-bridge](https://github.com/Yeraze/meshtastic-ble-bridge).
+
+## Scope
+
+This bridge is intentionally minimal. It:
+- Connects to Meshtastic radios over BLE
+- Streams decoded `FromRadio` packets as JSON over WebSocket
+- Accepts outbound packets (send text, admin messages)
+- Proxies MQTT traffic on behalf of radios configured for `proxy_to_client_enabled`
+- Provides filtered node queries
+
+It does **not** contain: dashboard UI, rotator logic, radar, node history, message storage, or any consuming-application logic. Those belong in a separate dashboard server.
 
 ## API
 
-- `POST /rpc` -- JSON-RPC 2.0 (`{"jsonrpc":"2.0","method":"get_nodes","id":1}`).
-  Same method registry (`core/methods.py`) is intended to back an MCP
-  tool list later, so agents can call this directly.
-- `GET /info`, `/nodes`, `/channels`, `/config`, `/status` -- REST
-  shortcuts for the read-only RPC methods.
-- `WS /ws` -- stream of decoded FromRadio events as JSON.
+### Server-level (all devices)
 
-### Methods
+| Endpoint | Description |
+|---|---|
+| `GET /status` | Server status and device list |
+| `GET /devices` | Connected device list |
+| `POST /devices` | Connect a new BLE device `{address, pin?, tcp_port?}` |
+| `DELETE /devices/{node_id}` | Disconnect a device |
+| `GET /nodes` | Merged node list across all bridges (query params below) |
+| `GET /ble/scan` | Scan for nearby Meshtastic BLE devices |
+| `POST /ble/pair` | Start dynamic-PIN pairing |
+| `POST /ble/passkey` | Supply PIN for dynamic-PIN pairing |
+| `WS /events` | Unified event stream from all devices (tagged with `device`) |
+| `GET /sections` | Available config section names |
+| `GET /schema/{section}` | JSON schema for a config section |
 
-| method | params | description |
+### Per-device (prefix `/{node_id}/`)
+
+| Endpoint | Description |
+|---|---|
+| `GET /status` | BLE state, node count, MQTT status |
+| `GET /info` | my_info + device metadata |
+| `GET /nodes` | NodeDB with optional filters |
+| `GET /nodes/{num}` | Single node |
+| `GET /channels` | Channel list |
+| `GET /channels/{index}` | Single channel (live admin read) |
+| `PUT /channels/{index}` | Update a channel |
+| `GET /config` | Cached config + module_config |
+| `GET /config/{section}` | Live admin read of a config section |
+| `PUT /config/{section}` | Write a config section |
+| `GET /owner` | Device owner (live) |
+| `PUT /owner` | Set device owner |
+| `GET /fixed_position` | Fixed position |
+| `PUT /fixed_position` | Set fixed position |
+| `DELETE /fixed_position` | Remove fixed position |
+| `POST /messages` | Send text `{text, to?, channel?}` |
+| `POST /admin` | Generic AdminMessage passthrough |
+| `POST /rpc` | JSON-RPC 2.0 method call |
+| `WS /events` | Per-device event stream |
+
+### Node filter query params
+
+All `/nodes` endpoints accept:
+
+| Param | Default | Description |
 |---|---|---|
-| `get_info` | - | my_info + device metadata |
-| `get_nodes` | - | NodeDB |
-| `get_channels` | - | channel list |
-| `get_config` | - | last-seen config/module_config sections |
-| `get_status` | - | BLE connection state, node count |
-| `send_text` | `text`, `to?`, `channel?` | send a text message |
-| `admin` | `message`, `to?`, `want_response?` | generic AdminMessage passthrough (same JSON shape as `meshtastic --export-config`) |
-| `get_radio_config` | `section` | admin `get_config_request` for a named section (e.g. `LORA_CONFIG`) |
-| `set_owner` | `long_name?`, `short_name?`, `is_licensed?` | set device owner/name |
-| `get_bridge_config` | - | bridge-side settings (radar UI defaults, MQTT topic conventions) -- `core/bridge_config.yaml` |
-| `set_bridge_config` | partial config dict | deep-merge + persist bridge-side settings |
+| `max_age` | 0 (off) | Max seconds since last heard |
+| `max_hops` | 99 | Max hop count |
+| `named_only` | false | Only nodes with a long_name |
+| `has_position` | false | Only nodes with position |
+| `hide_mqtt` | false | Exclude MQTT-sourced nodes |
+| `has_signal` | false | Only nodes with SNR/RSSI |
+| `has_telemetry` | false | Only nodes with device_metrics |
+| `node_roles` | [] (all) | Filter by role strings e.g. `ROUTER`, `CLIENT` |
 
-## MQTT topic map
+## Configuration
 
-The bridge connects to the same broker (`mqtt.peter-c.net`) as the v3 ESP32
-rotator/virtual-compass, and must stay compatible with its topic
-conventions. Two independent topic trees are in play:
+BLE device addresses are persisted in `core/bridge_config.yaml` and auto-connected on startup:
 
-### Device-stored (radio's own MQTT module config)
-
-The connected radio's `moduleConfig.mqtt` (Device Config tab) sets the
-**gateway root**, e.g. `yagi/uk/msh/EU_868`. The bridge's `MqttProxy`
-(`core/mqtt_proxy.py`) subscribes to `<gateway_root>/#` and relays
-`mqttClientProxyMessage` traffic between the radio and the broker
-(`/2/json/...`, `/2/e/...`, etc). This is the standard Meshtastic MQTT
-module behaviour and isn't bridge-specific.
-
-### Bridge-managed: ESP32-compatible nodeinfo cache
-
-Configured via the **Bridge Config** tab / `GET|PUT /bridge_config`
-(`core/bridge_config.yaml`, `mqtt_topics.nodeinfo_root`, default `uk`).
-This is a *separate* topic tree from the gateway root above -- it's the
-v3 ESP32 rotator's retained per-node position cache convention
-(`/usr/share/pac/dev/pio/projects/mt-yagi/v3/spec.md`):
-
-```
-<nodeinfo_root>/nodeinfo/<nodeID>   # retained, JSON:
-                                     # {mac, ln, sn, lat, lon, az, km, id, alt}
+```yaml
+ble_devices:
+  - address: AA:BB:CC:DD:EE:FF
+    pin: ""
+  - address: 11:22:33:44:55:66
+    pin: ""
+    tcp_port: 4403
 ```
 
-- On MQTT connect, the bridge subscribes to `<nodeinfo_root>/nodeinfo/#`
-  and seeds `position`/`user` for any node it hasn't heard fresher data
-  for yet (`bridge._on_nodeinfo_cache`).
-- The first time the bridge hears a position for a node with no existing
-  cache entry (via the `/2/json/` gateway feed), it publishes a retained
-  doc in this same format (`bridge._maybe_publish_nodeinfo_cache`), so the
-  ESP32 rotator/virtual-compass (which subscribes to `uk/nodeinfo/#`)
-  benefit too.
-
-### Critical: outbound sendtext "from" routing (YAGI/OMNI)
-
-Not yet used by this bridge (`send_text` is BLE-direct), but **any future
-MQTT-published `sendtext`/ping feature must respect this**, per
-`v3/src/main_mqtt.cpp:128-163`:
-
-A Meshtastic radio **silently drops** any MQTT downlink message whose JSON
-`"from"` equals its own node ID. To make a message appear to come from
-radio A, publish to the topic keyed by radio B's MAC:
-
-```
-<gateway_root>/mqtt/<MAC>   # MAC of the OTHER radio (cross-route)
-{"from": <numeric ID>, "to": <numeric ID, 4294967295=broadcast>,
- "channel": 0, "type": "sendtext", "payload": "<text>",
- "want_ack": true}          // DMs only
-```
-
-`from`/`to` must be numeric node IDs, never MAC strings.
+Addresses can also be passed as command-line arguments.
 
 ## Running
 
-```
+```bash
 pip install -r requirements.txt
-python -m cli.main <BLE_MAC_ADDRESS> --http-port 8000
+python -m module.main AA:BB:CC:DD:EE:FF 11:22:33:44:55:66 --http-port 8001
 ```
 
-## Docker
+## MQTT Proxy
+
+If a connected radio has `moduleConfig.mqtt.enabled` and `proxy_to_client_enabled` set, the bridge automatically connects to the radio's configured broker and relays MQTT traffic (`mqttClientProxyMessage`) bidirectionally. No bridge configuration needed — broker address, credentials, and root topic all come from the radio's own config.
+
+## Architecture
 
 ```
-docker build -t mesh-rest-bridge .
-docker run --rm --net=host --privileged \
-  -e BLE_ADDRESS=E9:B0:3F:17:27:91 \
-  mesh-rest-bridge E9:B0:3F:17:27:91 --http-port 8000
+[Meshtastic Radio] <--BLE--> [core/ble_handler.py]
+                                      |
+                              [core/bridge.py]
+                              [core/state.py]
+                                      |
+                              [module/server.py]  (FastAPI, port 8001)
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
+             REST clients                        WS subscribers
+          (dashboard server)                (dashboard server, loggers)
 ```
 
-Needs a host with a Bluetooth adapter (passed through to the
-container/VM) within range of the radio.
+## Reference
 
-## Status
-
-Early scaffold. Read side (NodeDB, info, channels, config) and basic
-admin/text-send are wired up. Not yet deployed.
+The `archive/v1/` directory contains the previous monolithic version (bridge + rotator + dashboard logic combined) as a reference for porting logic to the dashboard server.

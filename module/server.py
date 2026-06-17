@@ -110,30 +110,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
         asyncio.create_task(dm.disconnect(node_id))
         return {"disconnecting": True, "node_id": node_id}
 
-    @app.get("/bridge_config")
-    async def get_bridge_config():
-        return _bcfg.load()
-
-    @app.put("/bridge_config")
-    async def put_bridge_config(body: dict = Body(...)):
-        current = _bcfg.load()
-        merged = _bcfg._deep_merge(current, body)
-        return _bcfg.save(merged)
-
-    _NODE_FILTER_KEYS = {"max_age", "max_hops", "named_only", "has_position",
-                         "hide_mqtt", "has_signal", "has_telemetry", "node_roles"}
-
-    @app.get("/node_filter")
-    async def get_node_filter():
-        return _bcfg.load().get("node_filter", {})
-
-    @app.put("/node_filter")
-    async def put_node_filter(body: dict = Body(...)):
-        cfg = _bcfg.load()
-        cfg["node_filter"] = {k: v for k, v in body.items() if k in _NODE_FILTER_KEYS}
-        _bcfg.save(cfg)
-        return cfg["node_filter"]
-
     @app.get("/nodes")
     async def all_nodes_aggregated(
         max_age: int = 0, max_hops: int = 99,
@@ -142,7 +118,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
         has_telemetry: bool = False,
         node_roles: List[str] = Query(default=[]),
     ):
-        """Merged node list from all connected bridges — same dataset the rotator uses."""
+        """Merged node list from all connected bridges."""
         params = {
             "max_age": max_age, "max_hops": max_hops,
             "named_only": named_only, "has_position": has_position,
@@ -256,53 +232,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
             return get_section_schema(section)
         except KeyError as e:
             raise HTTPException(404, str(e))
-
-    # -- rotator (server-level, not per-device — must be before /{node_id}/) --
-
-    @app.get("/rotator/status")
-    async def rotator_status():
-        r = dm.get_rotator()
-        if not r:
-            raise HTTPException(503, "Rotator not configured")
-        return {"connected": r.connected, "status": r.status}
-
-    @app.post("/rotator/move")
-    async def rotator_move(body: dict = Body(...)):
-        r = dm.get_rotator()
-        if not r or not r.connected:
-            raise HTTPException(503, "Rotator not connected")
-        az = body.get("az")
-        if az is None:
-            raise HTTPException(400, "az required")
-        await r.move(float(az))
-        return {"moving": True, "az": az}
-
-    @app.post("/rotator/mode")
-    async def rotator_mode(body: dict = Body(...)):
-        r = dm.get_rotator()
-        if not r or not r.connected:
-            raise HTTPException(503, "Rotator not connected")
-        mode = body.get("mode")
-        if mode is None:
-            raise HTTPException(400, "mode required")
-        await r.set_mode(int(mode))
-        return {"mode": mode}
-
-    @app.get("/rotator/state")
-    async def rotator_ctrl_state():
-        rc = dm.get_rotator_controller()
-        if not rc:
-            return {"mode": 0, "point_target": None, "dwell_remaining": 0}
-        return rc.state
-
-    @app.post("/rotator/state")
-    async def set_rotator_ctrl_state(body: dict = Body(...)):
-        rc = dm.get_rotator_controller()
-        if not rc:
-            raise HTTPException(503, "Rotator controller not running")
-        if "mode" in body:
-            rc.mode = int(body["mode"])
-        return rc.state
 
     # =========================================================================
     # Device-namespaced routes  — prefix /{node_id}/
