@@ -204,11 +204,26 @@ async def remove_fixed_position(bridge: MeshBridge, params: dict):
     return await bridge.send_admin({"remove_fixed_position": True}, want_response=False)
 
 
+def _parse_node_num(value, default=0xFFFFFFFF) -> int:
+    """Accept decimal int, '!hex' node ID string, or plain hex string."""
+    if value is None:
+        return default
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if s.startswith("!"):
+        return int(s[1:], 16)
+    try:
+        return int(s)
+    except ValueError:
+        return int(s, 16)
+
+
 @method("send_text")
 async def send_text(bridge: MeshBridge, params: dict):
     return await bridge.send_text(
         text=params["text"],
-        to=int(params.get("to", 0xFFFFFFFF)),
+        to=_parse_node_num(params.get("to")),
         channel=int(params.get("channel", 0)),
     )
 
