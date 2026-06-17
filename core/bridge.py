@@ -156,10 +156,9 @@ class MeshBridge:
         if self.tcp_gateway:
             self.tcp_gateway.broadcast(data)
         await self.state.handle_from_radio_bytes(data)
-        if not self.mqtt_proxy:
-            self._maybe_start_mqtt_proxy()
         if self.state.config_complete and self.ble_state == "syncing":
             self.ble_state = "active"
+            asyncio.create_task(self._start_mqtt_proxy_live())
 
     async def _tcp_to_radio(self, payload: bytes):
         """Forward a ToRadio packet received from a TCP client to the BLE radio."""
@@ -203,6 +202,28 @@ class MeshBridge:
         return self.state.my_info.get("my_node_num")
 
     # -- MQTT proxy -----------------------------------------------------------
+
+    async def _start_mqtt_proxy_live(self):
+        """After config_complete, query the radio directly for its MQTT module config
+        (admin round-trip returns the real password, unlike the masked sync data), then
+        start the proxy with the correct credentials."""
+        try:
+            from .sections import MODULE_CONFIG_SECTIONS
+            resp = await asyncio.wait_for(
+                self.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS["mqtt"]}),
+                timeout=10.0,
+            )
+            live = resp.get("get_module_config_response", {}).get("mqtt", {})
+            if live:
+                self.state.module_config["mqtt"] = live
+                pwd_len = len(live.get("password", ""))
+                logger.info(f"Live MQTT config fetched: user={live.get('username')!r} pwd_len={pwd_len} proxy={live.get('proxy_to_client_enabled')}")
+        except Exception as e:
+            logger.warning(f"Could not fetch live MQTT config via admin: {e}")
+        if self.mqtt_proxy:
+            self.mqtt_proxy.stop()
+            self.mqtt_proxy = None
+        self._maybe_start_mqtt_proxy()
 
     def _maybe_start_mqtt_proxy(self):
         cfg = self.state.module_config.get("mqtt", {})

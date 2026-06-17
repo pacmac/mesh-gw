@@ -155,11 +155,22 @@ _FORCED_VALUES: dict[str, dict] = {
 }
 
 
+_PASSWORD_FIELDS: dict[str, set[str]] = {
+    "mqtt":    {"password"},
+    "network": {"wifi_psk"},
+    "bluetooth": {"fixed_pin"},  # 0 is default; skip if not explicitly set
+}
+
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
     section = params["section"]
     values = {**params["values"], **_FORCED_VALUES.get(section, {})}
+    # Strip empty-string password fields so a blank form field never wipes a
+    # credential that the radio has stored but doesn't expose in config reads.
+    for field in _PASSWORD_FIELDS.get(section, set()):
+        if values.get(field) == "" or values.get(field) is None:
+            values.pop(field, None)
     kind = config_kind(section)
     key = "set_config" if kind == "config" else "set_module_config"
     return await bridge.send_admin({key: {section: values}}, want_response=False)
