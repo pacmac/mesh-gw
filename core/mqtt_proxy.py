@@ -58,7 +58,7 @@ class MqttProxy:
         logger.warning(f"MQTT proxy disconnected from broker: rc={rc}")
 
     def _on_message(self, client, userdata, msg):
-        logger.info(f"MQTT downlink <- {msg.topic} ({len(msg.payload)} bytes)")
+        logger.info(f"MQTT broker→radio: {msg.topic} ({len(msg.payload)} bytes)")
         if "/2/json/" in msg.topic and self.on_mqtt_node_update:
             self._try_parse_json_node(msg.payload)
         asyncio.run_coroutine_threadsafe(self.on_downlink(msg.topic, msg.payload), self.loop)
@@ -99,7 +99,7 @@ class MqttProxy:
         self.on_mqtt_node_update(node)
 
     def publish(self, topic: str, payload: bytes, retained: bool = False):
-        logger.info(f"MQTT uplink -> {topic} ({len(payload)} bytes)")
+        logger.info(f"MQTT radio→broker: {topic} ({len(payload)} bytes)")
         self.client.publish(topic, payload, retain=retained)
 
     def stop(self):

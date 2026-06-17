@@ -156,11 +156,10 @@ class MeshBridge:
         if self.tcp_gateway:
             self.tcp_gateway.broadcast(data)
         await self.state.handle_from_radio_bytes(data)
-        if self.state.config_complete:
-            if self.ble_state == "syncing":
-                self.ble_state = "active"
-            if not self.mqtt_proxy:
-                self._maybe_start_mqtt_proxy()
+        if not self.mqtt_proxy:
+            self._maybe_start_mqtt_proxy()
+        if self.state.config_complete and self.ble_state == "syncing":
+            self.ble_state = "active"
 
     async def _tcp_to_radio(self, payload: bytes):
         """Forward a ToRadio packet received from a TCP client to the BLE radio."""
