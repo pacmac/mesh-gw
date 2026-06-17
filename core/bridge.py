@@ -266,10 +266,6 @@ class MeshBridge:
         packet.decoded.CopyFrom(data)
         packet.hop_limit = hop_limit
         packet.want_ack = is_dm
-        if is_dm:
-            # Signal firmware to use PKC (ECDH) instead of channel PSK.
-            # Firmware handles key lookup and encryption — do not set public_key here.
-            packet.pki_encrypted = True
 
         to_radio = mesh_pb2.ToRadio()
         to_radio.packet.CopyFrom(packet)
