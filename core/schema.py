@@ -61,16 +61,23 @@ def get_section_schema(section: str) -> dict:
     return {"section": section, "fields": fields}
 
 
+_CHANNEL_LABEL_OVERRIDES = {
+    "uplink_enabled": "Radio → Broker",
+    "downlink_enabled": "Broker → Radio",
+}
+
 def get_channel_schema() -> dict:
     from meshtastic import channel_pb2
     msg_type = channel_pb2.ChannelSettings.DESCRIPTOR
     role_enum = channel_pb2.Channel.DESCRIPTOR.fields_by_name["role"].enum_type
-    return {
-        "section": "channel",
-        "fields": [_field_schema(f) for f in msg_type.fields] + [
-            {"name": "role", "type": "enum", "options": [v.name for v in role_enum.values]},
-        ],
-    }
+    fields = []
+    for f in msg_type.fields:
+        s = _field_schema(f)
+        if f.name in _CHANNEL_LABEL_OVERRIDES:
+            s["label"] = _CHANNEL_LABEL_OVERRIDES[f.name]
+        fields.append(s)
+    fields.append({"name": "role", "type": "enum", "options": [v.name for v in role_enum.values]})
+    return {"section": "channel", "fields": fields}
 
 
 def get_owner_schema() -> dict:
