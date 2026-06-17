@@ -110,6 +110,8 @@ class MeshBridge:
                         if attempt == 3:
                             raise
                         await asyncio.sleep(5)
+            if self.tcp_gateway and not self.tcp_gateway._server:
+                await self.tcp_gateway.start()
             self.ble_state = "syncing"
             logger.info("BLE connected, requesting config…")
             asyncio.create_task(self._safe_request_config())
