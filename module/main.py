@@ -61,6 +61,11 @@ async def run(addresses: list[tuple[str, str]], http_port: int):
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, handle_signal)
 
+    loop.add_signal_handler(
+        signal.SIGHUP,
+        lambda: asyncio.create_task(dm.reload_config()),
+    )
+
     async def connect_all():
         if not addresses:
             logger.info("No BLE addresses configured — use POST /devices to connect")

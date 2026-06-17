@@ -82,6 +82,13 @@ class MeshState:
         cutoff = time.time() - self._cache_max_age
         return [{**ev, "_replay": True} for ts, ev in self._message_cache if ts >= cutoff]
 
+    def reload_cache_config(self, cfg: dict):
+        self._cache_enabled = bool(cfg.get("enabled", False))
+        self._cache_max_age = int(cfg.get("max_age_seconds", 86400))
+        new_maxlen = int(cfg.get("max_messages", 100))
+        if new_maxlen != self._message_cache.maxlen:
+            self._message_cache = deque(self._message_cache, maxlen=new_maxlen)
+
     async def _broadcast(self, event: dict):
         if self.device_id and "device" not in event:
             event = {**event, "device": self.device_id}

@@ -168,6 +168,29 @@ class DeviceManager:
             })
         return result
 
+    async def reload_config(self):
+        """Re-read bridge_config.yaml and apply changes without restarting BLE."""
+        from core import bridge_config as _bcfg
+        cfg = _bcfg.load()
+        logger.info("Reloading config")
+
+        cache_cfg = cfg.get("message_cache", {})
+        for bridge in list(self._devices.values()) + list(self._pending.values()):
+            bridge.state.reload_cache_config(cache_cfg)
+
+        mqtt_cfg = cfg.get("mqtt_publish", {})
+        pub = self.get_mqtt_publisher()
+        if mqtt_cfg.get("enabled"):
+            if pub:
+                await self.stop_mqtt_publisher()
+            self.start_mqtt_publisher(mqtt_cfg)
+        else:
+            if pub:
+                await self.stop_mqtt_publisher()
+
+        logger.info("Config reloaded")
+        return {"reloaded": True, "message_cache": cache_cfg, "mqtt_enabled": bool(mqtt_cfg.get("enabled"))}
+
     async def stop_all(self):
         await self.stop_mqtt_publisher()
         for task in list(self._watchers.values()):

@@ -74,6 +74,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def help_text():
         return HELP_TEXT
 
+    @app.post("/reload")
+    async def reload_config():
+        return await dm.reload_config()
+
     @app.get("/status")
     async def server_status():
         return {
