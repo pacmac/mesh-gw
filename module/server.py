@@ -110,6 +110,34 @@ def create_app(dm: DeviceManager) -> FastAPI:
         asyncio.create_task(dm.disconnect(node_id))
         return {"disconnecting": True, "node_id": node_id}
 
+    # -- MQTT publisher --------------------------------------------------------
+
+    @app.get("/mqtt_publish")
+    async def get_mqtt_publish():
+        return _bcfg.load().get("mqtt_publish", {})
+
+    @app.put("/mqtt_publish")
+    async def put_mqtt_publish(body: dict = Body(...)):
+        cfg = _bcfg.load()
+        cfg["mqtt_publish"] = _bcfg._deep_merge(cfg.get("mqtt_publish", {}), body)
+        _bcfg.save(cfg)
+        pub = dm.get_mqtt_publisher()
+        if pub:
+            enabled = cfg["mqtt_publish"].get("enabled", True)
+            if not enabled:
+                await dm.stop_mqtt_publisher()
+        else:
+            if cfg["mqtt_publish"].get("enabled"):
+                dm.start_mqtt_publisher(cfg["mqtt_publish"])
+        return cfg["mqtt_publish"]
+
+    @app.get("/mqtt_publish/status")
+    async def mqtt_publish_status():
+        pub = dm.get_mqtt_publisher()
+        if not pub:
+            return {"running": False}
+        return {"running": True, "connected": pub.connected}
+
     @app.get("/nodes")
     async def all_nodes_aggregated(
         max_age: int = 0, max_hops: int = 99,

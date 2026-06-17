@@ -27,6 +27,8 @@ class DeviceManager:
         self._subscribers: set[asyncio.Queue] = set()
         # pending passkey futures for dynamic-PIN pairing: addr(upper) -> Future[str]
         self._passkey_futures: dict[str, asyncio.Future] = {}
+        # optional MQTT publisher
+        self._mqtt_publisher = None
 
     # -- device lifecycle -------------------------------------------------------
 
@@ -109,6 +111,20 @@ class DeviceManager:
         """Look up a bridge by node_id ('!3f172791')."""
         return self._devices.get(node_id)
 
+    def start_mqtt_publisher(self, cfg: dict):
+        from core.mqtt_publisher import MqttPublisher
+        self._mqtt_publisher = MqttPublisher(cfg, self)
+        self._mqtt_publisher.start()
+        return self._mqtt_publisher
+
+    def get_mqtt_publisher(self):
+        return self._mqtt_publisher
+
+    async def stop_mqtt_publisher(self):
+        if self._mqtt_publisher:
+            await self._mqtt_publisher.stop()
+            self._mqtt_publisher = None
+
     def get_by_ble(self, ble_address: str) -> Optional[MeshBridge]:
         node_id = self._by_ble.get(ble_address.upper())
         return self._devices.get(node_id) if node_id else None
@@ -153,6 +169,7 @@ class DeviceManager:
         return result
 
     async def stop_all(self):
+        await self.stop_mqtt_publisher()
         for task in list(self._watchers.values()):
             if not task.done():
                 task.cancel()

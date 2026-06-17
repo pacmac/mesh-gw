@@ -42,6 +42,11 @@ def setup_logging(verbose: bool):
 async def run(addresses: list[tuple[str, str]], http_port: int):
     """addresses: list of (ble_address, pin) tuples."""
     dm = DeviceManager()
+    mqtt_cfg = _bcfg.load().get("mqtt_publish", {})
+    if mqtt_cfg.get("enabled"):
+        dm.start_mqtt_publisher(mqtt_cfg)
+        logger.info("MQTT publisher started -> %s (prefix=%s)",
+                    mqtt_cfg.get("broker"), mqtt_cfg.get("topic_prefix", "mesh"))
     app = create_app(dm)
 
     config = uvicorn.Config(app, host="0.0.0.0", port=http_port, log_level="info")

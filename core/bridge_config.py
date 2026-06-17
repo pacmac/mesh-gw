@@ -10,6 +10,17 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
 DEFAULTS = {
     "ble_devices": [],  # list of {address, pin, tcp_port?} to auto-connect on startup
+    "mqtt_publish": {
+        "enabled":              False,
+        "broker":               "localhost",
+        "port":                 1883,
+        "username":             "",
+        "password":             "",
+        "use_tls":              False,
+        "topic_prefix":         "mesh",
+        "ha_discovery":         False,
+        "ha_discovery_prefix":  "homeassistant",
+    },
 }
 
 
