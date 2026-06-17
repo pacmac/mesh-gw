@@ -180,16 +180,18 @@ class MeshBridge:
         async with self._reconnect_lock:
             if self._user_disconnect:
                 return
-            for attempt in range(1, self.ble.MAX_RECONNECT_ATTEMPTS + 1):
+            while not self._user_disconnect:
+                # Reset counter when backoff ceiling is reached so we keep retrying at max delay
+                if self.ble.reconnect_attempts >= self.ble.MAX_RECONNECT_ATTEMPTS:
+                    logger.info("Reconnect cycle exhausted, resetting and continuing at max interval")
+                    self.ble.reconnect_attempts = 0
                 if await self.ble.attempt_reconnection():
                     logger.info("Reconnected, re-requesting config")
                     self.ble_state = "syncing"
                     self.state.config_complete = False
                     asyncio.create_task(self._safe_request_config())
                     return
-            logger.error("Giving up reconnecting to BLE device")
-            self.ble_state = "error"
-            self.ble_error = "Lost connection — could not reconnect after max attempts"
+            logger.info("Reconnection stopped — user disconnect")
 
     async def _request_config(self):
         to_radio = mesh_pb2.ToRadio()
