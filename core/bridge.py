@@ -256,12 +256,15 @@ class MeshBridge:
         data.portnum = portnums_pb2.PortNum.TEXT_MESSAGE_APP
         data.payload = text.encode("utf-8")
 
+        hop_limit = self.state.config.get("lora", {}).get("hop_limit", 3)
+
         packet = mesh_pb2.MeshPacket()
         packet.id = _random_id()
         packet.to = to
         packet.channel = channel
         packet.decoded.CopyFrom(data)
-        packet.want_ack = False
+        packet.hop_limit = hop_limit
+        packet.want_ack = to != BROADCAST_NUM  # ack for DMs, not broadcasts
 
         to_radio = mesh_pb2.ToRadio()
         to_radio.packet.CopyFrom(packet)
