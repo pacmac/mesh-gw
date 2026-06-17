@@ -9,7 +9,8 @@ import asyncio
 import logging
 
 from bleak import BleakScanner
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body, Query
+from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -120,7 +121,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
         return _bcfg.save(merged)
 
     _NODE_FILTER_KEYS = {"max_age", "max_hops", "named_only", "has_position",
-                         "hide_mqtt", "has_signal", "has_telemetry"}
+                         "hide_mqtt", "has_signal", "has_telemetry", "node_roles"}
 
     @app.get("/node_filter")
     async def get_node_filter():
@@ -139,13 +140,14 @@ def create_app(dm: DeviceManager) -> FastAPI:
         named_only: bool = False, has_position: bool = False,
         hide_mqtt: bool = False, has_signal: bool = False,
         has_telemetry: bool = False,
+        node_roles: List[str] = Query(default=[]),
     ):
         """Merged node list from all connected bridges — same dataset the rotator uses."""
         params = {
             "max_age": max_age, "max_hops": max_hops,
             "named_only": named_only, "has_position": has_position,
             "hide_mqtt": hide_mqtt, "has_signal": has_signal,
-            "has_telemetry": has_telemetry,
+            "has_telemetry": has_telemetry, "node_roles": node_roles,
         }
         merged: dict = {}
         for bridge in dm._devices.values():
@@ -325,12 +327,13 @@ def create_app(dm: DeviceManager) -> FastAPI:
         hide_mqtt: bool = False,
         has_signal: bool = False,
         has_telemetry: bool = False,
+        node_roles: List[str] = Query(default=[]),
     ):
         params = {
             "max_age": max_age, "max_hops": max_hops,
             "named_only": named_only, "has_position": has_position,
             "hide_mqtt": hide_mqtt, "has_signal": has_signal,
-            "has_telemetry": has_telemetry,
+            "has_telemetry": has_telemetry, "node_roles": node_roles,
         }
         return await _call(node_id, "get_nodes", params)
 

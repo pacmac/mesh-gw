@@ -41,6 +41,7 @@ function dashboard() {
       hasTelem:   localStorage.getItem("nf_hasTelem")   === "1",
       maxAge:     parseInt(localStorage.getItem("nf_maxAge")    ?? "0"),
       hideMqtt:   localStorage.getItem("nf_hideMqtt") !== "0",  // default ON
+      nodeRoles:  JSON.parse(localStorage.getItem("nf_nodeRoles") || "[]"),
     },
     mqttProxy: false,
     mqttCfg: {},
@@ -222,8 +223,9 @@ function dashboard() {
             namedOnly: nf.named_only   ?? this.nodeFilters.namedOnly,
             hasPos:    nf.has_position ?? this.nodeFilters.hasPos,
             hideMqtt:  nf.hide_mqtt    ?? this.nodeFilters.hideMqtt,
-            hasSignal: nf.has_signal   ?? this.nodeFilters.hasSignal,
+            hasSignal: nf.has_signal    ?? this.nodeFilters.hasSignal,
             hasTelem:  nf.has_telemetry ?? this.nodeFilters.hasTelem,
+            nodeRoles: nf.node_roles    ?? this.nodeFilters.nodeRoles,
           };
         } catch (_) {}
         // Resolve yagi radio assignment from devices block
@@ -245,12 +247,15 @@ function dashboard() {
         hasTelem:  false,
         maxAge:    nd.default_max_age_sec ?? 0,
         hideMqtt:  nd.default_hide_mqtt   ?? true,
+        nodeRoles: [],
       };
+      localStorage.removeItem("nf_nodeRoles");
       fetchJSON("/node_filter", "PUT", {
         max_age: this.nodeFilters.maxAge, max_hops: 99,
         named_only: false, has_position: false,
         hide_mqtt: this.nodeFilters.hideMqtt,
         has_signal: false, has_telemetry: false,
+        node_roles: [],
       }).catch(() => {});
     },
 
@@ -334,6 +339,7 @@ function dashboard() {
       if (f.hideMqtt)         qs.set("hide_mqtt",    "true");
       if (f.hasSignal)        qs.set("has_signal",   "true");
       if (f.hasTelem)         qs.set("has_telemetry","true");
+      if (f.nodeRoles?.length) f.nodeRoles.forEach(r => qs.append("node_roles", r));
       const query = qs.toString() ? "?" + qs.toString() : "";
       // /nodes aggregates all bridges server-side — same dataset the rotator uses.
       const data = await fetchJSON("/nodes" + query);
@@ -431,7 +437,7 @@ function dashboard() {
 
     saveNodeFilter(key, val) {
       this.nodeFilters[key] = val;
-      // Persist to server so rotator uses same filter, localStorage is just a fast fallback
+      if (key === 'nodeRoles') localStorage.setItem("nf_nodeRoles", JSON.stringify(val));
       fetchJSON("/node_filter", "PUT", {
         max_age:      this.nodeFilters.maxAge,
         max_hops:     this.nodeFilters.maxHops,
@@ -440,8 +446,16 @@ function dashboard() {
         hide_mqtt:    this.nodeFilters.hideMqtt,
         has_signal:   this.nodeFilters.hasSignal,
         has_telemetry: this.nodeFilters.hasTelem,
+        node_roles:   this.nodeFilters.nodeRoles,
       }).catch(() => {});
       this.loadNodes();
+    },
+
+    toggleNodeRole(role, checked) {
+      const ALL = ['CLIENT','CLIENT_BASE','CLIENT_MUTE','ROUTER','ROUTER_CLIENT','ROUTER_LATE','TRACKER','SENSOR','REPEATER'];
+      let cur = this.nodeFilters.nodeRoles.length ? [...this.nodeFilters.nodeRoles] : [...ALL];
+      cur = checked ? [...new Set([...cur, role])] : cur.filter(r => r !== role);
+      this.saveNodeFilter('nodeRoles', cur.length === ALL.length ? [] : cur);
     },
 
     filteredNodes() {

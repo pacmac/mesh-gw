@@ -43,10 +43,13 @@ async def get_nodes(bridge: MeshBridge, params: dict):
     hide_mqtt    = bool(params.get("hide_mqtt", False))
     has_signal   = bool(params.get("has_signal", False))
     has_telemetry= bool(params.get("has_telemetry", False))
+    node_roles   = params.get("node_roles") or []
+    if isinstance(node_roles, str):
+        node_roles = [node_roles]
 
     no_filter = (max_age == 0 and max_hops == 99 and not named_only
                  and not has_position and not hide_mqtt
-                 and not has_signal and not has_telemetry)
+                 and not has_signal and not has_telemetry and not node_roles)
     if no_filter:
         return {"total": total, "count": total, "filter": {}, "nodes": all_nodes}
 
@@ -59,6 +62,7 @@ async def get_nodes(bridge: MeshBridge, params: dict):
     if hide_mqtt:    active_filters["hide_mqtt"] = True
     if has_signal:   active_filters["has_signal"] = True
     if has_telemetry:active_filters["has_telemetry"] = True
+    if node_roles:   active_filters["node_roles"] = node_roles
 
     filtered = {}
     for key, node in all_nodes.items():
@@ -76,6 +80,10 @@ async def get_nodes(bridge: MeshBridge, params: dict):
             continue
         if has_telemetry and not node.get("device_metrics"):
             continue
+        if node_roles:
+            effective_role = (node.get("user") or {}).get("role") or "CLIENT"
+            if effective_role not in node_roles:
+                continue
         filtered[key] = node
 
     return {"total": total, "count": len(filtered), "filter": active_filters, "nodes": filtered}

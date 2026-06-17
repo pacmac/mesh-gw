@@ -76,6 +76,7 @@ DEFAULTS = {
         "hide_mqtt":    True,
         "has_signal":   False,
         "has_telemetry": False,
+        "node_roles":   [],      # empty = all roles; list of role strings to include
     },
 }
 

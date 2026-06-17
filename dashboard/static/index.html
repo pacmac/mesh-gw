@@ -558,6 +558,25 @@
                 <input type="checkbox" class="checkbox checkbox-xs" :checked="nodeFilters.hasTelem" @change="saveNodeFilter('hasTelem', $event.target.checked)">
                 <span class="text-xs">Telemetry</span>
               </label>
+              <!-- Role filter -->
+              <details class="dropdown">
+                <summary class="btn btn-xs btn-ghost gap-1 font-normal">
+                  <span class="text-xs" x-text="nodeFilters.nodeRoles?.length ? 'Role: ' + nodeFilters.nodeRoles.length : 'Role: All'"></span>
+                  <svg class="w-3 h-3 opacity-50" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                </summary>
+                <ul class="dropdown-content z-[1] menu p-2 shadow bg-base-200 rounded-box w-44 text-xs gap-0.5">
+                  <template x-for="role in ['CLIENT','CLIENT_BASE','CLIENT_MUTE','ROUTER','ROUTER_CLIENT','ROUTER_LATE','TRACKER','SENSOR','REPEATER']" :key="role">
+                    <li>
+                      <label class="flex items-center gap-2 cursor-pointer py-1">
+                        <input type="checkbox" class="checkbox checkbox-xs"
+                               :checked="!nodeFilters.nodeRoles?.length || nodeFilters.nodeRoles.includes(role)"
+                               @change="toggleNodeRole(role, $event.target.checked)">
+                        <span x-text="role.replace('_', ' ')"></span>
+                      </label>
+                    </li>
+                  </template>
+                </ul>
+              </details>
               <button class="btn btn-xs btn-ghost opacity-50" @click="resetNodeFilters()">Reset</button>
             </div>
             <div class="overflow-y-auto max-h-[65vh]">
