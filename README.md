@@ -195,6 +195,3 @@ If `message_cache.enabled`, replayed messages include `"_replay": true` so clien
   (dashboard server)   (dashboard, loggers, AI)
 ```
 
-## Reference
-
-The `archive/v1/` directory contains the previous monolithic version (bridge + rotator + dashboard logic combined) as a reference for porting logic to the dashboard server.
