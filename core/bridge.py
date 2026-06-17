@@ -215,6 +215,7 @@ class MeshBridge:
                 root=cfg.get("root", "msh"),
                 use_tls=cfg.get("tls_enabled", False),
                 on_downlink=self._on_mqtt_downlink,
+                node_id=self.state.device_id or "",
             )
             self.mqtt_proxy.on_mqtt_node_update = self._on_mqtt_node_update
             logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')}")

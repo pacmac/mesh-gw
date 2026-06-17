@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class MqttProxy:
     def __init__(self, address: str, username: str, password: str,
-                 root: str, use_tls: bool, on_downlink):
+                 root: str, use_tls: bool, on_downlink, node_id: str = ""):
         """on_downlink: async callback(topic: str, payload: bytes), scheduled
         on the asyncio loop running when this is constructed."""
         self.root = root
@@ -31,7 +31,8 @@ class MqttProxy:
         host, _, port_s = address.partition(":")
         port = int(port_s) if port_s else (8883 if use_tls else 1883)
 
-        self.client = mqtt.Client()
+        client_id = node_id or "mesh-gw"
+        self.client = mqtt.Client(client_id=client_id, clean_session=True)
         if username:
             self.client.username_pw_set(username, password)
         if use_tls:
