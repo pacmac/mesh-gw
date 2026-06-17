@@ -268,16 +268,6 @@ class MeshBridge:
         packet.hop_limit = hop_limit
         packet.want_ack = is_dm
 
-        if is_dm:
-            # Set PKC flag so firmware encrypts the DM using ECDH rather than
-            # the channel PSK — required by firmware 2.5+ on public channels.
-            packet.pki_encrypted = True
-            my_num = self.my_node_num
-            my_node = self.state.nodes.get(str(my_num), {}) if my_num else {}
-            pk_b64 = my_node.get("user", {}).get("public_key", "")
-            if pk_b64:
-                packet.public_key = base64.b64decode(pk_b64)
-
         to_radio = mesh_pb2.ToRadio()
         to_radio.packet.CopyFrom(packet)
         self.state.suppress_packet_id(packet.id)
