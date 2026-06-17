@@ -1,11 +1,12 @@
 """Orchestrates the BLE link and the decoded mesh state, and builds
 outgoing ToRadio messages from plain dicts (no protobuf in callers)."""
 import asyncio
+import json
 import logging
 import random
 
 from google.protobuf import json_format
-from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
+from meshtastic import mesh_pb2, admin_pb2, portnums_pb2, telemetry_pb2
 
 from .ble_handler import BLEHandler
 from .mqtt_proxy import MqttProxy
@@ -38,6 +39,7 @@ class MeshBridge:
         self.ble_error: str | None = None
 
         self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
+        self.state.on_rx_packet = self._gateway_publish
         if ble_address:
             self._init_ble(ble_address)
 
@@ -205,7 +207,7 @@ class MeshBridge:
 
     def _maybe_start_mqtt_proxy(self):
         cfg = self.state.module_config.get("mqtt", {})
-        if not (cfg.get("enabled") and cfg.get("proxy_to_client_enabled")):
+        if not cfg.get("enabled"):
             return
         try:
             self.mqtt_proxy = MqttProxy(
@@ -248,6 +250,68 @@ class MeshBridge:
             return
         payload = msg.data if msg.data else msg.text.encode("utf-8")
         self.mqtt_proxy.publish(msg.topic, payload, retained=msg.retained)
+
+    async def _gateway_publish(self, pkt):
+        """Publish a decoded mesh packet to MQTT in Meshtastic JSON format.
+
+        Called for every RF-received packet and for our own TX echoes so the
+        radio's outgoing transmissions also appear on the broker.  Packets that
+        arrived via MQTT are filtered upstream (via_mqtt guard in state.py).
+        """
+        if not self.mqtt_proxy:
+            return
+
+        channel_idx = pkt.channel
+        channel_cfg = self.state.channels.get(str(channel_idx), {})
+        if not channel_cfg.get("settings", {}).get("uplink_enabled"):
+            return
+
+        channel_name = channel_cfg.get("settings", {}).get("name") or "LongFast"
+        pkt_from = getattr(pkt, "from")
+        from_id = f"!{pkt_from:08x}"
+
+        portnum = pkt.decoded.portnum
+        P = portnums_pb2.PortNum
+
+        try:
+            if portnum == P.TEXT_MESSAGE_APP:
+                pkt_type = "text"
+                payload = {"text": pkt.decoded.payload.decode("utf-8", errors="replace")}
+            elif portnum == P.POSITION_APP:
+                pkt_type = "position"
+                pos = mesh_pb2.Position()
+                pos.ParseFromString(pkt.decoded.payload)
+                payload = json_format.MessageToDict(pos, preserving_proto_field_name=True)
+            elif portnum == P.NODEINFO_APP:
+                pkt_type = "nodeinfo"
+                user = mesh_pb2.User()
+                user.ParseFromString(pkt.decoded.payload)
+                payload = json_format.MessageToDict(user, preserving_proto_field_name=True)
+            elif portnum == P.TELEMETRY_APP:
+                pkt_type = "telemetry"
+                tel = telemetry_pb2.Telemetry()
+                tel.ParseFromString(pkt.decoded.payload)
+                payload = json_format.MessageToDict(tel, preserving_proto_field_name=True)
+            elif portnum == P.RANGE_TEST_APP:
+                pkt_type = "range_test"
+                payload = {"text": pkt.decoded.payload.decode("utf-8", errors="replace")}
+            else:
+                return  # skip admin, routing, and unknown portnums
+        except Exception as e:
+            logger.debug(f"Gateway: could not decode portnum {portnum}: {e}")
+            return
+
+        msg = {"from": pkt_from, "to": pkt.to, "type": pkt_type,
+               "channel": channel_idx, "id": pkt.id, "payload": payload}
+        if pkt.rx_snr:
+            msg["rxSnr"] = pkt.rx_snr
+        if pkt.rx_rssi:
+            msg["rxRssi"] = pkt.rx_rssi
+        if pkt.hop_start:
+            msg["hopsAway"] = max(0, pkt.hop_start - pkt.hop_limit)
+
+        topic = f"{self.mqtt_proxy.root}/{channel_idx}/json/{pkt_type}/{from_id}"
+        self.mqtt_proxy.publish(topic, json.dumps(msg).encode())
 
     async def _on_mqtt_downlink(self, topic: str, payload: bytes):
         msg = mesh_pb2.MqttClientProxyMessage()
