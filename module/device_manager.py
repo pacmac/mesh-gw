@@ -125,6 +125,11 @@ class DeviceManager:
             await self._mqtt_publisher.stop()
             self._mqtt_publisher = None
 
+    async def restart_all_mqtt_proxies(self):
+        """Restart the MQTT proxy on every connected bridge, picking up new bridge_config."""
+        for bridge in self._devices.values():
+            await bridge.restart_mqtt_proxy()
+
     def get_by_ble(self, ble_address: str) -> Optional[MeshBridge]:
         node_id = self._by_ble.get(ble_address.upper())
         return self._devices.get(node_id) if node_id else None

@@ -162,6 +162,12 @@ def create_app(dm: DeviceManager) -> FastAPI:
             return {"running": False}
         return {"running": True, "connected": pub.connected}
 
+    @app.post("/mqtt_proxy/restart")
+    async def restart_mqtt_proxy():
+        """Restart all MQTT proxy connections, re-reading live config from each radio."""
+        await dm.restart_all_mqtt_proxies()
+        return {"restarted": True}
+
     @app.get("/nodes")
     async def all_nodes_aggregated(
         max_age: int = 0, max_hops: int = 99,

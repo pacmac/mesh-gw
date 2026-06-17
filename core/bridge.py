@@ -223,6 +223,27 @@ class MeshBridge:
         except Exception as e:
             logger.error(f"Failed to start MQTT proxy: {e}")
 
+    async def restart_mqtt_proxy(self):
+        """Re-read live MQTT module config from the radio, then restart the proxy."""
+        if self.mqtt_proxy:
+            self.mqtt_proxy.stop()
+            self.mqtt_proxy = None
+        # Refresh module config from the radio via live admin round-trip so we
+        # pick up any password changes made after the initial BLE sync.
+        try:
+            from .sections import MODULE_CONFIG_SECTIONS
+            resp = await asyncio.wait_for(
+                self.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS["mqtt"]}),
+                timeout=10.0,
+            )
+            live = resp.get("get_module_config_response", {}).get("mqtt", {})
+            if live:
+                self.state.module_config["mqtt"] = live
+                logger.info("Refreshed MQTT module config from radio for proxy restart")
+        except Exception as e:
+            logger.warning(f"Could not refresh live MQTT config: {e}")
+        self._maybe_start_mqtt_proxy()
+
     async def _on_mqtt_proxy_from_radio(self, msg):
         if not self.mqtt_proxy:
             return
