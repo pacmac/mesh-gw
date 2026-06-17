@@ -7,9 +7,11 @@ accept the same JSON shape back.
 import asyncio
 import logging
 import time
+from collections import deque
 
 from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2, telemetry_pb2
+from . import bridge_config as _bcfg
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,11 @@ class MeshState:
         # set by DeviceManager once my_info reveals the real node_id
         self.device_id: str | None = None
 
+        _cache_cfg = _bcfg.load().get("message_cache", {})
+        self._cache_enabled: bool = bool(_cache_cfg.get("enabled", False))
+        self._cache_max_age: int = int(_cache_cfg.get("max_age_seconds", 86400))
+        self._message_cache: deque = deque(maxlen=int(_cache_cfg.get("max_messages", 100)))
+
     def suppress_packet_id(self, packet_id: int):
         """Register a sent packet ID so its TX echo is not re-broadcast on WS."""
         self._suppress_packet_ids.add(packet_id)
@@ -67,6 +74,13 @@ class MeshState:
 
     def unsubscribe(self, q: asyncio.Queue):
         self._subscribers.discard(q)
+
+    def get_cached_messages(self) -> list[dict]:
+        """Return cached text messages within max_age, oldest first, tagged for replay."""
+        if not self._cache_enabled:
+            return []
+        cutoff = time.time() - self._cache_max_age
+        return [{**ev, "_replay": True} for ts, ev in self._message_cache if ts >= cutoff]
 
     async def _broadcast(self, event: dict):
         if self.device_id and "device" not in event:
@@ -133,7 +147,13 @@ class MeshState:
             return
 
         if not suppress_broadcast:
-            await self._broadcast({"type": which, "data": _to_dict(fr)})
+            event = {"type": which, "data": _to_dict(fr)}
+            await self._broadcast(event)
+            if (which == "packet"
+                    and self._cache_enabled
+                    and fr.packet.decoded.portnum == portnums_pb2.PortNum.TEXT_MESSAGE_APP):
+                tagged = {**event, "device": self.device_id}
+                self._message_cache.append((int(time.time()), tagged))
 
     def _merge_config(self, config_msg):
         which = config_msg.WhichOneof("payload_variant")

@@ -227,6 +227,11 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def ws_all(websocket: WebSocket):
         device_filter = websocket.query_params.get("device", "")
         await websocket.accept()
+        for bridge in dm._devices.values():
+            for event in bridge.state.get_cached_messages():
+                if device_filter and event.get("device") != device_filter:
+                    continue
+                await websocket.send_json(event)
         q = dm.subscribe()
         try:
             while True:
@@ -394,6 +399,8 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def ws_device(node_id: str, websocket: WebSocket):
         bridge = _bridge(node_id)
         await websocket.accept()
+        for event in bridge.state.get_cached_messages():
+            await websocket.send_json(event)
         q = bridge.state.subscribe()
         try:
             while True:

@@ -10,6 +10,11 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
 DEFAULTS = {
     "ble_devices": [],  # list of {address, pin, tcp_port?} to auto-connect on startup
+    "message_cache": {
+        "enabled":          False,
+        "max_messages":     100,
+        "max_age_seconds":  86400,
+    },
     "mqtt_publish": {
         "enabled":              False,
         "broker":               "localhost",
