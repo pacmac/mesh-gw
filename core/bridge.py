@@ -210,11 +210,15 @@ class MeshBridge:
         if self.mqtt_proxy:
             self.mqtt_proxy.stop()
             self.mqtt_proxy = None
+        # Radio firmware redacts password from config responses — fall back to
+        # the stored credential in bridge_config.yaml when it's absent.
+        from . import bridge_config as _bcfg
+        password = cfg.get("password") or _bcfg.load().get("mqtt_credentials", {}).get("password", "")
         try:
             self.mqtt_proxy = MqttProxy(
                 address=cfg["address"],
                 username=cfg.get("username", ""),
-                password=cfg.get("password", ""),
+                password=password,
                 root=cfg.get("root", "msh"),
                 use_tls=cfg.get("tls_enabled", False),
                 on_downlink=self._on_mqtt_downlink,

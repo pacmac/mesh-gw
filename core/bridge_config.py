@@ -10,6 +10,11 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
 DEFAULTS = {
     "ble_devices": [],  # list of {address, pin, tcp_port?} to auto-connect on startup
+    # Fallback MQTT credentials — used when the radio's firmware redacts the
+    # password from its config response (common in Meshtastic firmware).
+    "mqtt_credentials": {
+        "password": "",
+    },
     "message_cache": {
         "enabled":          False,
         "max_messages":     100,
