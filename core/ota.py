@@ -43,7 +43,7 @@ async def ota_update(bridge, device_label: str, zip_path: str,
 
     dfu_cli = Path(__file__).parent / "dfu_cli.py"
     cmd = [
-        sys.executable, str(dfu_cli),
+        sys.executable, "-u", str(dfu_cli),
         "--adapter", "hci0",
         "--wait",
         "--verbose",
@@ -60,17 +60,27 @@ async def ota_update(bridge, device_label: str, zip_path: str,
     )
 
     async def _stream_output():
-        pct = 0
-        async for line in proc.stdout:
-            text = line.decode(errors="replace").rstrip()
-            logger.info("[dfu] %s", text)
-            if "Uploading:" in text:
-                try:
-                    pct = int(text.split("Uploading:")[1].strip().rstrip("%"))
-                    if progress_cb:
-                        progress_cb(pct, 0, 0)
-                except ValueError:
-                    pass
+        buf = b""
+        while True:
+            chunk = await proc.stdout.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            # cli_progress_handler uses \r (no \n until 100%) — split on both
+            parts = buf.replace(b"\r", b"\n").split(b"\n")
+            buf = parts[-1]
+            for part in parts[:-1]:
+                text = part.decode(errors="replace").strip()
+                if not text:
+                    continue
+                logger.info("[dfu] %s", text)
+                if "Uploading:" in text:
+                    try:
+                        pct = int(text.split("Uploading:")[1].strip().rstrip("%"))
+                        if progress_cb:
+                            progress_cb(pct, 0, 0)
+                    except ValueError:
+                        pass
 
     await _stream_output()
     rc = await proc.wait()
