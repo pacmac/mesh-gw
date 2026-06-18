@@ -60,6 +60,8 @@ def create_app(dm: DeviceManager) -> FastAPI:
             raise HTTPException(504, str(e))
         except RuntimeError as e:
             raise HTTPException(503, str(e))
+        except HTTPException:
+            raise
         except Exception as e:
             logger.exception("Method %s failed", method_name)
             raise HTTPException(500, str(e))
