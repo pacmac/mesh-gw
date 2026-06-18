@@ -10,6 +10,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
 _BLE_DEVICE_DEFAULTS = {
     "auto_connect": True,   # connect automatically on bridge startup
+    "tcp_port":    None,    # Meshtastic TCP port (4403 convention); None = disabled
 }
 
 DEFAULTS = {

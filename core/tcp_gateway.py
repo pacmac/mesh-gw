@@ -32,10 +32,15 @@ class TcpGateway:
         self._clients: set[asyncio.StreamWriter] = set()
 
     async def start(self):
-        self._server = await asyncio.start_server(
-            self._handle_client, "0.0.0.0", self.port
-        )
-        logger.info("TCP gateway listening on port %d", self.port)
+        try:
+            self._server = await asyncio.start_server(
+                self._handle_client, "0.0.0.0", self.port,
+                reuse_address=True,
+            )
+            logger.info("TCP gateway listening on port %d", self.port)
+        except OSError as e:
+            logger.error("TCP gateway failed to bind port %d: %s", self.port, e)
+            raise
 
     async def stop(self):
         if self._server:

@@ -134,8 +134,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
     @app.patch("/ble_devices/{address}")
     async def patch_ble_device(address: str, body: dict = Body(...)):
         """Update persisted settings for a BLE device (auto_connect etc.)."""
-        allowed = {"auto_connect"}
+        allowed = {"auto_connect", "tcp_port"}
         fields = {k: v for k, v in body.items() if k in allowed}
+        if "tcp_port" in fields and fields["tcp_port"] is not None:
+            fields["tcp_port"] = int(fields["tcp_port"])
         if not fields:
             raise HTTPException(400, f"No recognised fields. Allowed: {sorted(allowed)}")
         return update_ble_device(address, fields)
