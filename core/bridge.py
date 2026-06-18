@@ -207,6 +207,9 @@ class MeshBridge:
         cfg = self.state.module_config.get("mqtt", {})
         if not (cfg.get("enabled") and cfg.get("proxy_to_client_enabled")):
             return
+        if self.mqtt_proxy:
+            self.mqtt_proxy.stop()
+            self.mqtt_proxy = None
         try:
             self.mqtt_proxy = MqttProxy(
                 address=cfg["address"],
