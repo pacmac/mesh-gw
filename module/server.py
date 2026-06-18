@@ -155,23 +155,31 @@ def create_app(dm: DeviceManager) -> FastAPI:
         # Bridge only matters if it happens to be connected to the same BLE device.
         bridge = dm.get_by_ble(ble_addr) if hasattr(dm, "get_by_ble") else None
 
+        await dm._broadcast({
+            "type": "ota_start",
+            "ble_addr": ble_addr,
+            "device": node_id,
+            "firmware": Path(fw_path).name,
+        })
+
         async def _run():
             def _progress(pct, total, done):
                 asyncio.create_task(dm._broadcast({
                     "type": "ota_progress",
                     "device": node_id,
-                    "data": {"pct": pct, "total": total, "done": done},
+                    "ble_addr": ble_addr,
+                    "data": {"pct": pct},
                 }))
 
             try:
                 result = await _do_ota(bridge, node_id, fw_path, ble_addr=ble_addr, progress_cb=_progress)
-                await dm._broadcast({"type": "ota_complete", "device": node_id, "data": result})
+                await dm._broadcast({"type": "ota_complete", "device": node_id, "ble_addr": ble_addr, "data": result})
             except DfuError as e:
                 logger.error("OTA DFU error for %s: %s", ble_addr, e)
-                await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
+                await dm._broadcast({"type": "ota_error", "device": node_id, "ble_addr": ble_addr, "data": {"error": str(e)}})
             except Exception as e:
                 logger.exception("OTA failed for %s", ble_addr)
-                await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
+                await dm._broadcast({"type": "ota_error", "device": node_id, "ble_addr": ble_addr, "data": {"error": str(e)}})
 
         asyncio.create_task(_run())
         return {"started": True, "ble_addr": ble_addr, "node_id": node_id, "firmware": fw_path}
