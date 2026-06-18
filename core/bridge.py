@@ -9,7 +9,6 @@ from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 
 from .ble_handler import BLEHandler
-from .claude_chat import ClaudeChat
 from .mqtt_proxy import MqttProxy
 from .stats import StatsCollector
 from .state import MeshState
@@ -39,8 +38,6 @@ class MeshBridge:
         self.ble_error: str | None = None
         self._mqtt_proxy: MqttProxy | None = None
         self._mqtt_proxy_task: asyncio.Task | None = None
-        self._claude_chat = ClaudeChat(self)
-        self._claude_chat.start()
 
         if ble_address:
             self._init_ble(ble_address)

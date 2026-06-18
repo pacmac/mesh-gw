@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
 from core.bridge_config import update_ble_device
+from core.claude_daemon import run as _claude_daemon_run
 from core.methods import METHODS, get_nodes
 from core.mcp_server import mount_mcp
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
@@ -36,8 +37,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        daemon_task = asyncio.create_task(_claude_daemon_run(), name="claude-daemon")
         async with _mcp_mgr[0].run():
             yield
+        daemon_task.cancel()
 
     app = FastAPI(title="mesh-rest-bridge-multi", lifespan=lifespan)
 
@@ -154,11 +157,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
             else:
                 cfg[k] = v
         saved = _bcfg.save(cfg)
-        # Reload ClaudeChat on all bridges so changes take effect without restart
-        if "claude_chat" in body:
-            for bridge in dm._devices.values():
-                if hasattr(bridge, "_claude_chat"):
-                    bridge._claude_chat.reload()
         return {k: v for k, v in saved.items() if k != "ble_devices"}
 
     @app.get("/mqtt_publish")
