@@ -53,7 +53,7 @@ async def _call_claude(message: str, history: deque, system_prompt: str) -> str:
 
     cmd = [
         CLAUDE_BIN, "-p",
-        "--system-prompt", system_prompt,
+        "--append-system-prompt", system_prompt,
         prompt,
     ]
     try:
@@ -76,7 +76,7 @@ async def _call_claude(message: str, history: deque, system_prompt: str) -> str:
 
 
 async def _send_reply(session: aiohttp.ClientSession, gateway: str, to_hex: str, text: str):
-    url = f"{BRIDGE_URL}/{gateway}/send_text"
+    url = f"{BRIDGE_URL}/{gateway}/messages"
     try:
         async with session.post(url, json={"text": text, "to": to_hex}) as resp:
             if resp.status != 200:
