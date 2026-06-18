@@ -8,6 +8,7 @@ import asyncio
 import logging
 from typing import Optional
 
+from core import bridge_config as _bcfg
 from core.bridge import MeshBridge
 
 logger = logging.getLogger(__name__)
@@ -140,6 +141,7 @@ class DeviceManager:
             gw = bridge.tcp_gateway
             rssi = bridge.ble.get_rssi() if bridge.ble else None
             local = bridge.state.nodes.get(str(bridge.my_node_num), {}).get("user", {}) if bridge.my_node_num else {}
+            ble_cfg = _bcfg.get_ble_device(bridge.ble_address) if bridge.ble_address else {}
             result.append({
                 "node_id": node_id,
                 "short_name": local.get("short_name", ""),
@@ -153,6 +155,7 @@ class DeviceManager:
                 "config_complete": bridge.state.config_complete,
                 "tcp_port": gw.port if gw else None,
                 "tcp_clients": gw.client_count if gw else 0,
+                "auto_connect": ble_cfg.get("auto_connect", True),
             })
         for temp_key, bridge in self._pending.items():
             gw = bridge.tcp_gateway

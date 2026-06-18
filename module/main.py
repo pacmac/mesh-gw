@@ -125,6 +125,10 @@ def main():
     for entry in persisted:
         addr = (entry.get("address") or "").strip().upper()
         if addr and addr not in seen:
+            if not entry.get("auto_connect", True):
+                logger.info("Skipping auto-connect (disabled): %s", addr)
+                seen.add(addr)
+                continue
             addresses.append((addr, entry.get("pin", "") or "", entry.get("tcp_port") or None))
             seen.add(addr)
 

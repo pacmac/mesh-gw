@@ -8,8 +8,12 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
+_BLE_DEVICE_DEFAULTS = {
+    "auto_connect": True,   # connect automatically on bridge startup
+}
+
 DEFAULTS = {
-    "ble_devices": [],  # list of {address, pin, tcp_port?} to auto-connect on startup
+    "ble_devices": [],  # list of {address, pin, tcp_port?, auto_connect?} to auto-connect on startup
     # Per-logger level overrides. Set a logger name to DEBUG/INFO/WARNING/ERROR.
     # Example: {"core.state": "DEBUG", "core.ble_handler": "WARNING"}
     "logging": {},
@@ -59,3 +63,28 @@ def save(data: dict) -> dict:
     with open(CONFIG_PATH, "w") as f:
         yaml.safe_dump(merged, f, default_flow_style=False, sort_keys=False)
     return merged
+
+
+def get_ble_device(address: str) -> dict:
+    """Return the persisted entry for a BLE address, merged with defaults."""
+    devices = load().get("ble_devices") or []
+    for d in devices:
+        if d.get("address", "").upper() == address.upper():
+            return {**_BLE_DEVICE_DEFAULTS, **d}
+    return {**_BLE_DEVICE_DEFAULTS, "address": address.upper()}
+
+
+def update_ble_device(address: str, fields: dict) -> dict:
+    """Persist field updates for a BLE device entry. Creates entry if absent."""
+    cfg = load()
+    devices = cfg.get("ble_devices") or []
+    addr_upper = address.upper()
+    for entry in devices:
+        if entry.get("address", "").upper() == addr_upper:
+            entry.update(fields)
+            break
+    else:
+        devices.append({"address": addr_upper, **_BLE_DEVICE_DEFAULTS, **fields})
+    cfg["ble_devices"] = devices
+    save(cfg)
+    return get_ble_device(addr_upper)

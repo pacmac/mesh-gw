@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
+from core.bridge_config import update_ble_device
 from core.methods import METHODS, get_nodes
 from core.mcp_server import mount_mcp
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
@@ -118,6 +119,15 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def remove_device(node_id: str):
         asyncio.create_task(dm.disconnect(node_id))
         return {"disconnecting": True, "node_id": node_id}
+
+    @app.patch("/ble_devices/{address}")
+    async def patch_ble_device(address: str, body: dict = Body(...)):
+        """Update persisted settings for a BLE device (auto_connect etc.)."""
+        allowed = {"auto_connect"}
+        fields = {k: v for k, v in body.items() if k in allowed}
+        if not fields:
+            raise HTTPException(400, f"No recognised fields. Allowed: {sorted(allowed)}")
+        return update_ble_device(address, fields)
 
     # -- MQTT publisher --------------------------------------------------------
 
