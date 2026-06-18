@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 import mcp.types as types
 from starlette.requests import Request
 from starlette.responses import Response
@@ -114,6 +114,31 @@ _DEVICE_TOOLS: list[types.Tool] = [
                 "hide_mqtt":    _bool("Exclude MQTT-bridged nodes"),
                 "has_signal":   _bool("Only include nodes with SNR/RSSI data"),
                 "has_telemetry":_bool("Only include nodes with telemetry data"),
+            },
+        },
+    ),
+    types.Tool(
+        name="get_messages",
+        description="Get recently received text messages on a bridge device.",
+        inputSchema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id":  _str("Bridge node ID"),
+                "since_id": _int("Only return messages after this message ID (for polling)"),
+            },
+        },
+    ),
+    types.Tool(
+        name="wait_for_message",
+        description="Block (long-poll) until a text message arrives on a bridge device, up to 55s. Returns instantly when a message comes in.",
+        inputSchema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id": _str("Bridge node ID"),
+                "from":    _str("Only match messages from this sender (!hex node ID), optional"),
+                "timeout": _int("Max seconds to wait (default 55, max 55)", 55),
             },
         },
     ),
@@ -332,30 +357,20 @@ async def _dispatch(name: str, args: dict, dm: "DeviceManager") -> dict:
 
 # ── FastAPI route mounts ───────────────────────────────────────────────────
 
-def mount_mcp(app, dm: "DeviceManager", path_prefix: str = "/mcp"):
-    """Mount MCP SSE transport routes onto a FastAPI app.
+def mount_mcp(app, dm: "DeviceManager", path_prefix: str = "/mcp") -> StreamableHTTPSessionManager:
+    """Mount MCP streamable-HTTP transport onto a FastAPI app.
+
+    Returns the session manager — caller must run it via its lifespan context.
 
     Adds:
-      GET  {path_prefix}/sse       — SSE endpoint (client opens this)
-      POST {path_prefix}/messages  — POST endpoint (client sends requests here)
+      GET/POST/DELETE {path_prefix}  — streamable HTTP (stateless per-request)
     """
     mcp_server = create_mcp_server(dm)
-    sse = SseServerTransport(f"{path_prefix}/messages")
+    session_manager = StreamableHTTPSessionManager(app=mcp_server, stateless=True)
 
-    async def handle_sse(request: Request):
-        async with sse.connect_sse(
-            request.scope, request.receive, request._send
-        ) as streams:
-            await mcp_server.run(
-                streams[0], streams[1],
-                mcp_server.create_initialization_options(),
-            )
+    async def handle_mcp(request: Request):
+        await session_manager.handle_request(request.scope, request.receive, request._send)
 
-    async def handle_post(request: Request):
-        await sse.handle_post_message(request.scope, request.receive, request._send)
-
-    from fastapi.routing import APIRoute
-    app.add_api_route(f"{path_prefix}/sse",      handle_sse,  methods=["GET"],  include_in_schema=False)
-    app.add_api_route(f"{path_prefix}/messages", handle_post, methods=["POST"], include_in_schema=False)
-
-    logger.info("MCP server mounted at %s/sse", path_prefix)
+    app.add_api_route(path_prefix, handle_mcp, methods=["GET", "POST", "DELETE"], include_in_schema=False)
+    logger.info("MCP server mounted at %s (streamable HTTP, stateless)", path_prefix)
+    return session_manager

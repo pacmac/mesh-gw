@@ -20,6 +20,67 @@ def method(name):
 
 # -- read-only, served from cached state (populated on connect + live) -----
 
+@method("get_messages")
+async def get_messages(bridge: MeshBridge, params: dict):
+    """Return cached received text messages, newest last. Optional since_id to skip already-seen."""
+    msgs = bridge.state.get_cached_messages()
+    since_id = params.get("since_id")
+    if since_id:
+        ids = [m.get("id") for m in msgs]
+        if since_id in ids:
+            msgs = msgs[ids.index(since_id) + 1:]
+    return {"messages": msgs, "count": len(msgs)}
+
+
+@method("wait_for_message")
+async def wait_for_message(bridge: MeshBridge, params: dict):
+    """Block until a text message arrives (long-poll). Returns immediately when one comes in."""
+    import asyncio, base64
+    timeout = min(int(params.get("timeout", 55)), 55)
+    from_node = params.get("from")  # optional: only match this sender (!hex or numeric)
+
+    q = bridge.state.subscribe()
+    try:
+        deadline = asyncio.get_event_loop().time() + timeout
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return {"arrived": False, "message": None}
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=remaining)
+            except asyncio.TimeoutError:
+                return {"arrived": False, "message": None}
+
+            pkt = event.get("data", {}).get("packet", {})
+            decoded = pkt.get("decoded", {})
+            if decoded.get("portnum") != "TEXT_MESSAGE_APP":
+                continue
+
+            sender_num = pkt.get("from")
+            if from_node:
+                # match by !hex string or numeric
+                if from_node.startswith("!"):
+                    if sender_num != int(from_node[1:], 16):
+                        continue
+                elif str(sender_num) != str(from_node):
+                    continue
+
+            text = base64.b64decode(decoded["payload"]).decode("utf-8", errors="replace")
+            return {
+                "arrived": True,
+                "message": {
+                    "id": pkt.get("id"),
+                    "from": f"!{sender_num:08x}" if sender_num else None,
+                    "text": text,
+                    "rx_time": pkt.get("rx_time"),
+                    "rssi": pkt.get("rx_rssi"),
+                    "snr": pkt.get("rx_snr"),
+                }
+            }
+    finally:
+        bridge.state.unsubscribe(q)
+
+
 @method("get_info")
 async def get_info(bridge: MeshBridge, params: dict):
     return {"my_info": bridge.state.my_info, "metadata": bridge.state.metadata}
@@ -113,9 +174,13 @@ async def get_status(bridge: MeshBridge, params: dict):
         "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
         "config_complete": state.config_complete,
         "node_count": len(state.nodes),
+        "my_node_num": bridge.my_node_num,
+        "has_my_info": bool(state.my_info),
+        "has_mqtt_config": state.mqtt_config_ready.is_set(),
         "last_rx_snr": state.last_rx_snr,
         "last_rx_rssi": state.last_rx_rssi,
         "mqtt_proxy_connected": bridge._mqtt_proxy is not None and not bridge._mqtt_proxy._stopped,
+        "ready": bridge.ble_state == "ready" and state.config_complete,
     }
 
 

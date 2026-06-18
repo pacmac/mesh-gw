@@ -7,6 +7,7 @@ CORS enabled for all origins.
 """
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 from bleak import BleakScanner
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body, Query
@@ -31,7 +32,14 @@ def _err(code: int, message: str, status: int = 400):
 
 
 def create_app(dm: DeviceManager) -> FastAPI:
-    app = FastAPI(title="mesh-rest-bridge-multi")
+    _mcp_mgr: list = []  # one-element list so the closure can see the final value
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        async with _mcp_mgr[0].run():
+            yield
+
+    app = FastAPI(title="mesh-rest-bridge-multi", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,
@@ -71,7 +79,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
     # Server-level routes
     # =========================================================================
 
-    mount_mcp(app, dm)
+    _mcp_mgr.append(mount_mcp(app, dm))
 
     @app.get("/help", response_class=PlainTextResponse)
     async def help_text():
@@ -146,6 +154,11 @@ def create_app(dm: DeviceManager) -> FastAPI:
             else:
                 cfg[k] = v
         saved = _bcfg.save(cfg)
+        # Reload ClaudeChat on all bridges so changes take effect without restart
+        if "claude_chat" in body:
+            for bridge in dm._devices.values():
+                if hasattr(bridge, "_claude_chat"):
+                    bridge._claude_chat.reload()
         return {k: v for k, v in saved.items() if k != "ble_devices"}
 
     @app.get("/mqtt_publish")
@@ -427,11 +440,16 @@ def create_app(dm: DeviceManager) -> FastAPI:
         bridge.state.range_test_log.clear()
         return {"cleared": True}
 
-    # Per-device WebSocket
+    # Per-device WebSocket — typed state-machine event stream
     @app.websocket("/{node_id}/events")
     async def ws_device(node_id: str, websocket: WebSocket):
         bridge = _bridge(node_id)
         await websocket.accept()
+        # Snapshot: immediate current state so subscriber is never blind on connect
+        snapshot = bridge.current_snapshot()
+        snapshot["device"] = node_id
+        await websocket.send_json(snapshot)
+        # Replay recent cached messages (text packets)
         for event in bridge.state.get_cached_messages():
             await websocket.send_json(event)
         q = bridge.state.subscribe()

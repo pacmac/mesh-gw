@@ -33,6 +33,17 @@ DEFAULTS = {
         "ha_discovery":         False,
         "ha_discovery_prefix":  "homeassistant",
     },
+    "claude_chat": {
+        "enabled":          False,
+        "trigger_word":     "@claude",
+        "api_key":          "",           # Anthropic API key
+        "model":            "claude-haiku-4-5-20251001",
+        "system_prompt":    "You are a helpful assistant accessible via Meshtastic radio. Keep replies concise — this is a low-bandwidth radio link.",
+        "max_history":      20,           # messages per sender to keep in context
+        "max_reply_length": 200,          # characters, to fit LoRa packet limits
+        "whitelist":        [],           # node IDs (!hex) allowed to use Claude; empty = own nodes only
+        "my_nodes":         [],           # own node IDs (!hex) — always allowed
+    },
 }
 
 
