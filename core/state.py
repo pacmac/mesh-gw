@@ -10,6 +10,7 @@ import time
 from collections import deque
 
 from google.protobuf import json_format
+import struct
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2, telemetry_pb2
 from . import bridge_config as _bcfg
 
@@ -253,6 +254,15 @@ class MeshState:
             which = tel.WhichOneof("variant")
             if which:
                 node[which] = _to_dict(getattr(tel, which))
+
+        elif pkt.decoded.portnum == 256:  # PRIVATE_APP — tilt telemetry from LIS3DH
+            payload = bytes(pkt.decoded.payload)
+            if len(payload) == 20:
+                roll, pitch, ax, ay, az = struct.unpack('<fffff', payload)
+                tilt = {"roll": round(roll, 2), "pitch": round(pitch, 2),
+                        "x": round(ax, 4), "y": round(ay, 4), "z": round(az, 4)}
+                node["tilt"] = tilt
+                await self._broadcast({"type": "tilt_update", "from_num": pkt_from, "data": tilt})
 
         elif pkt.decoded.portnum == portnums_pb2.PortNum.RANGE_TEST_APP:
             try:
