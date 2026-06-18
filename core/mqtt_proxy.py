@@ -11,6 +11,7 @@ This module plays that role using paho-mqtt.
 import asyncio
 import json
 import logging
+import ssl
 
 import paho.mqtt.client as mqtt
 
@@ -36,7 +37,8 @@ class MqttProxy:
         if username:
             self.client.username_pw_set(username, password)
         if use_tls:
-            self.client.tls_set()
+            self.client.tls_set(cert_reqs=ssl.CERT_NONE)
+            self.client.tls_insecure_set(True)
 
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
