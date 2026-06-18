@@ -285,4 +285,5 @@ class MeshState:
         else:
             node["via_mqtt"] = False   # RF packet — clear the flag
         node["last_heard"] = int(time.time())
+        await self._broadcast({"type": "node_update", "data": dict(node)})
         return False
