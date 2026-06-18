@@ -32,24 +32,14 @@ async def _prepare_dfu(bridge, device_node_id: str, ble_addr: str) -> None:
         logger.info("Bridge not on OTA target — dfu_cli.py will connect to %s independently", ble_addr)
 
 
-async def ota_update(bridge, device_node_id: str, zip_path: str,
+async def ota_update(bridge, device_label: str, zip_path: str,
                      ble_addr: str | None = None,
                      progress_cb=None) -> dict:
-    """Full OTA: disconnect bridge, run dfu_cli.py, reconnect bridge."""
-    from . import bridge_config as _bcfg
-
-    if not ble_addr and bridge is not None:
-        ble_addr = getattr(bridge, "ble_address", None)
+    """Full OTA: disconnect bridge if needed, run dfu_cli.py, return result."""
     if not ble_addr:
-        cfg = _bcfg.load()
-        for dev in (cfg.get("ble_devices") or []):
-            if dev.get("node_id") == device_node_id:
-                ble_addr = dev.get("address")
-                break
-    if not ble_addr:
-        raise DfuError(f"No BLE address found for device {device_node_id!r}")
+        raise DfuError("ble_addr is required")
 
-    await _prepare_dfu(bridge, device_node_id, ble_addr)
+    await _prepare_dfu(bridge, device_label, ble_addr)
 
     dfu_cli = Path(__file__).parent / "dfu_cli.py"
     cmd = [
@@ -92,4 +82,4 @@ async def ota_update(bridge, device_node_id: str, zip_path: str,
         logger.info("Reflashing complete — reconnecting bridge to %s", ble_addr)
         asyncio.create_task(bridge.connect_to(ble_addr, pin=getattr(bridge, "ble_pin", "")))
 
-    return {"ok": True, "device": device_node_id, "firmware": Path(zip_path).name}
+    return {"ok": True, "ble_addr": ble_addr, "label": device_label, "firmware": Path(zip_path).name}
