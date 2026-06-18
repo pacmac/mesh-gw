@@ -3,6 +3,8 @@
 
 Each method is `async def fn(bridge: MeshBridge, params: dict) -> dict`.
 """
+from fastapi import HTTPException
+
 from .bridge import MeshBridge
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, config_kind
 
@@ -160,11 +162,41 @@ _PASSWORD_FIELDS: dict[str, set[str]] = {
     "bluetooth": {"fixed_pin"},  # 0 is default; skip if not explicitly set
 }
 
+def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
+    """Reject submissions where any key from the cached section is absent.
+
+    set_module_config replaces the entire section on the radio, so a partial
+    submission silently wipes every missing field. All keys must be present;
+    null values are acceptable, but absent keys are not.
+
+    Exemptions:
+    - _HIDDEN_FIELDS: never shown in the form, server manages them
+    - _FORCED_VALUES: always set server-side regardless of submission
+    - _PASSWORD_FIELDS: masked in the form; absence means "don't change"
+    """
+    from .schema import _HIDDEN_FIELDS
+    kind = config_kind(section)
+    cached = (bridge.state.module_config if kind == "module_config" else bridge.state.config).get(section, {})
+    if not cached:
+        return  # no cached state yet — radio not synced, can't validate
+    exempt = (
+        _HIDDEN_FIELDS.get(section, set())
+        | set(_FORCED_VALUES.get(section, {}).keys())
+        | _PASSWORD_FIELDS.get(section, set())
+    )
+    required = {k for k in cached if k not in exempt}
+    missing = required - values.keys()
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
+
+
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
     section = params["section"]
-    values = {**params["values"], **_FORCED_VALUES.get(section, {})}
+    values = params["values"]
+    _validate_config_keys(bridge, section, values)
+    values = {**values, **_FORCED_VALUES.get(section, {})}
     # Strip empty-string password fields so a blank form field never wipes a
     # credential that the radio has stored but doesn't expose in config reads.
     for field in _PASSWORD_FIELDS.get(section, set()):
