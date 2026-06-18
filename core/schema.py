@@ -24,12 +24,13 @@ _INT_TYPES = {
 }
 
 
-def _field_schema(f: FieldDescriptor) -> dict:
+def _field_schema(f: FieldDescriptor, annotation_path: str = "") -> dict:
     if f.type == FieldDescriptor.TYPE_MESSAGE:
+        sub_path = f"{annotation_path}.{f.name}" if annotation_path else f.name
         return {
             "name": f.name,
             "type": "object",
-            "fields": [_field_schema(sub) for sub in f.message_type.fields],
+            "fields": [_field_schema(sub, sub_path) for sub in f.message_type.fields],
         }
 
     kind = _TYPE_MAP.get(f.type, "int" if f.type in _INT_TYPES else "string")
@@ -38,6 +39,10 @@ def _field_schema(f: FieldDescriptor) -> dict:
         field["repeated"] = True
     if kind == "enum":
         field["options"] = [v.name for v in f.enum_type.values]
+    full_path = f"{annotation_path}.{f.name}" if annotation_path else f.name
+    ann = _FIELD_ANNOTATIONS.get(full_path)
+    if ann:
+        field.update(ann)
     return field
 
 
@@ -53,11 +58,41 @@ _HIDDEN_FIELDS: dict[str, set[str]] = {
     "range_test": {"enabled"},  # always kept True server-side, no user-facing toggle needed
 }
 
+# Annotations for fields that need UI hints. Keys are "section.field" or
+# "section.parent_field.child_field" for nested messages.
+# unit: display unit suffix; min: minimum valid value; hint: extra tooltip text.
+_FIELD_ANNOTATIONS: dict[str, dict] = {
+    "device.node_info_broadcast_secs":                          {"unit": "seconds", "min": 0, "hint": "0 = use default (900 s)"},
+    "position.position_broadcast_secs":                         {"unit": "seconds", "min": 0, "hint": "0 = smart broadcast only"},
+    "position.gps_update_interval":                             {"unit": "seconds", "min": 0, "hint": "0 = GPS always on"},
+    "position.gps_attempt_time":                                {"unit": "seconds", "min": 0},
+    "position.broadcast_smart_minimum_interval_secs":           {"unit": "seconds", "min": 0},
+    "power.on_battery_shutdown_after_secs":                     {"unit": "seconds", "min": 0, "hint": "0 = never"},
+    "power.wait_bluetooth_secs":                                {"unit": "seconds", "min": 0, "hint": "0 = never sleep BT"},
+    "power.sds_secs":                                           {"unit": "seconds", "min": 0, "hint": "Super-deep sleep duration; 0 = disabled"},
+    "power.ls_secs":                                            {"unit": "seconds", "min": 0, "hint": "Light-sleep duration; 0 = disabled"},
+    "power.min_wake_secs":                                      {"unit": "seconds", "min": 0},
+    "display.screen_on_secs":                                   {"unit": "seconds", "min": 0, "hint": "0 = always on"},
+    "display.auto_screen_carousel_secs":                        {"unit": "seconds", "min": 0, "hint": "0 = disabled"},
+    "mqtt.map_report_settings.publish_interval_secs":           {"unit": "seconds", "min": 0},
+    "serial.timeout":                                           {"unit": "seconds", "min": 0},
+    "external_notification.nag_timeout":                        {"unit": "seconds", "min": 0, "hint": "0 = no repeat"},
+    "telemetry.device_update_interval":                         {"unit": "seconds", "min": 0, "hint": "0 = use default (900 s)"},
+    "telemetry.environment_update_interval":                    {"unit": "seconds", "min": 0, "hint": "0 = use default (900 s)"},
+    "telemetry.air_quality_interval":                           {"unit": "seconds", "min": 0, "hint": "0 = use default (900 s)"},
+    "telemetry.power_update_interval":                          {"unit": "seconds", "min": 0, "hint": "0 = use default (900 s)"},
+    "telemetry.health_update_interval":                         {"unit": "seconds", "min": 0, "hint": "0 = use default (900 s)"},
+    "neighbor_info.update_interval":                            {"unit": "seconds", "min": 0},
+    "detection_sensor.minimum_broadcast_secs":                  {"unit": "seconds", "min": 0},
+    "detection_sensor.state_broadcast_secs":                    {"unit": "seconds", "min": 0},
+    "paxcounter.paxcounter_update_interval":                    {"unit": "seconds", "min": 0},
+}
+
 
 def get_section_schema(section: str) -> dict:
     msg_type = section_message_type(section)
     hidden = _HIDDEN_FIELDS.get(section, set())
-    fields = [_field_schema(f) for f in msg_type.fields if f.name not in hidden]
+    fields = [_field_schema(f, section) for f in msg_type.fields if f.name not in hidden]
     return {"section": section, "fields": fields}
 
 
