@@ -81,7 +81,7 @@ It does **not** contain: dashboard UI, rotator logic, radar, node history, or an
 |---|---|
 | `POST /ota` | Trigger BLE OTA firmware update for an nRF52 device |
 
-Body: `{ "ble_addr": "E9:B0:3F:17:27:91", "firmware": "/path/to/firmware.zip", "node_id": "!3f172791" }`
+Body: `{ "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "/path/to/firmware.zip", "node_id": "!aabbccdd" }`
 
 - `ble_addr` and `firmware` are required; `node_id` is optional (used only to label WS events)
 - Returns `{"started": true}` immediately — the update runs as a background task
@@ -90,10 +90,10 @@ Body: `{ "ble_addr": "E9:B0:3F:17:27:91", "firmware": "/path/to/firmware.zip", "
 - Progress is streamed to all `/events` WebSocket subscribers as `ota_start` → `ota_progress` → `ota_complete` or `ota_error`
 
 ```json
-{"type": "ota_start",    "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "firmware": "firmware.zip"}
-{"type": "ota_progress", "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"pct": 42}}
-{"type": "ota_complete", "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {...}}
-{"type": "ota_error",    "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"error": "..."}}
+{"type": "ota_start",    "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "firmware": "firmware.zip"}
+{"type": "ota_progress", "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {"pct": 42}}
+{"type": "ota_complete", "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {...}}
+{"type": "ota_error",    "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {"error": "..."}}
 ```
 
 ### Node filter query params
@@ -159,7 +159,7 @@ claude_chat:
   max_history: 20
   max_reply_length: 200
   whitelist: ""          # comma-separated !hex node IDs; empty = my_nodes only
-  my_nodes: "!da5af428"  # your own node IDs (always allowed to trigger)
+  my_nodes: "!aabbccdd"  # your own node IDs (always allowed to trigger)
 ```
 
 ## TCP Gateway
@@ -257,15 +257,15 @@ Events on `/events` (and `/{node_id}/events`) are JSON objects:
 | `ota_error` | OTA failed — `data.error` contains the reason |
 
 ```json
-{"type": "packet",      "data": {...},                          "device": "!3f172791"}
-{"type": "node_info",   "data": {...},                          "device": "!3f172791"}
-{"type": "node_update", "data": {...},                          "device": "!3f172791"}
-{"type": "status",      "data": {"ble_state": "ready", ...},   "device": "!3f172791"}
-{"type": "tilt_update", "data": {"pitch": 1.2, "roll": -0.4, "x": 0.02, "y": -0.01, "z": 0.98}, "device": "!3f172791"}
-{"type": "ota_start",   "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "firmware": "firmware.zip"}
-{"type": "ota_progress","ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"pct": 42}}
-{"type": "ota_complete","ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {...}}
-{"type": "ota_error",   "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"error": "..."}}
+{"type": "packet",      "data": {...},                          "device": "!aabbccdd"}
+{"type": "node_info",   "data": {...},                          "device": "!aabbccdd"}
+{"type": "node_update", "data": {...},                          "device": "!aabbccdd"}
+{"type": "status",      "data": {"ble_state": "ready", ...},   "device": "!aabbccdd"}
+{"type": "tilt_update", "data": {"pitch": 1.2, "roll": -0.4, "x": 0.02, "y": -0.01, "z": 0.98}, "device": "!aabbccdd"}
+{"type": "ota_start",   "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "firmware": "firmware.zip"}
+{"type": "ota_progress","ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {"pct": 42}}
+{"type": "ota_complete","ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {...}}
+{"type": "ota_error",   "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {"error": "..."}}
 ```
 
 If `message_cache.enabled`, replayed messages include `"_replay": true` so clients can distinguish them from live events.
