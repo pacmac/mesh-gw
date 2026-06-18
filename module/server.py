@@ -131,6 +131,46 @@ def create_app(dm: DeviceManager) -> FastAPI:
         asyncio.create_task(dm.disconnect(node_id))
         return {"disconnecting": True, "node_id": node_id}
 
+    @app.post("/ota")
+    async def ota_update(body: dict = Body(...)):
+        """Trigger a BLE OTA firmware update for an nRF52 device.
+
+        Body: { "node_id": "!3f172791", "firmware": "/path/to/firmware-rak4631-x.y.z.zip" }
+        Long-running — streams progress via the /events WS as ota_progress events.
+        Returns immediately with {"started": true} and runs the update in the background.
+        """
+        from core.ota import ota_update as _do_ota, DfuError
+        from pathlib import Path
+
+        node_id  = body.get("node_id")
+        fw_path  = body.get("firmware")
+        if not node_id or not fw_path:
+            raise HTTPException(400, "node_id and firmware are required")
+        if not Path(fw_path).is_file():
+            raise HTTPException(400, f"firmware file not found: {fw_path}")
+
+        bridge = dm.get(node_id)
+
+        async def _run():
+            def _progress(pct, total, done):
+                asyncio.create_task(dm._broadcast({
+                    "type": "ota_progress",
+                    "device": node_id,
+                    "data": {"pct": pct, "total": total, "done": done},
+                }))
+
+            try:
+                result = await _do_ota(bridge, node_id, fw_path, progress_cb=_progress)
+                await dm._broadcast({"type": "ota_complete", "device": node_id, "data": result})
+            except DfuError as e:
+                await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
+            except Exception as e:
+                logger.exception("OTA failed for %s", node_id)
+                await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
+
+        asyncio.create_task(_run())
+        return {"started": True, "node_id": node_id, "firmware": fw_path}
+
     @app.patch("/ble_devices/{address}")
     async def patch_ble_device(address: str, body: dict = Body(...)):
         """Update persisted settings for a BLE device (auto_connect etc.)."""
