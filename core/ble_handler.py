@@ -470,8 +470,30 @@ class BLEHandler:
                         logger.warning("FROMRADIO: disconnection detected during read")
                         self.disconnection_event.set()
                         continue
+                    elif "CharacteristicNotFound" in type(read_err).__name__ or "not found" in str(read_err).lower():
+                        _dfu_err_count = getattr(self, "_dfu_err_count", 0) + 1
+                        self._dfu_err_count = _dfu_err_count
+                        if _dfu_err_count == 1:
+                            logger.warning("FROMRADIO characteristic missing — device may be in DFU bootloader")
+                        if _dfu_err_count == 20:
+                            # Device is stuck in DFU bootloader; send SYSTEM_RESET to reboot it.
+                            # Nordic bootloader requires CCCD enabled (start_notify) before
+                            # accepting any control-point writes.
+                            _DFU_CTRL = "00001531-1212-efde-1523-785feabcd123"
+                            _OP_RESET = 0x06
+                            logger.warning("Device stuck in DFU bootloader — sending SYSTEM_RESET to recover")
+                            try:
+                                await self.client.start_notify(_DFU_CTRL, lambda *_: None)
+                                await asyncio.sleep(1.0)  # CCCD wr_auth=1 needs time to propagate
+                                await self.client.write_gatt_char(_DFU_CTRL, bytes([_OP_RESET]), response=True)
+                                logger.info("DFU SYSTEM_RESET sent — device will reboot to Meshtastic")
+                            except Exception as rst_err:
+                                logger.warning("DFU SYSTEM_RESET failed: %s", rst_err)
+                            # Force-disconnect so bridge re-connects after device reboots
+                            self.disconnection_event.set()
                     else:
                         logger.warning(f"FROMRADIO read error: {read_err!r}")
+                        self._dfu_err_count = 0
 
                 await asyncio.sleep(0.1)  # 100ms polling interval
 

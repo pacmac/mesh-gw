@@ -150,6 +150,20 @@ def create_app(dm: DeviceManager) -> FastAPI:
             raise HTTPException(400, f"firmware file not found: {fw_path}")
 
         bridge = dm.get(node_id)
+        if bridge is None:
+            raise HTTPException(404, f"Device {node_id!r} not found — it must be connected and ready")
+        ble_state = getattr(bridge, "ble_state", None)
+        if ble_state not in ("ready", "syncing"):
+            raise HTTPException(409, f"Device {node_id!r} is not connected (ble_state={ble_state!r}). "
+                                     f"Wait for 'ready' before starting OTA.")
+
+        # Resolve BLE address NOW — bridge.ble_address is cleared when disconnect_ble() is called
+        ble_addr = getattr(bridge, "ble_address", None)
+        if not ble_addr:
+            for addr, nid in dm._by_ble.items():
+                if nid == node_id:
+                    ble_addr = addr
+                    break
 
         async def _run():
             def _progress(pct, total, done):
@@ -160,13 +174,18 @@ def create_app(dm: DeviceManager) -> FastAPI:
                 }))
 
             try:
-                result = await _do_ota(bridge, node_id, fw_path, progress_cb=_progress)
+                result = await _do_ota(bridge, node_id, fw_path, ble_addr=ble_addr, progress_cb=_progress)
                 await dm._broadcast({"type": "ota_complete", "device": node_id, "data": result})
             except DfuError as e:
+                logger.error("OTA DFU error for %s: %s", node_id, e)
                 await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
+                if bridge is not None and ble_addr and getattr(bridge, "auto_connect", False):
+                    asyncio.create_task(bridge.connect_to(ble_addr, pin=getattr(bridge, "ble_pin", "")))
             except Exception as e:
                 logger.exception("OTA failed for %s", node_id)
                 await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
+                if bridge is not None and ble_addr and getattr(bridge, "auto_connect", False):
+                    asyncio.create_task(bridge.connect_to(ble_addr, pin=getattr(bridge, "ble_pin", "")))
 
         asyncio.create_task(_run())
         return {"started": True, "node_id": node_id, "firmware": fw_path}
