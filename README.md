@@ -1,6 +1,6 @@
 # mesh-gw — Meshtastic Multi-Device BLE Bridge
 
-A pure BLE-to-JSON bridge for Meshtastic radios. Connects to N radios simultaneously over BLE and exposes a unified JSON REST API, WebSocket event stream, and MCP tool server. Consumers (dashboard servers, logging tools, automation, AI agents) never see protobuf.
+A pure BLE-to-JSON bridge for Meshtastic radios. Connects to N radios simultaneously over BLE and exposes a unified JSON REST API, WebSocket event stream, MCP tool server, and Meshtastic TCP gateway. Consumers (dashboard servers, logging tools, automation, AI agents) never see protobuf.
 
 Multi-device BLE bridging is the core feature — most existing Meshtastic bridges connect to one device at a time.
 
@@ -8,15 +8,17 @@ The BLE connection handling (`core/ble_handler.py`, `core/stats.py`) is adapted 
 
 ## Scope
 
-This bridge is intentionally minimal. It:
-- Connects to Meshtastic radios over BLE
+This bridge:
+- Connects to Meshtastic radios over BLE (multi-device)
 - Streams decoded `FromRadio` packets as JSON over WebSocket
 - Accepts outbound packets (send text, admin messages)
 - Proxies MQTT traffic on behalf of radios configured for `proxy_to_client_enabled`
 - Publishes mesh events to an external MQTT broker (optional)
 - Provides filtered node queries
-- Exposes all methods as MCP tools over SSE transport
+- Exposes all methods as MCP tools over streamable HTTP transport
 - Caches recent text messages and replays them to new WebSocket clients (optional)
+- Bridges each BLE device to a Meshtastic TCP gateway port (optional)
+- Runs a background Claude AI daemon that responds to `@claude` trigger words over the mesh
 
 It does **not** contain: dashboard UI, rotator logic, radar, node history, or any consuming-application logic. Those belong in a separate dashboard server.
 
@@ -31,6 +33,7 @@ It does **not** contain: dashboard UI, rotator logic, radar, node history, or an
 | `GET /devices` | Connected device list |
 | `POST /devices` | Connect a new BLE device `{address, pin?, tcp_port?}` |
 | `DELETE /devices/{node_id}` | Disconnect a device |
+| `PATCH /ble_devices/{address}` | Update per-device config fields (`auto_connect`, `tcp_port`) |
 | `POST /reload` | Reload `bridge_config.yaml` without restarting (also triggered by `SIGHUP`) |
 | `GET /nodes` | Merged node list across all bridges (query params below) |
 | `GET /ble/scan` | Scan for nearby Meshtastic BLE devices |
@@ -63,6 +66,7 @@ It does **not** contain: dashboard UI, rotator logic, radar, node history, or an
 | `PUT /fixed_position` | Set fixed position |
 | `DELETE /fixed_position` | Remove fixed position |
 | `POST /messages` | Send text `{text, to?, channel?}` |
+| `GET /messages` | Recent cached text messages |
 | `POST /admin` | Generic AdminMessage passthrough |
 | `POST /rpc` | JSON-RPC 2.0 method call |
 | `GET /range_test` | Range test log |
@@ -86,30 +90,66 @@ All `/nodes` endpoints accept:
 
 ## MCP Server
 
-The bridge exposes all methods as [MCP](https://modelcontextprotocol.io) tools over SSE transport:
+The bridge exposes all methods as [MCP](https://modelcontextprotocol.io) tools over **streamable HTTP** transport (stateless per-request, no dropped connections):
 
 | Endpoint | Description |
 |---|---|
-| `GET /mcp/sse` | SSE stream — connect your MCP client here |
-| `POST /mcp/messages` | MCP message endpoint |
+| `POST /mcp` | Streamable HTTP MCP endpoint |
 
-**Tools available:** `list_devices`, `connect_device`, `disconnect_device`, `get_info`, `get_nodes`, `get_status`, `get_channels`, `get_config`, `get_config_live`, `get_owner_live`, `get_channel_live`, `get_fixed_position`, `set_fixed_position`, `remove_fixed_position`, `send_text`, `set_config`, `set_owner`, `set_channel`
+**Tools available:** `list_devices`, `connect_device`, `disconnect_device`, `get_info`, `get_nodes`, `get_status`, `get_channels`, `get_config`, `get_config_live`, `get_owner_live`, `get_channel_live`, `get_fixed_position`, `set_fixed_position`, `remove_fixed_position`, `send_text`, `set_config`, `set_owner`, `set_channel`, `get_messages`, `wait_for_message`
 
-Configure in Claude Code (`/etc/claude-code/managed-mcp.json`):
+`wait_for_message` long-polls the bridge event queue and returns the next `TEXT_MESSAGE_APP` packet — useful for interactive chat loops and event-driven agents.
+
+Configure in Claude Code (`/etc/claude-code/managed-mcp.json` or `~/.claude/managed-mcp.json`):
 ```json
 {
   "mcpServers": {
     "mesh-gw": {
-      "type": "sse",
-      "url": "http://<host>:8001/mcp/sse"
+      "type": "http",
+      "url": "http://<host>:8001/mcp"
     }
   }
 }
 ```
 
+## Interactive Mesh Chat (`/mt-chat` skill)
+
+The `/mt-chat` Claude Code skill enables an interactive chat loop over the mesh using MCP tools:
+
+1. Invoke `/mt-chat` in Claude Code
+2. Claude uses `wait_for_message` to receive incoming texts and `send_text` to reply — all directly from the Claude Code session, no extra API account needed.
+3. Replies go only to the message sender (never broadcast to the mesh).
+
+## Claude AI Daemon
+
+`core/claude_daemon.py` runs as a background task inside the bridge server. It watches all incoming mesh messages for a configurable trigger word (default: `@claude`) from trusted node IDs, calls `claude -p` (Claude Code CLI non-interactively), and sends the reply back as a direct message.
+
+- No separate Anthropic API account or API key required — uses the local Claude Code CLI credentials.
+- Replies are per-sender, with conversation history kept per sender.
+- Trigger word, system prompt, trusted nodes, and reply length are all configurable in `bridge_config.yaml`.
+
+```yaml
+claude_chat:
+  enabled: true
+  trigger_word: "@claude"
+  system_prompt: "You are Claude, accessible via Meshtastic radio. Keep replies concise — this is a low-bandwidth radio link."
+  max_history: 20
+  max_reply_length: 200
+  whitelist: ""          # comma-separated !hex node IDs; empty = my_nodes only
+  my_nodes: "!da5af428"  # your own node IDs (always allowed to trigger)
+```
+
 ## TCP Gateway
 
-If a device entry in `ble_devices` has a `tcp_port`, the bridge opens a TCP server on that port implementing the standard Meshtastic serial/TCP framing protocol. This allows the Meshtastic app, CLI (`meshtastic --host`), and other tools to connect to the radio without BLE.
+Each device entry in `ble_devices` can have a `tcp_port`. The bridge opens a TCP server on that port implementing the standard **Meshtastic StreamAPI** framing (`0x94 0xc3` magic + 2-byte length). This makes each radio accessible to:
+
+- Meshtastic CLI: `meshtastic --host <host>`
+- Meshtastic Android/iOS app: add TCP connection in app settings
+- Any other Meshtastic TCP-capable client
+
+The TCP gateway and REST/WebSocket API operate **concurrently on the same radio** — a Meshtastic app can be connected on the TCP port while the dashboard, MCP tools, and Claude daemon all continue to operate via the REST/WS API. Packets received over BLE are forwarded to all TCP clients and all WS subscribers simultaneously.
+
+Different radios get different ports (e.g., 4403, 4404). The TCP port is configurable per-device in the dashboard or directly in `bridge_config.yaml`.
 
 ## Configuration
 
@@ -119,9 +159,12 @@ All settings live in `core/bridge_config.yaml`:
 ble_devices:
   - address: AA:BB:CC:DD:EE:FF
     pin: ""
-    tcp_port: 4403          # optional: expose Meshtastic TCP gateway on this port
+    auto_connect: true       # connect automatically on startup
+    tcp_port: 4403           # optional: Meshtastic TCP gateway port
   - address: 11:22:33:44:55:66
     pin: "123456"
+    auto_connect: false
+    tcp_port: 4404
 
 message_cache:
   enabled: false            # replay recent text messages to new WS clients
@@ -138,6 +181,15 @@ mqtt_publish:
   topic_prefix: mesh
   ha_discovery: false       # publish Home Assistant discovery payloads
   ha_discovery_prefix: homeassistant
+
+claude_chat:
+  enabled: false            # background Claude AI daemon
+  trigger_word: "@claude"
+  system_prompt: "..."
+  max_history: 20
+  max_reply_length: 200
+  whitelist: ""             # comma-separated !hex IDs; empty = my_nodes only
+  my_nodes: ""              # your own node IDs
 ```
 
 Config changes can be applied without restarting:
@@ -148,7 +200,7 @@ systemctl reload mesh-gw          # sends SIGHUP
 curl -X POST http://localhost:8001/reload
 ```
 
-BLE connections are preserved across a reload. Addresses can also be passed as command-line arguments at startup.
+BLE connections are preserved across a reload.
 
 ## Running
 
@@ -172,6 +224,7 @@ Events on `/events` (and `/{node_id}/events`) are JSON objects:
 ```json
 {"type": "packet", "data": {...}, "device": "!3f172791"}
 {"type": "node_info", "data": {...}, "device": "!3f172791"}
+{"type": "status", "data": {"ble_state": "ready", ...}, "device": "!3f172791"}
 ```
 
 If `message_cache.enabled`, replayed messages include `"_replay": true` so clients can distinguish them from live events.
@@ -184,14 +237,15 @@ If `message_cache.enabled`, replayed messages include `"_replay": true` so clien
                               [core/bridge.py]
                               [core/state.py]
                                       |
-                    +-----------------+-----------------+
-                    |                 |                 |
-             [module/server.py]  [core/mcp_server.py]  [core/mqtt_publisher.py]
-             FastAPI, port 8001   MCP SSE /mcp/sse      external MQTT broker
-                    |
-         +----------+----------+
-         |                     |
-    REST clients          WS subscribers
-  (dashboard server)   (dashboard, loggers, AI)
+          +-----------+--------------+-----------+-----------+
+          |           |              |           |           |
+  [module/server.py]  |   [core/mcp_server.py]  |  [core/mqtt_publisher.py]
+  FastAPI, port 8001  |   MCP streamable HTTP   |   external MQTT broker
+          |           |                          |
+   REST/WS clients    |              [core/mqtt_proxy.py]
+  (dashboard, apps)   |              radio MQTT proxy
+                      |
+              [core/tcp_gateway.py]       [core/claude_daemon.py]
+              Meshtastic TCP bridge       @claude AI daemon
+              (per-device port)           (claude -p via WS events)
 ```
-
