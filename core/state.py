@@ -44,10 +44,6 @@ class MeshState:
         # publish onto its configured MQTT broker (proxy_to_client_enabled)
         self.on_mqtt_proxy_from_radio = None
 
-        # gateway publish: called for every received RF packet (and our own TX
-        # echoes) that should be forwarded to MQTT
-        self.on_rx_packet = None
-
         # most recently received mesh-packet signal metrics (any portnum)
         self.last_rx_snr: float | None = None
         self.last_rx_rssi: int | None = None
@@ -186,13 +182,9 @@ class MeshState:
 
     async def _handle_mesh_packet(self, pkt) -> bool:
         """Returns True if the WS broadcast for this packet should be suppressed."""
-        # Suppress TX echo: we sent this packet, the radio echoed it back.
-        # Still publish outgoing packets to the MQTT gateway so the radio's
-        # own transmissions appear on the broker.
+        # Suppress TX echo: we sent this packet, the radio echoed it back
         if pkt.id in self._suppress_packet_ids:
             self._suppress_packet_ids.discard(pkt.id)
-            if self.on_rx_packet:
-                asyncio.create_task(self.on_rx_packet(pkt))
             return True
 
         # Admin replies are correlated to a pending request via request_id
@@ -269,9 +261,4 @@ class MeshState:
         else:
             node["via_mqtt"] = False   # RF packet — clear the flag
         node["last_heard"] = int(time.time())
-
-        # Forward RF-received packets to the MQTT gateway (skip MQTT-sourced
-        # packets to avoid re-publishing what came down from the broker)
-        if self.on_rx_packet and not pkt.via_mqtt:
-            asyncio.create_task(self.on_rx_packet(pkt))
         return False
