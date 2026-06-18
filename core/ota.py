@@ -8,6 +8,7 @@ Delegates to dfu_cli.py (recrof/nrf_dfu_py) which handles:
 
 import asyncio
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -74,13 +75,11 @@ async def ota_update(bridge, device_label: str, zip_path: str,
                 if not text:
                     continue
                 logger.info("[dfu] %s", text)
-                if "Uploading:" in text:
-                    try:
-                        pct = int(text.split("Uploading:")[1].strip().rstrip("%"))
-                        if progress_cb:
-                            progress_cb(pct, 0, 0)
-                    except ValueError:
-                        pass
+                m = re.search(r'Uploading:\s*(\d+)%', text)
+                if m:
+                    pct = int(m.group(1))
+                    if progress_cb:
+                        progress_cb(pct, 0, 0)
 
     await _stream_output()
     rc = await proc.wait()
