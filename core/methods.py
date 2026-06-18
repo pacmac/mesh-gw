@@ -111,7 +111,6 @@ async def get_status(bridge: MeshBridge, params: dict):
         "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
         "config_complete": state.config_complete,
         "node_count": len(state.nodes),
-        "mqtt_proxy_connected": bool(bridge.mqtt_proxy and bridge.mqtt_proxy.connected),
         "last_rx_snr": state.last_rx_snr,
         "last_rx_rssi": state.last_rx_rssi,
     }

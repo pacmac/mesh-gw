@@ -8,7 +8,6 @@ from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 
 from .ble_handler import BLEHandler
-from .mqtt_proxy import MqttProxy
 from .stats import StatsCollector
 from .state import MeshState
 from .tcp_gateway import TcpGateway
@@ -30,14 +29,12 @@ class MeshBridge:
         self.stats = StatsCollector()
         self.state = MeshState()
         self.ble: BLEHandler | None = None
-        self.mqtt_proxy: MqttProxy | None = None
         self.tcp_gateway: TcpGateway | None = TcpGateway(tcp_port, on_to_radio=self._tcp_to_radio) if tcp_port else None
         self._reconnect_lock = asyncio.Lock()
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
         self.ble_error: str | None = None
 
-        self.state.on_mqtt_proxy_from_radio = self._on_mqtt_proxy_from_radio
         if ble_address:
             self._init_ble(ble_address)
 
@@ -64,13 +61,10 @@ class MeshBridge:
         await self._request_config()
 
     async def stop(self):
-        """Full shutdown — stop TCP gateway, MQTT proxy, and disconnect BLE."""
+        """Full shutdown — stop TCP gateway and disconnect BLE."""
         self._user_disconnect = True
         if self.tcp_gateway:
             await self.tcp_gateway.stop()
-        if self.mqtt_proxy:
-            self.mqtt_proxy.stop()
-            self.mqtt_proxy = None
         if self.ble:
             await self._ble_disconnect_safe()
 
@@ -144,9 +138,6 @@ class MeshBridge:
         self.ble_address = None
         self.ble_state = "idle"
         self.ble_error = None
-        if self.mqtt_proxy:
-            self.mqtt_proxy.stop()
-            self.mqtt_proxy = None
         if self.ble:
             await self._ble_disconnect_safe()
             self.ble = None
@@ -158,7 +149,6 @@ class MeshBridge:
         await self.state.handle_from_radio_bytes(data)
         if self.state.config_complete and self.ble_state == "syncing":
             self.ble_state = "active"
-            self._maybe_start_mqtt_proxy()
 
     async def _tcp_to_radio(self, payload: bytes):
         """Forward a ToRadio packet received from a TCP client to the BLE radio."""
@@ -202,81 +192,6 @@ class MeshBridge:
         return self.state.my_info.get("my_node_num")
 
     # -- MQTT proxy -----------------------------------------------------------
-
-    def _maybe_start_mqtt_proxy(self):
-        cfg = self.state.module_config.get("mqtt", {})
-        if not (cfg.get("enabled") and cfg.get("proxy_to_client_enabled")):
-            return
-        if self.mqtt_proxy:
-            self.mqtt_proxy.stop()
-            self.mqtt_proxy = None
-        # Radio firmware redacts password from config responses — fall back to
-        # the stored credential in bridge_config.yaml when it's absent.
-        from . import bridge_config as _bcfg
-        password = cfg.get("password") or _bcfg.load().get("mqtt_credentials", {}).get("password", "")
-        try:
-            self.mqtt_proxy = MqttProxy(
-                address=cfg["address"],
-                username=cfg.get("username", ""),
-                password=password,
-                root=cfg.get("root", "msh"),
-                use_tls=cfg.get("tls_enabled", False),
-                on_downlink=self._on_mqtt_downlink,
-                node_id=self.state.device_id or "",
-            )
-            self.mqtt_proxy.on_mqtt_node_update = self._on_mqtt_node_update
-            logger.info(f"MQTT proxy started -> {cfg['address']} root={cfg.get('root', 'msh')}")
-        except Exception as e:
-            logger.error(f"Failed to start MQTT proxy: {e}")
-
-    async def restart_mqtt_proxy(self):
-        """Re-read live MQTT module config from the radio, then restart the proxy."""
-        if self.mqtt_proxy:
-            self.mqtt_proxy.stop()
-            self.mqtt_proxy = None
-        # Refresh module config from the radio via live admin round-trip so we
-        # pick up any password changes made after the initial BLE sync.
-        try:
-            from .sections import MODULE_CONFIG_SECTIONS
-            resp = await asyncio.wait_for(
-                self.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS["mqtt"]}),
-                timeout=10.0,
-            )
-            live = resp.get("get_module_config_response", {}).get("mqtt", {})
-            if live:
-                self.state.module_config["mqtt"] = live
-                logger.info("Refreshed MQTT module config from radio for proxy restart")
-        except Exception as e:
-            logger.warning(f"Could not refresh live MQTT config: {e}")
-        self._maybe_start_mqtt_proxy()
-
-    async def _on_mqtt_proxy_from_radio(self, msg):
-        if not self.mqtt_proxy:
-            return
-        payload = msg.data if msg.data else msg.text.encode("utf-8")
-        self.mqtt_proxy.publish(msg.topic, payload, retained=msg.retained)
-
-    async def _on_mqtt_downlink(self, topic: str, payload: bytes):
-        msg = mesh_pb2.MqttClientProxyMessage()
-        msg.topic = topic
-        msg.data = payload
-        to_radio = mesh_pb2.ToRadio()
-        to_radio.mqttClientProxyMessage.CopyFrom(msg)
-        try:
-            await self.ble.send(to_radio.SerializeToString())
-        except RuntimeError as e:
-            logger.debug(f"Dropping MQTT downlink, BLE not ready: {e}")
-
-    def _on_mqtt_node_update(self, node: dict):
-        """Called from paho thread — sync merge into state then schedule WS broadcast."""
-        existing = self.state.nodes.get(str(node["num"]), {})
-        if existing.get("via_mqtt") is not False:
-            node["via_mqtt"] = True
-        self.state._merge_node_info(node)
-        asyncio.run_coroutine_threadsafe(
-            self.state._broadcast({"type": "mqtt_node", "data": node}),
-            self.mqtt_proxy.loop,
-        )
 
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 

@@ -40,9 +40,6 @@ class MeshState:
         # async queues for websocket subscribers
         self._subscribers = set()
 
-        # called with fr.mqttClientProxyMessage when the radio asks us to
-        # publish onto its configured MQTT broker (proxy_to_client_enabled)
-        self.on_mqtt_proxy_from_radio = None
 
         # most recently received mesh-packet signal metrics (any portnum)
         self.last_rx_snr: float | None = None
@@ -142,8 +139,9 @@ class MeshState:
         elif which == "config_complete_id":
             self.config_complete = True
         elif which == "mqttClientProxyMessage":
-            if self.on_mqtt_proxy_from_radio:
-                await self.on_mqtt_proxy_from_radio(fr.mqttClientProxyMessage)
+            msg = fr.mqttClientProxyMessage
+            payload_type = "text" if msg.text else "binary"
+            logger.info(f"mqttClientProxyMessage: topic={msg.topic} len={len(msg.data or msg.text.encode())} type={payload_type} retained={msg.retained}")
         suppress_broadcast = False
         if which == "packet":
             suppress_broadcast = await self._handle_mesh_packet(fr.packet)
