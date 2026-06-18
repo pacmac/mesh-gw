@@ -4,16 +4,15 @@ Bridges a single BLE-connected MeshBridge to the standard Meshtastic TCP
 protocol (same as serial/USB, same as what Android app / meshtastic --host
 uses). Port 4403 is the Meshtastic convention; each device gets its own port.
 
-Wire protocol (identical to Meshtastic serial framing over TCP):
-  FromRadio (radio → client): 4-byte big-endian length + protobuf bytes
-  ToRadio   (client → radio): 4-byte big-endian length + protobuf bytes
+Wire protocol (Meshtastic StreamAPI framing):
+  Each packet (both directions):
+    [0x94][0xc3][size_high][size_low][protobuf bytes...]
+  On connect, client sends wakeup bytes (repeated 0xc3) before first packet.
 
 Usage:
-    gw = TcpGateway(port=4403, on_to_radio=bridge.ble.send)
+    gw = TcpGateway(port=4403, on_to_radio=bridge._tcp_to_radio)
     await gw.start()
-    ...
     gw.broadcast(raw_fromradio_bytes)   # called by bridge._on_packet()
-    ...
     await gw.stop()
 """
 import asyncio
@@ -22,11 +21,19 @@ import struct
 
 logger = logging.getLogger(__name__)
 
+MAGIC = b'\x94\xc3'
+WAKEUP = 0xc3
+MAX_PAYLOAD = 512 * 1024
+
+
+def _frame(raw_bytes: bytes) -> bytes:
+    return MAGIC + struct.pack(">H", len(raw_bytes)) + raw_bytes
+
 
 class TcpGateway:
     def __init__(self, port: int, on_to_radio=None):
         self.port = port
-        self.on_to_radio = on_to_radio   # async callable(bytes) — sends to BLE TORADIO
+        self.on_to_radio = on_to_radio
 
         self._server: asyncio.Server | None = None
         self._clients: set[asyncio.StreamWriter] = set()
@@ -60,7 +67,7 @@ class TcpGateway:
         """Fan-out a FromRadio packet to all connected TCP clients."""
         if not self._clients:
             return
-        frame = struct.pack(">I", len(raw_bytes)) + raw_bytes
+        frame = _frame(raw_bytes)
         dead = set()
         for writer in list(self._clients):
             try:
@@ -79,18 +86,34 @@ class TcpGateway:
         self._clients.add(writer)
         try:
             while True:
-                # Read 4-byte big-endian length prefix
-                header = await reader.readexactly(4)
-                length = struct.unpack(">I", header)[0]
-                if length == 0 or length > 512 * 1024:
-                    logger.warning("TCP client %s sent invalid length %d — closing", peer, length)
+                # Skip wakeup bytes (0xc3) until we see the 0x94 magic start
+                b = await reader.readexactly(1)
+                if b == b'\xc3':
+                    continue
+                if b != b'\x94':
+                    logger.warning("TCP client %s: unexpected byte 0x%02x", peer, b[0])
                     break
+
+                # Read second magic byte
+                b2 = await reader.readexactly(1)
+                if b2 != b'\xc3':
+                    logger.warning("TCP client %s: bad magic byte2 0x%02x", peer, b2[0])
+                    break
+
+                # 2-byte big-endian length
+                size_bytes = await reader.readexactly(2)
+                length = struct.unpack(">H", size_bytes)[0]
+                if length == 0 or length > MAX_PAYLOAD:
+                    logger.warning("TCP client %s: invalid length %d", peer, length)
+                    break
+
                 payload = await reader.readexactly(length)
                 if self.on_to_radio:
                     try:
                         await self.on_to_radio(payload)
                     except Exception as e:
-                        logger.warning("on_to_radio error for TCP client %s: %s", peer, e)
+                        logger.warning("on_to_radio error for %s: %s", peer, e)
+
         except asyncio.IncompleteReadError:
             pass
         except Exception as e:
