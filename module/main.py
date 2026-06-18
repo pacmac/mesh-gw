@@ -32,11 +32,20 @@ from module.server import create_app
 logger = logging.getLogger(__name__)
 
 
-def setup_logging(verbose: bool):
+def setup_logging(verbose: bool, log_config: dict | None = None):
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    # Per-logger level overrides from bridge_config.yaml logging section.
+    # Example config:
+    #   logging:
+    #     core.state: DEBUG
+    #     core.ble_handler: WARNING
+    for logger_name, level_str in (log_config or {}).items():
+        level = getattr(logging, str(level_str).upper(), None)
+        if level is not None:
+            logging.getLogger(logger_name).setLevel(level)
 
 
 async def run(addresses: list[tuple[str, str]], http_port: int):
@@ -102,11 +111,9 @@ def main():
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    setup_logging(args.verbose)
-    logger.info("mesh-rest-bridge-multi starting on port %d", args.http_port)
-
-    # Collect addresses: persisted config + command-line
     cfg = _bcfg.load()
+    setup_logging(args.verbose, log_config=cfg.get("logging", {}))
+    logger.info("mesh-rest-bridge-multi starting on port %d", args.http_port)
     persisted = cfg.get("ble_devices") or []
     # Legacy single-device config
     if not persisted and cfg.get("ble", {}).get("address"):

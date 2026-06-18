@@ -142,6 +142,17 @@ class MeshState:
             msg = fr.mqttClientProxyMessage
             payload_type = "text" if msg.text else "binary"
             logger.info(f"mqttClientProxyMessage: topic={msg.topic} len={len(msg.data or msg.text.encode())} type={payload_type} retained={msg.retained}")
+            if msg.data and logger.isEnabledFor(logging.DEBUG):
+                try:
+                    from meshtastic import mqtt_pb2
+                    env = mqtt_pb2.ServiceEnvelope()
+                    env.ParseFromString(msg.data)
+                    env_dict = _to_dict(env)
+                    pkt = env_dict.get('packet', {})
+                    logger.debug(f"  ServiceEnvelope: channel={env_dict.get('channel_id')} gateway={env_dict.get('gateway_id')}")
+                    logger.debug(f"  packet: from={pkt.get('from')} to={pkt.get('to')} portnum={pkt.get('decoded',{}).get('portnum')} hop_limit={pkt.get('hop_limit')} via_mqtt={pkt.get('via_mqtt')} keys={list(pkt.keys())}")
+                except Exception as e:
+                    logger.debug(f"  (ServiceEnvelope decode failed: {e})")
         suppress_broadcast = False
         if which == "packet":
             suppress_broadcast = await self._handle_mesh_packet(fr.packet)

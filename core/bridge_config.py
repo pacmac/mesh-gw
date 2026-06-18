@@ -10,6 +10,9 @@ CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
 DEFAULTS = {
     "ble_devices": [],  # list of {address, pin, tcp_port?} to auto-connect on startup
+    # Per-logger level overrides. Set a logger name to DEBUG/INFO/WARNING/ERROR.
+    # Example: {"core.state": "DEBUG", "core.ble_handler": "WARNING"}
+    "logging": {},
     "message_cache": {
         "enabled":          False,
         "max_messages":     100,
