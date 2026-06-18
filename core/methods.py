@@ -115,6 +115,7 @@ async def get_status(bridge: MeshBridge, params: dict):
         "node_count": len(state.nodes),
         "last_rx_snr": state.last_rx_snr,
         "last_rx_rssi": state.last_rx_rssi,
+        "mqtt_proxy_connected": bridge._mqtt_proxy is not None and not bridge._mqtt_proxy._stopped,
     }
 
 

@@ -52,6 +52,14 @@ class MeshState:
         # set by DeviceManager once my_info reveals the real node_id
         self.device_id: str | None = None
 
+        # set by bridge when MqttProxy is active; called with (topic, payload, retain)
+        self.on_mqtt_proxy_message = None
+
+        # one-shot events fired progressively during BLE config dump
+        self.my_info_ready = asyncio.Event()       # my_info received — device_id derivable
+        self.mqtt_config_ready = asyncio.Event()   # moduleConfig.mqtt received — broker config available
+        self.config_complete_event = asyncio.Event()  # config_complete_id received — full dump done
+
         _cache_cfg = _bcfg.load().get("message_cache", {})
         self._cache_enabled: bool = bool(_cache_cfg.get("enabled", False))
         self._cache_max_age: int = int(_cache_cfg.get("max_age_seconds", 86400))
@@ -117,6 +125,7 @@ class MeshState:
 
         if which == "my_info":
             self.my_info = _to_dict(fr.my_info)
+            self.my_info_ready.set()
         elif which == "metadata":
             self.metadata = _to_dict(fr.metadata)
         elif which == "node_info":
@@ -136,12 +145,18 @@ class MeshState:
             self._merge_config(fr.config)
         elif which == "moduleConfig":
             self._merge_module_config(fr.moduleConfig)
+            if "mqtt" in self.module_config:
+                self.mqtt_config_ready.set()
         elif which == "config_complete_id":
             self.config_complete = True
+            self.config_complete_event.set()
         elif which == "mqttClientProxyMessage":
             msg = fr.mqttClientProxyMessage
+            payload = msg.data if msg.data else msg.text.encode()
             payload_type = "text" if msg.text else "binary"
-            logger.info(f"mqttClientProxyMessage: topic={msg.topic} len={len(msg.data or msg.text.encode())} type={payload_type} retained={msg.retained}")
+            logger.info(f"mqttClientProxyMessage: topic={msg.topic} len={len(payload)} type={payload_type} retained={msg.retained}")
+            if self.on_mqtt_proxy_message:
+                self.on_mqtt_proxy_message(msg.topic, payload, msg.retained)
             if msg.data and logger.isEnabledFor(logging.DEBUG):
                 try:
                     from meshtastic import mqtt_pb2

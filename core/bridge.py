@@ -8,6 +8,7 @@ from google.protobuf import json_format
 from meshtastic import mesh_pb2, admin_pb2, portnums_pb2
 
 from .ble_handler import BLEHandler
+from .mqtt_proxy import MqttProxy
 from .stats import StatsCollector
 from .state import MeshState
 from .tcp_gateway import TcpGateway
@@ -34,6 +35,8 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state: str = "idle"   # idle|connecting|syncing|active|reconnecting|error
         self.ble_error: str | None = None
+        self._mqtt_proxy: MqttProxy | None = None
+        self._mqtt_proxy_task: asyncio.Task | None = None
 
         if ble_address:
             self._init_ble(ble_address)
@@ -43,26 +46,51 @@ class MeshBridge:
         self.ble.on_packet_received = self._on_packet
         self.ble.on_disconnected = self._on_disconnected
 
+    async def _emit_status(self):
+        """Broadcast current status as a WS event — called on ble_state or mqtt_proxy change."""
+        ble_connected = bool(self.ble and self.ble.client and self.ble.client.is_connected)
+        ble_rssi = self.ble.get_rssi() if self.ble else None
+        await self.state._broadcast({
+            "type": "status",
+            "data": {
+                "ble_connected": ble_connected,
+                "ble_address": self.ble_address,
+                "ble_state": self.ble_state,
+                "ble_error": self.ble_error,
+                "ble_rssi": ble_rssi,
+                "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
+                "config_complete": self.state.config_complete,
+                "node_count": len(self.state.nodes),
+                "last_rx_snr": self.state.last_rx_snr,
+                "last_rx_rssi": self.state.last_rx_rssi,
+                "mqtt_proxy_connected": self._mqtt_proxy is not None and not self._mqtt_proxy._stopped,
+            },
+        })
+
     async def start(self):
         if not self.ble:
             raise RuntimeError("No BLE device configured")
         if self.tcp_gateway:
             await self.tcp_gateway.start()
         self.ble_state = "connecting"
+        asyncio.create_task(self._emit_status())
         logger.info(f"Connecting to BLE device: {self.ble_address}")
         try:
             await self.ble.connect(pin=self.ble_pin)
         except Exception as e:
             self.ble_state = "error"
             self.ble_error = str(e)
+            asyncio.create_task(self._emit_status())
             raise
         self.ble_state = "syncing"
+        asyncio.create_task(self._emit_status())
         logger.info("BLE connected, requesting config…")
         await self._request_config()
 
     async def stop(self):
         """Full shutdown — stop TCP gateway and disconnect BLE."""
         self._user_disconnect = True
+        self._cancel_mqtt_proxy()
         if self.tcp_gateway:
             await self.tcp_gateway.stop()
         if self.ble:
@@ -83,6 +111,7 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state = "connecting"
         self.ble_error = None
+        asyncio.create_task(self._emit_status())
         try:
             async with self._reconnect_lock:
                 if self.ble:
@@ -91,6 +120,10 @@ class MeshBridge:
                 self.ble_pin = pin
                 self.state.config_complete = False
                 self.state.nodes.clear()
+                self.state.my_info_ready.clear()
+                self.state.mqtt_config_ready.clear()
+                self.state.config_complete_event.clear()
+                self._cancel_mqtt_proxy()
                 logger.info(f"Connecting to BLE device: {address}")
                 for attempt in range(1, 4):
                     self._init_ble(address)
@@ -107,14 +140,17 @@ class MeshBridge:
             if self.tcp_gateway and not self.tcp_gateway._server:
                 await self.tcp_gateway.start()
             self.ble_state = "syncing"
+            asyncio.create_task(self._emit_status())
             logger.info("BLE connected, requesting config…")
             asyncio.create_task(self._safe_request_config())
+            self._mqtt_proxy_task = asyncio.create_task(self._start_mqtt_proxy())
         except Exception as e:
             logger.error(f"BLE connect_to failed: {e}")
             self.ble_state = "error"
             self.ble_error = str(e)
             self.ble_address = None
             self.ble = None
+            asyncio.create_task(self._emit_status())
 
     async def _safe_request_config(self):
         """Request config with timeout; retries once if TORADIO write is slow."""
@@ -138,10 +174,15 @@ class MeshBridge:
         self.ble_address = None
         self.ble_state = "idle"
         self.ble_error = None
+        asyncio.create_task(self._emit_status())
         if self.ble:
             await self._ble_disconnect_safe()
             self.ble = None
         self.state.config_complete = False
+        self.state.my_info_ready.clear()
+        self.state.mqtt_config_ready.clear()
+        self.state.config_complete_event.clear()
+        self._cancel_mqtt_proxy()
 
     async def _on_packet(self, data: bytes):
         if self.tcp_gateway:
@@ -149,6 +190,7 @@ class MeshBridge:
         await self.state.handle_from_radio_bytes(data)
         if self.state.config_complete and self.ble_state == "syncing":
             self.ble_state = "active"
+            asyncio.create_task(self._emit_status())
 
     async def _tcp_to_radio(self, payload: bytes):
         """Forward a ToRadio packet received from a TCP client to the BLE radio."""
@@ -165,6 +207,7 @@ class MeshBridge:
             logger.debug("Reconnect already in progress, skipping duplicate _on_disconnected")
             return
         self.ble_state = "reconnecting"
+        asyncio.create_task(self._emit_status())
         async with self._reconnect_lock:
             if self._user_disconnect:
                 return
@@ -176,8 +219,14 @@ class MeshBridge:
                 if await self.ble.attempt_reconnection():
                     logger.info("Reconnected, re-requesting config")
                     self.ble_state = "syncing"
+                    asyncio.create_task(self._emit_status())
                     self.state.config_complete = False
+                    self.state.my_info_ready.clear()
+                    self.state.mqtt_config_ready.clear()
+                    self.state.config_complete_event.clear()
+                    self._cancel_mqtt_proxy()
                     asyncio.create_task(self._safe_request_config())
+                    self._mqtt_proxy_task = asyncio.create_task(self._start_mqtt_proxy())
                     return
             logger.info("Reconnection stopped — user disconnect")
 
@@ -192,6 +241,66 @@ class MeshBridge:
         return self.state.my_info.get("my_node_num")
 
     # -- MQTT proxy -----------------------------------------------------------
+
+    def _cancel_mqtt_proxy(self):
+        """Cancel the startup task and stop any running proxy. Synchronous — safe to call anywhere."""
+        was_running = self._mqtt_proxy is not None
+        if self._mqtt_proxy_task and not self._mqtt_proxy_task.done():
+            self._mqtt_proxy_task.cancel()
+        self._mqtt_proxy_task = None
+        if self._mqtt_proxy:
+            self._mqtt_proxy.stop()
+            self._mqtt_proxy = None
+        self.state.on_mqtt_proxy_message = None
+        if was_running:
+            try:
+                asyncio.get_running_loop().create_task(self._emit_status())
+            except RuntimeError:
+                pass
+
+    async def _start_mqtt_proxy(self):
+        """Wait for required state then start the MQTT proxy. Runs as a background task."""
+        try:
+            await self.state.my_info_ready.wait()
+            await self.state.mqtt_config_ready.wait()
+        except asyncio.CancelledError:
+            logger.debug("MqttProxy startup cancelled")
+            raise
+
+        cfg = self.state.module_config.get("mqtt", {})
+        if not cfg.get("enabled") or not cfg.get("proxy_to_client_enabled"):
+            logger.info("MqttProxy: not starting (enabled=%s proxy_to_client_enabled=%s)",
+                        cfg.get("enabled"), cfg.get("proxy_to_client_enabled"))
+            return
+
+        num = self.state.my_info.get("my_node_num")
+        if not num:
+            logger.error("MqttProxy: my_node_num not available, cannot start")
+            return
+        client_id = f"!{num:x}"
+
+        loop = asyncio.get_running_loop()
+        proxy = MqttProxy(cfg, client_id, loop, self._on_mqtt_downlink)
+        self._mqtt_proxy = proxy
+        self.state.on_mqtt_proxy_message = proxy.publish
+        asyncio.create_task(self._emit_status())
+
+        await loop.run_in_executor(None, proxy.start)
+
+    async def _on_mqtt_downlink(self, topic: str, payload: bytes, retain: bool):
+        """Wrap a broker downlink in ToRadio.mqtt_message and forward to radio via BLE."""
+        if not self.ble:
+            logger.debug("MqttProxy downlink dropped: BLE not connected")
+            return
+        try:
+            to_radio = mesh_pb2.ToRadio()
+            to_radio.mqtt_message.topic = topic
+            to_radio.mqtt_message.data = payload
+            to_radio.mqtt_message.retained = retain
+            await self.ble.send(to_radio.SerializeToString())
+            logger.debug("MqttProxy downlink forwarded to radio: topic=%s len=%d", topic, len(payload))
+        except Exception as e:
+            logger.warning("MqttProxy downlink forward error: %s", e)
 
     # -- outgoing helpers, JSON in / JSON out -------------------------------
 
