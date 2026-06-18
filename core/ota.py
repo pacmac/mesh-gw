@@ -19,15 +19,17 @@ class DfuError(Exception):
 
 
 async def _prepare_dfu(bridge, device_node_id: str, ble_addr: str) -> None:
-    """Disconnect bridge so the BLE adapter is free for dfu_cli.py."""
-    if bridge is not None:
+    """Disconnect bridge only if it's connected to the OTA target device."""
+    if bridge is not None and getattr(bridge, "ble_address", None) == ble_addr:
         bridge._user_disconnect = True
-        logger.info("Disconnecting bridge for DFU")
+        logger.info("Disconnecting bridge from %s for DFU", ble_addr)
         try:
             await bridge.disconnect_ble()
         except Exception as e:
             logger.warning("disconnect_ble error (continuing): %s", e)
         await asyncio.sleep(2.0)
+    else:
+        logger.info("Bridge not on OTA target — dfu_cli.py will connect to %s independently", ble_addr)
 
 
 async def ota_update(bridge, device_node_id: str, zip_path: str,

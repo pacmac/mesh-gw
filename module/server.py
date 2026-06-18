@@ -135,35 +135,45 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def ota_update(body: dict = Body(...)):
         """Trigger a BLE OTA firmware update for an nRF52 device.
 
-        Body: { "node_id": "!3f172791", "firmware": "/path/to/firmware-rak4631-x.y.z.zip" }
+        Body: { "node_id": "!3f172791", "firmware": "/path/to/firmware.zip" }
+        Optional: "ble_addr": "E9:B0:3F:17:27:91" if the device isn't in ble_devices config.
         Long-running — streams progress via the /events WS as ota_progress events.
         Returns immediately with {"started": true} and runs the update in the background.
         """
         from core.ota import ota_update as _do_ota, DfuError
+        from core import bridge_config as _bcfg
         from pathlib import Path
 
         node_id  = body.get("node_id")
         fw_path  = body.get("firmware")
+        ble_addr = (body.get("ble_addr") or body.get("ble_address") or "").strip() or None
+
         if not node_id or not fw_path:
             raise HTTPException(400, "node_id and firmware are required")
         if not Path(fw_path).is_file():
             raise HTTPException(400, f"firmware file not found: {fw_path}")
 
+        # Bridge is optional — dfu_cli.py handles jump-to-bootloader via BLE independently.
+        # The bridge only needs to be disconnected if it's connected to the same BLE device.
         bridge = dm.get(node_id)
-        if bridge is None:
-            raise HTTPException(404, f"Device {node_id!r} not found — it must be connected and ready")
-        ble_state = getattr(bridge, "ble_state", None)
-        if ble_state not in ("ready", "syncing"):
-            raise HTTPException(409, f"Device {node_id!r} is not connected (ble_state={ble_state!r}). "
-                                     f"Wait for 'ready' before starting OTA.")
 
-        # Resolve BLE address NOW — bridge.ble_address is cleared when disconnect_ble() is called
-        ble_addr = getattr(bridge, "ble_address", None)
+        # Resolve BLE address: body > bridge > device-manager map > config
+        if not ble_addr and bridge is not None:
+            ble_addr = getattr(bridge, "ble_address", None)
         if not ble_addr:
             for addr, nid in dm._by_ble.items():
                 if nid == node_id:
                     ble_addr = addr
                     break
+        if not ble_addr:
+            cfg = _bcfg.load()
+            for dev in (cfg.get("ble_devices") or []):
+                if dev.get("node_id") == node_id:
+                    ble_addr = dev.get("address")
+                    break
+        if not ble_addr:
+            raise HTTPException(400, f"No BLE address known for {node_id!r}. "
+                                     f"Pass ble_addr in body or add address/node_id to ble_devices config.")
 
         async def _run():
             def _progress(pct, total, done):
@@ -179,12 +189,12 @@ def create_app(dm: DeviceManager) -> FastAPI:
             except DfuError as e:
                 logger.error("OTA DFU error for %s: %s", node_id, e)
                 await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
-                if bridge is not None and ble_addr and getattr(bridge, "auto_connect", False):
+                if bridge is not None and getattr(bridge, "auto_connect", False):
                     asyncio.create_task(bridge.connect_to(ble_addr, pin=getattr(bridge, "ble_pin", "")))
             except Exception as e:
                 logger.exception("OTA failed for %s", node_id)
                 await dm._broadcast({"type": "ota_error", "device": node_id, "data": {"error": str(e)}})
-                if bridge is not None and ble_addr and getattr(bridge, "auto_connect", False):
+                if bridge is not None and getattr(bridge, "auto_connect", False):
                     asyncio.create_task(bridge.connect_to(ble_addr, pin=getattr(bridge, "ble_pin", "")))
 
         asyncio.create_task(_run())
