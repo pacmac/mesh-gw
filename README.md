@@ -1,5 +1,7 @@
 # mesh-gw — Meshtastic Multi-Device BLE Bridge
 
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20NC-blue)](LICENSE)
+
 A pure BLE-to-JSON bridge for Meshtastic radios. Connects to N radios simultaneously over BLE and exposes a unified JSON REST API, WebSocket event stream, MCP tool server, and Meshtastic TCP gateway. Consumers (dashboard servers, logging tools, automation, AI agents) never see protobuf.
 
 Multi-device BLE bridging is the core feature — most existing Meshtastic bridges connect to one device at a time.
@@ -72,6 +74,27 @@ It does **not** contain: dashboard UI, rotator logic, radar, node history, or an
 | `GET /range_test` | Range test log |
 | `DELETE /range_test` | Clear range test log |
 | `WS /events` | Per-device event stream. Replays cached text messages on connect if `message_cache.enabled`. |
+
+### OTA firmware update
+
+| Endpoint | Description |
+|---|---|
+| `POST /ota` | Trigger BLE OTA firmware update for an nRF52 device |
+
+Body: `{ "ble_addr": "E9:B0:3F:17:27:91", "firmware": "/path/to/firmware.zip", "node_id": "!3f172791" }`
+
+- `ble_addr` and `firmware` are required; `node_id` is optional (used only to label WS events)
+- Returns `{"started": true}` immediately — the update runs as a background task
+- Does **not** require the bridge to already be connected to the target device over BLE; it opens its own direct BLE connection for DFU
+- Implemented via [recrof/nrf_dfu_py](https://github.com/recrof/nrf_dfu_py) (Nordic Secure DFU over BLE/bleak)
+- Progress is streamed to all `/events` WebSocket subscribers as `ota_start` → `ota_progress` → `ota_complete` or `ota_error`
+
+```json
+{"type": "ota_start",    "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "firmware": "firmware.zip"}
+{"type": "ota_progress", "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"pct": 42}}
+{"type": "ota_complete", "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {...}}
+{"type": "ota_error",    "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"error": "..."}}
+```
 
 ### Node filter query params
 
@@ -221,10 +244,28 @@ Separately from the MQTT proxy, the bridge can publish decoded mesh events to an
 
 Events on `/events` (and `/{node_id}/events`) are JSON objects:
 
+| Type | Description |
+|---|---|
+| `packet` | Raw decoded `FromRadio` packet |
+| `node_info` | Node added or updated in NodeDB |
+| `node_update` | Emitted after every mesh packet — use instead of REST polling for live node state |
+| `status` | BLE connection state change (`ble_state`, `mqtt_proxy`, etc.) |
+| `tilt_update` | LIS3DH tilt telemetry decoded from `PRIVATE_APP` (portnum 256) packets |
+| `ota_start` | OTA flash started — includes `ble_addr`, `device`, `firmware` filename |
+| `ota_progress` | OTA progress — `data.pct` is 0–100 |
+| `ota_complete` | OTA finished successfully |
+| `ota_error` | OTA failed — `data.error` contains the reason |
+
 ```json
-{"type": "packet", "data": {...}, "device": "!3f172791"}
-{"type": "node_info", "data": {...}, "device": "!3f172791"}
-{"type": "status", "data": {"ble_state": "ready", ...}, "device": "!3f172791"}
+{"type": "packet",      "data": {...},                          "device": "!3f172791"}
+{"type": "node_info",   "data": {...},                          "device": "!3f172791"}
+{"type": "node_update", "data": {...},                          "device": "!3f172791"}
+{"type": "status",      "data": {"ble_state": "ready", ...},   "device": "!3f172791"}
+{"type": "tilt_update", "data": {"pitch": 1.2, "roll": -0.4, "x": 0.02, "y": -0.01, "z": 0.98}, "device": "!3f172791"}
+{"type": "ota_start",   "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "firmware": "firmware.zip"}
+{"type": "ota_progress","ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"pct": 42}}
+{"type": "ota_complete","ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {...}}
+{"type": "ota_error",   "ble_addr": "E9:B0:3F:17:27:91", "device": "!3f172791", "data": {"error": "..."}}
 ```
 
 If `message_cache.enabled`, replayed messages include `"_replay": true` so clients can distinguish them from live events.
@@ -248,4 +289,8 @@ If `message_cache.enabled`, replayed messages include `"_replay": true` so clien
               [core/tcp_gateway.py]       [core/claude_daemon.py]
               Meshtastic TCP bridge       @claude AI daemon
               (per-device port)           (claude -p via WS events)
+
+[nRF52 Device] <--BLE (DFU)--> [core/ota.py]
+                                POST /ota → background task
+                                streams ota_progress via /events WS
 ```
