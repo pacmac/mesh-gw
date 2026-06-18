@@ -162,6 +162,24 @@ _PASSWORD_FIELDS: dict[str, set[str]] = {
     "bluetooth": {"fixed_pin"},  # 0 is default; skip if not explicitly set
 }
 
+def _merge_config(cached: dict, submitted: dict) -> dict:
+    """Deep-merge submitted values onto cached state.
+
+    null submitted values keep the cached value — the form sent the key
+    (satisfying key validation) but the user left the field blank/masked.
+    Non-null values override. Nested dicts are merged recursively.
+    """
+    result = dict(cached)
+    for k, v in submitted.items():
+        if v is None:
+            pass  # keep cached
+        elif isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = _merge_config(result[k], v)
+        else:
+            result[k] = v
+    return result
+
+
 def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
     """Reject submissions where any key from the cached section is absent.
 
@@ -194,15 +212,18 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
     section = params["section"]
-    values = params["values"]
-    _validate_config_keys(bridge, section, values)
-    values = {**values, **_FORCED_VALUES.get(section, {})}
-    # Strip empty-string password fields so a blank form field never wipes a
-    # credential that the radio has stored but doesn't expose in config reads.
+    submitted = params["values"]
+    kind = config_kind(section)
+    _validate_config_keys(bridge, section, submitted)
+    # Merge submitted values onto cached state so unsubmitted fields aren't
+    # wiped (set_module_config replaces the entire section on the radio).
+    cached = (bridge.state.module_config if kind == "module_config" else bridge.state.config).get(section, {})
+    values = _merge_config(cached, submitted)
+    # Apply forced server-side values and strip empty passwords.
+    values.update(_FORCED_VALUES.get(section, {}))
     for field in _PASSWORD_FIELDS.get(section, set()):
         if values.get(field) == "" or values.get(field) is None:
             values.pop(field, None)
-    kind = config_kind(section)
     key = "set_config" if kind == "config" else "set_module_config"
     return await bridge.send_admin({key: {section: values}}, want_response=False)
 
