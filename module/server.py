@@ -156,10 +156,12 @@ def create_app(dm: DeviceManager) -> FastAPI:
             raise HTTPException(400, f"firmware file not found: {fw_path}")
 
         bridge = dm.get_by_ble(ble_addr) if hasattr(dm, "get_by_ble") else None
-        hw_model = (bridge.state.metadata.get("hw_model") or "") if bridge else ""
+        if not bridge:
+            raise HTTPException(400, f"no connected bridge for BLE address {ble_addr} — device must be connected")
+        hw_model = bridge.state.metadata.get("hw_model") or ""
         use_nrf  = is_nrf52(hw_model)
         protocol = "nrf52-dfu" if use_nrf else "esp32-unified-ota"
-        logger.info("OTA %s: hw_model=%r → %s", node_id, hw_model, protocol)
+        logger.info("OTA %s: hw_model=%r (from device) → %s", node_id, hw_model, protocol)
 
         await dm._broadcast({
             "type": "ota_start",

@@ -7,6 +7,7 @@ held under a temporary 'ble:<ADDRESS>' key.
 import asyncio
 import logging
 from typing import Optional
+from core.ota_esp32 import is_nrf52
 
 from core import bridge_config as _bcfg
 from core.bridge import MeshBridge
@@ -146,6 +147,9 @@ class DeviceManager:
                 "node_id": node_id,
                 "short_name": local.get("short_name", ""),
                 "long_name": local.get("long_name", ""),
+                "hw_model": bridge.state.metadata.get("hw_model") or None,
+                "firmware_version": bridge.state.metadata.get("firmware_version") or None,
+                "ota_protocol": "nrf52-dfu" if is_nrf52(bridge.state.metadata.get("hw_model") or "") else "esp32-unified-ota",
                 "ble_address": bridge.ble_address,
                 "ble_state": bridge.ble_state,
                 "ble_error": bridge.ble_error,
