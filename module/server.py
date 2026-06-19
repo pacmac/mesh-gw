@@ -133,33 +133,40 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     @app.post("/ota")
     async def ota_update(body: dict = Body(...)):
-        """Trigger a BLE OTA firmware update for an nRF52 device.
+        """Trigger a BLE OTA firmware update.
 
-        Body: { "ble_addr": "E9:B0:3F:17:27:91", "firmware": "/path/to/firmware.zip" }
-        Optional: "node_id" for labelling progress events only.
-        Long-running — streams progress via the /events WS as ota_progress events.
-        Returns immediately with {"started": true} and runs the update in the background.
+        Routes automatically by hw_model:
+          nRF52 devices (RAK4631 etc.) → Nordic Legacy DFU (.zip)
+          ESP32 devices                → esp32-unified-ota (.bin)
+
+        Body: { "node_id": "!xxxx", "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "/path/to/file" }
+        Streams progress via /events WS as ota_start / ota_progress / ota_complete / ota_error.
+        Returns immediately with {"started": true}.
         """
-        from core.ota import ota_update as _do_ota, DfuError
         from pathlib import Path
+        from core.ota_esp32 import is_nrf52
 
         ble_addr = (body.get("ble_addr") or body.get("ble_address") or "").strip() or None
         fw_path  = body.get("firmware")
-        node_id  = body.get("node_id") or ble_addr  # label only
+        node_id  = body.get("node_id") or ble_addr
 
         if not ble_addr or not fw_path:
             raise HTTPException(400, "ble_addr and firmware are required")
         if not Path(fw_path).is_file():
             raise HTTPException(400, f"firmware file not found: {fw_path}")
 
-        # Bridge only matters if it happens to be connected to the same BLE device.
         bridge = dm.get_by_ble(ble_addr) if hasattr(dm, "get_by_ble") else None
+        hw_model = (bridge.state.metadata.get("hw_model") or "") if bridge else ""
+        use_nrf  = is_nrf52(hw_model)
+        protocol = "nrf52-dfu" if use_nrf else "esp32-unified-ota"
+        logger.info("OTA %s: hw_model=%r → %s", node_id, hw_model, protocol)
 
         await dm._broadcast({
             "type": "ota_start",
             "ble_addr": ble_addr,
             "device": node_id,
             "firmware": Path(fw_path).name,
+            "protocol": protocol,
         })
 
         async def _run():
@@ -172,17 +179,19 @@ def create_app(dm: DeviceManager) -> FastAPI:
                 }))
 
             try:
+                if use_nrf:
+                    from core.ota import ota_update as _do_ota, DfuError as _OtaError
+                else:
+                    from core.ota_esp32 import ota_update as _do_ota, Esp32OtaError as _OtaError
+
                 result = await _do_ota(bridge, node_id, fw_path, ble_addr=ble_addr, progress_cb=_progress)
                 await dm._broadcast({"type": "ota_complete", "device": node_id, "ble_addr": ble_addr, "data": result})
-            except DfuError as e:
-                logger.error("OTA DFU error for %s: %s", ble_addr, e)
-                await dm._broadcast({"type": "ota_error", "device": node_id, "ble_addr": ble_addr, "data": {"error": str(e)}})
             except Exception as e:
                 logger.exception("OTA failed for %s", ble_addr)
                 await dm._broadcast({"type": "ota_error", "device": node_id, "ble_addr": ble_addr, "data": {"error": str(e)}})
 
         asyncio.create_task(_run())
-        return {"started": True, "ble_addr": ble_addr, "node_id": node_id, "firmware": fw_path}
+        return {"started": True, "ble_addr": ble_addr, "node_id": node_id, "firmware": fw_path, "protocol": protocol}
 
     @app.patch("/ble_devices/{address}")
     async def patch_ble_device(address: str, body: dict = Body(...)):
