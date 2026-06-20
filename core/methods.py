@@ -274,6 +274,18 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
         raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
 
 
+async def _reboot_after_config(bridge: MeshBridge):
+    """Explicit reboot after a config write.
+    Required for devices (e.g. nRF52/RAK4631) that don't auto-reboot on set_config.
+    Safe if the device already rebooted — BLE will be gone and the send silently fails."""
+    import asyncio
+    await asyncio.sleep(0.3)
+    try:
+        await bridge.send_admin({"reboot": True}, want_response=False)
+    except Exception:
+        pass  # device already rebooting — connection dropped before we could send
+
+
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
@@ -291,7 +303,9 @@ async def set_config(bridge: MeshBridge, params: dict):
         if values.get(field) == "" or values.get(field) is None:
             values.pop(field, None)
     key = "set_config" if kind == "config" else "set_module_config"
-    return await bridge.send_admin({key: {section: values}}, want_response=False)
+    await bridge.send_admin({key: {section: values}}, want_response=False)
+    await _reboot_after_config(bridge)
+    return {"sent": True}
 
 
 @method("set_channel")
@@ -302,7 +316,9 @@ async def set_channel(bridge: MeshBridge, params: dict):
         channel["settings"] = params["settings"]
     if "role" in params:
         channel["role"] = params["role"]
-    return await bridge.send_admin({"set_channel": channel}, want_response=False)
+    await bridge.send_admin({"set_channel": channel}, want_response=False)
+    await _reboot_after_config(bridge)
+    return {"sent": True}
 
 
 @method("set_owner")
