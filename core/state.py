@@ -180,6 +180,19 @@ class MeshState:
 
         if not suppress_broadcast:
             event = {"type": which, "data": _to_dict(fr)}
+            # Inject decoded sub-objects that protobuf serialises as opaque payload bytes.
+            # _to_dict() leaves packet.decoded.payload as base64 — we add the structured
+            # form alongside it so consumers don't need to re-parse protobuf.
+            if which == "packet":
+                portnum = fr.packet.decoded.portnum
+                pkt_from = getattr(fr.packet, "from")
+                node = self.nodes.get(str(pkt_from), {})
+                pkt_dict = event["data"].get("packet", {})
+                dec_dict = pkt_dict.get("decoded", {})
+                if portnum == portnums_pb2.PortNum.POSITION_APP and "position" in node:
+                    dec_dict["position"] = node["position"]
+                elif portnum == portnums_pb2.PortNum.NODEINFO_APP and "user" in node:
+                    dec_dict["user"] = node["user"]
             await self._broadcast(event)
             if (which == "packet"
                     and self._cache_enabled
