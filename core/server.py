@@ -138,6 +138,14 @@ def create_app(bridge: MeshBridge) -> FastAPI:
     async def post_admin(body: dict = Body(...)):
         return await call("admin", body)
 
+    @app.post("/traceroute")
+    async def post_traceroute(body: dict = Body(...)):
+        to = body.get("to")
+        if not to:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=400, detail="to required")
+        return await call("traceroute", {"to": int(to)})
+
     @app.post("/yagi/point")
     async def post_yagi_point(body: dict = Body(...)):
         return await call("yagi_point", body)

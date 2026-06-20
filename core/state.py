@@ -193,6 +193,18 @@ class MeshState:
                     dec_dict["position"] = node["position"]
                 elif portnum == portnums_pb2.PortNum.NODEINFO_APP and "user" in node:
                     dec_dict["user"] = node["user"]
+                elif portnum == portnums_pb2.PortNum.TRACEROUTE_APP:
+                    try:
+                        rd = mesh_pb2.RouteDiscovery()
+                        rd.ParseFromString(fr.packet.decoded.payload)
+                        dec_dict["route_discovery"] = {
+                            "route":       list(rd.route),
+                            "route_back":  list(rd.route_back),
+                            "snr_towards": list(rd.snr_towards),
+                            "snr_back":    list(rd.snr_back),
+                        }
+                    except Exception:
+                        pass
             await self._broadcast(event)
             if (which == "packet"
                     and self._cache_enabled

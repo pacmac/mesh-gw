@@ -382,3 +382,9 @@ async def admin(bridge: MeshBridge, params: dict):
         to=params.get("to"),
         want_response=params.get("want_response", True),
     )
+
+
+@method("traceroute")
+async def traceroute(bridge: MeshBridge, params: dict):
+    """Send a traceroute request. params: {to: node_num}. Response arrives as WS TRACEROUTE_APP packet."""
+    return await bridge.send_traceroute(to=int(params["to"]))

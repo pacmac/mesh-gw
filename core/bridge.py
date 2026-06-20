@@ -371,6 +371,30 @@ class MeshBridge:
         await self.ble.send(to_radio.SerializeToString())
         return {"sent": True, "id": packet.id}
 
+    async def send_traceroute(self, to: int):
+        """Send a traceroute request to a node. Response arrives as a TRACEROUTE_APP packet."""
+        if not self.ble:
+            raise RuntimeError("BLE not connected")
+        route = mesh_pb2.RouteDiscovery()
+        data = mesh_pb2.Data()
+        data.portnum = portnums_pb2.PortNum.TRACEROUTE_APP
+        data.payload = route.SerializeToString()
+        data.want_response = True
+
+        hop_limit = self.state.config.get("lora", {}).get("hop_limit", 3)
+        packet = mesh_pb2.MeshPacket()
+        packet.id = _random_id()
+        packet.to = to
+        packet.decoded.CopyFrom(data)
+        packet.hop_limit = hop_limit
+        packet.want_ack = False
+
+        to_radio = mesh_pb2.ToRadio()
+        to_radio.packet.CopyFrom(packet)
+        self.state.suppress_packet_id(packet.id)
+        await self.ble.send(to_radio.SerializeToString())
+        return {"sent": True, "id": packet.id, "to": to}
+
     async def send_admin(self, message: dict, to: int = None, want_response: bool = True):
         if not self.ble:
             raise RuntimeError("BLE not connected")
