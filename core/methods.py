@@ -303,6 +303,7 @@ async def set_config(bridge: MeshBridge, params: dict):
         if values.get(field) == "" or values.get(field) is None:
             values.pop(field, None)
     key = "set_config" if kind == "config" else "set_module_config"
+    await bridge.state._broadcast({"type": "config_save_start", "section": section})
     await bridge.send_admin({key: {section: values}}, want_response=False)
     await _reboot_after_config(bridge)
     return {"sent": True}
@@ -316,6 +317,7 @@ async def set_channel(bridge: MeshBridge, params: dict):
         channel["settings"] = params["settings"]
     if "role" in params:
         channel["role"] = params["role"]
+    await bridge.state._broadcast({"type": "config_save_start", "section": f"channel_{params['index']}"})
     await bridge.send_admin({"set_channel": channel}, want_response=False)
     await _reboot_after_config(bridge)
     return {"sent": True}

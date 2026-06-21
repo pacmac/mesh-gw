@@ -473,6 +473,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def device_admin(node_id: str, body: dict = Body(...)):
         return await _call(node_id, "admin", body)
 
+    @app.post("/{node_id}/traceroute")
+    async def device_traceroute(node_id: str, body: dict = Body(...)):
+        return await _call(node_id, "traceroute", body)
+
     @app.post("/{node_id}/rpc")
     async def device_rpc(node_id: str, body: dict = Body(...)):
         bridge = _bridge(node_id)

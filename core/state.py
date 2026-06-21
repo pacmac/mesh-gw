@@ -251,6 +251,7 @@ class MeshState:
             return
 
         pkt_from = getattr(pkt, "from")
+        logger.debug(f"PKT portnum={pkt.decoded.portnum} from={hex(pkt_from & 0xffffffff)} hop_start={pkt.hop_start} hop_limit={pkt.hop_limit} payload_len={len(pkt.decoded.payload)}")
         node = self.nodes.setdefault(str(pkt_from), {"num": pkt_from})
 
         if pkt.decoded.portnum == portnums_pb2.PortNum.POSITION_APP:
