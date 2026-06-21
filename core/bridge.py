@@ -367,7 +367,9 @@ class MeshBridge:
 
         to_radio = mesh_pb2.ToRadio()
         to_radio.packet.CopyFrom(packet)
-        self.state.suppress_packet_id(packet.id)
+        # Do NOT suppress the echo — the radio echoes our TX packet back on FROMRADIO
+        # as confirmation it was queued for RF transmission. The frontend dedup code
+        # absorbs the echo (updates the local TX entry) rather than creating a duplicate.
         await self.ble.send(to_radio.SerializeToString())
         return {"sent": True, "id": packet.id}
 
