@@ -300,11 +300,12 @@ class MeshState:
                 "rssi": pkt.rx_rssi if pkt.rx_rssi else None,
                 "snr": round(pkt.rx_snr, 1) if pkt.rx_snr else None,
                 "hops": max(0, pkt.hop_start - pkt.hop_limit) if pkt.hop_start else 0,
-                "seq": seq_text,
+                "seq": seq_text or None,
             }
             self.range_test_log.append(entry)
             if len(self.range_test_log) > 500:
                 self.range_test_log = self.range_test_log[-500:]
+            await self._broadcast({"type": "range_test_entry", "data": entry})
 
         if pkt.rx_snr:
             node["snr"] = pkt.rx_snr
