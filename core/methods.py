@@ -3,10 +3,15 @@
 
 Each method is `async def fn(bridge: MeshBridge, params: dict) -> dict`.
 """
+import asyncio
+import logging
+
 from fastapi import HTTPException
 
 from .bridge import MeshBridge
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, config_kind
+
+logger = logging.getLogger(__name__)
 
 METHODS = {}
 
@@ -289,20 +294,28 @@ async def _write_and_verify(bridge: MeshBridge, send_fn, timeout: int = 55) -> d
     except Exception:
         pass
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
+
+    logger.info("_write_and_verify: sent+rebooted, ble_state=%s config_complete=%s",
+                bridge.ble_state, bridge.state.config_complete)
 
     # Wait up to 12s for disconnect to begin
     deadline = loop.time() + 12
     while loop.time() < deadline and bridge.ble_state == "ready":
         await asyncio.sleep(0.5)
 
+    logger.info("_write_and_verify: after disconnect-wait, ble_state=%s", bridge.ble_state)
+
     # Wait for full reconnect + config sync
     deadline = loop.time() + timeout
     while loop.time() < deadline:
         if bridge.ble_state == "ready" and bridge.state.config_complete:
+            logger.info("_write_and_verify: verified OK, ble_state=%s", bridge.ble_state)
             return {"verified": True}
         await asyncio.sleep(1)
 
+    logger.warning("_write_and_verify: timed out, ble_state=%s config_complete=%s",
+                   bridge.ble_state, bridge.state.config_complete)
     raise RuntimeError(f"Device did not reconnect within {timeout}s — config may not have applied")
 
 
