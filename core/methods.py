@@ -295,7 +295,14 @@ async def _write_and_verify(bridge: MeshBridge, send_fn, timeout: int = 75) -> d
     bridge.state.config_complete = False
     bridge.state.config_complete_event.clear()
 
-    await send_fn()
+    try:
+        await send_fn()
+    except Exception as e:
+        # BLE write failed (e.g. GATT error, connection dropped mid-write).
+        # Broadcast config_save_end so the drawer resets its saving state immediately.
+        await bridge.state._broadcast({"type": "config_save_end"})
+        raise RuntimeError(f"Config write failed — BLE error. Try saving again once reconnected.")
+
     await asyncio.sleep(0.3)
     try:
         await bridge.send_admin({"reboot_seconds": 2}, want_response=False)
@@ -314,6 +321,7 @@ async def _write_and_verify(bridge: MeshBridge, send_fn, timeout: int = 75) -> d
     except asyncio.TimeoutError:
         logger.warning("_write_and_verify: timed out after %ds, ble_state=%s config_complete=%s",
                        timeout, bridge.ble_state, bridge.state.config_complete)
+        await bridge.state._broadcast({"type": "config_save_end"})
         raise RuntimeError(f"Device did not reconnect within {timeout}s — config may not have applied")
 
 
