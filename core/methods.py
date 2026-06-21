@@ -343,7 +343,9 @@ async def get_fixed_position(bridge: MeshBridge, params: dict):
 async def set_fixed_position(bridge: MeshBridge, params: dict):
     """params: {latitude_i, longitude_i, altitude?}"""
     position = {k: v for k, v in params.items() if k in ("latitude_i", "longitude_i", "altitude")}
-    return await bridge.send_admin({"set_fixed_position": position}, want_response=False)
+    await bridge.send_admin({"set_fixed_position": position}, want_response=False)
+    await _reboot_after_config(bridge)
+    return {"sent": True}
 
 
 @method("remove_fixed_position")
