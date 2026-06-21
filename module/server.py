@@ -7,6 +7,7 @@ CORS enabled for all origins.
 """
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from bleak import BleakScanner
@@ -496,6 +497,56 @@ def create_app(dm: DeviceManager) -> FastAPI:
                  "error": {"code": -32603, "message": str(e)}},
                 status_code=500,
             )
+
+    @app.get("/{node_id}/radio_backup")
+    async def device_radio_backup(node_id: str):
+        """Return all cached config sections and channels as a backup snapshot."""
+        bridge = _bridge(node_id)
+        return {
+            "version": 1,
+            "node_id": node_id,
+            "ts": int(time.time()),
+            "config": bridge.state.config,
+            "module_config": bridge.state.module_config,
+            "channels": bridge.state.channels,
+        }
+
+    @app.post("/{node_id}/radio_restore")
+    async def device_radio_restore(node_id: str, body: dict = Body(...)):
+        """Write all config sections and channels from a backup, then reboot once."""
+        bridge = _bridge(node_id)
+        config = body.get("config") or {}
+        module_config = body.get("module_config") or {}
+        channels = body.get("channels") or []
+
+        for section, values in config.items():
+            if section not in CONFIG_SECTIONS or not isinstance(values, dict) or not values:
+                continue
+            await bridge.send_admin({"set_config": {section: values}}, want_response=False)
+
+        for section, values in module_config.items():
+            if section not in MODULE_CONFIG_SECTIONS or not isinstance(values, dict) or not values:
+                continue
+            await bridge.send_admin({"set_module_config": {section: values}}, want_response=False)
+
+        for ch in channels:
+            if not isinstance(ch, dict) or ch.get("index") is None:
+                continue
+            channel = {"index": int(ch["index"])}
+            if "settings" in ch:
+                channel["settings"] = ch["settings"]
+            if "role" in ch:
+                channel["role"] = ch["role"]
+            await bridge.send_admin({"set_channel": channel}, want_response=False)
+
+        await asyncio.sleep(0.3)
+        try:
+            await bridge.send_admin({"reboot": True}, want_response=False)
+        except Exception:
+            pass
+
+        n_sections = len([v for v in config.values() if v]) + len([v for v in module_config.values() if v])
+        return {"sent": True, "sections": n_sections, "channels": len(channels)}
 
     @app.get("/{node_id}/range_test")
     async def device_range_test(node_id: str):
