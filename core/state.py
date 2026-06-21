@@ -191,7 +191,7 @@ class MeshState:
                 dec_dict = pkt_dict.get("decoded", {})
                 if portnum == portnums_pb2.PortNum.POSITION_APP and "position" in node:
                     dec_dict["position"] = node["position"]
-                elif portnum == portnums_pb2.PortNum.NODEINFO_APP and "user" in node:
+                elif portnum in (portnums_pb2.PortNum.NODEINFO_APP, portnums_pb2.PortNum.TEXT_MESSAGE_APP) and "user" in node:
                     dec_dict["user"] = node["user"]
                 elif portnum == portnums_pb2.PortNum.TRACEROUTE_APP:
                     try:
