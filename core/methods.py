@@ -274,16 +274,36 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
         raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
 
 
-async def _reboot_after_config(bridge: MeshBridge):
-    """Explicit reboot after a config write.
-    Required for devices (e.g. nRF52/RAK4631) that don't auto-reboot on set_config.
-    Safe if the device already rebooted — BLE will be gone and the send silently fails."""
-    import asyncio
+async def _write_and_verify(bridge: MeshBridge, send_fn, timeout: int = 55) -> dict:
+    """Global closed-loop for every config write: send, reboot, wait for reconnect.
+
+    Broadcasts config_save_start so the UI can show reconnecting state, then waits
+    for the device to come back online with a full config sync before returning.
+    Raises RuntimeError on timeout so the caller's asyncOp shows an error toast.
+    """
+    await bridge.state._broadcast({"type": "config_save_start"})
+    await send_fn()
     await asyncio.sleep(0.3)
     try:
         await bridge.send_admin({"reboot": True}, want_response=False)
     except Exception:
-        pass  # device already rebooting — connection dropped before we could send
+        pass
+
+    loop = asyncio.get_event_loop()
+
+    # Wait up to 12s for disconnect to begin
+    deadline = loop.time() + 12
+    while loop.time() < deadline and bridge.ble_state == "ready":
+        await asyncio.sleep(0.5)
+
+    # Wait for full reconnect + config sync
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if bridge.ble_state == "ready" and bridge.state.config_complete:
+            return {"verified": True}
+        await asyncio.sleep(1)
+
+    raise RuntimeError(f"Device did not reconnect within {timeout}s — config may not have applied")
 
 
 @method("set_config")
@@ -293,20 +313,18 @@ async def set_config(bridge: MeshBridge, params: dict):
     submitted = params["values"]
     kind = config_kind(section)
     _validate_config_keys(bridge, section, submitted)
-    # Merge submitted values onto cached state so unsubmitted fields aren't
-    # wiped (set_module_config replaces the entire section on the radio).
     cached = (bridge.state.module_config if kind == "module_config" else bridge.state.config).get(section, {})
     values = _merge_config(cached, submitted)
-    # Apply forced server-side values and strip empty passwords.
     values.update(_FORCED_VALUES.get(section, {}))
     for field in _PASSWORD_FIELDS.get(section, set()):
         if values.get(field) == "" or values.get(field) is None:
             values.pop(field, None)
     key = "set_config" if kind == "config" else "set_module_config"
-    await bridge.state._broadcast({"type": "config_save_start", "section": section})
-    await bridge.send_admin({key: {section: values}}, want_response=False)
-    await _reboot_after_config(bridge)
-    return {"sent": True}
+
+    async def send():
+        await bridge.send_admin({key: {section: values}}, want_response=False)
+
+    return await _write_and_verify(bridge, send)
 
 
 @method("set_channel")
@@ -317,23 +335,23 @@ async def set_channel(bridge: MeshBridge, params: dict):
         channel["settings"] = params["settings"]
     if "role" in params:
         channel["role"] = params["role"]
-    await bridge.state._broadcast({"type": "config_save_start", "section": f"channel_{params['index']}"})
-    await bridge.send_admin({"set_channel": channel}, want_response=False)
-    await _reboot_after_config(bridge)
-    return {"sent": True}
+
+    async def send():
+        await bridge.send_admin({"set_channel": channel}, want_response=False)
+
+    return await _write_and_verify(bridge, send)
 
 
 @method("set_owner")
 async def set_owner(bridge: MeshBridge, params: dict):
-    """params: {long_name?, short_name?, is_licensed?}"""
+    """params: {long_name?, short_name?, is_licensed?}. No reboot needed."""
     owner = {k: v for k, v in params.items() if k in ("long_name", "short_name", "is_licensed")}
-    return await bridge.send_admin({"set_owner": owner}, want_response=False)
+    await bridge.send_admin({"set_owner": owner}, want_response=False)
+    return {"verified": True}
 
 
 @method("get_fixed_position")
 async def get_fixed_position(bridge: MeshBridge, params: dict):
-    """Returns the device's own last-known position, which reflects the
-    fixed position once Config.PositionConfig.fixed_position is set."""
     num = bridge.my_node_num
     node = bridge.state.nodes.get(str(num), {}) if num is not None else {}
     return {"position": node.get("position", {})}
@@ -343,14 +361,19 @@ async def get_fixed_position(bridge: MeshBridge, params: dict):
 async def set_fixed_position(bridge: MeshBridge, params: dict):
     """params: {latitude_i, longitude_i, altitude?}"""
     position = {k: v for k, v in params.items() if k in ("latitude_i", "longitude_i", "altitude")}
-    await bridge.send_admin({"set_fixed_position": position}, want_response=False)
-    await _reboot_after_config(bridge)
-    return {"sent": True}
+
+    async def send():
+        await bridge.send_admin({"set_fixed_position": position}, want_response=False)
+
+    return await _write_and_verify(bridge, send)
 
 
 @method("remove_fixed_position")
 async def remove_fixed_position(bridge: MeshBridge, params: dict):
-    return await bridge.send_admin({"remove_fixed_position": True}, want_response=False)
+    async def send():
+        await bridge.send_admin({"remove_fixed_position": True}, want_response=False)
+
+    return await _write_and_verify(bridge, send)
 
 
 def _parse_node_num(value, default=0xFFFFFFFF) -> int:

@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from core import bridge_config as _bcfg
 from core.bridge_config import update_ble_device
 from core.claude_daemon import run as _claude_daemon_run
-from core.methods import METHODS, get_nodes
+from core.methods import METHODS, get_nodes, _write_and_verify
 from core.mcp_server import mount_mcp
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
 from core.schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
@@ -519,34 +519,29 @@ def create_app(dm: DeviceManager) -> FastAPI:
         module_config = body.get("module_config") or {}
         channels = body.get("channels") or []
 
-        for section, values in config.items():
-            if section not in CONFIG_SECTIONS or not isinstance(values, dict) or not values:
-                continue
-            await bridge.send_admin({"set_config": {section: values}}, want_response=False)
-
-        for section, values in module_config.items():
-            if section not in MODULE_CONFIG_SECTIONS or not isinstance(values, dict) or not values:
-                continue
-            await bridge.send_admin({"set_module_config": {section: values}}, want_response=False)
-
-        for ch in channels:
-            if not isinstance(ch, dict) or ch.get("index") is None:
-                continue
-            channel = {"index": int(ch["index"])}
-            if "settings" in ch:
-                channel["settings"] = ch["settings"]
-            if "role" in ch:
-                channel["role"] = ch["role"]
-            await bridge.send_admin({"set_channel": channel}, want_response=False)
-
-        await asyncio.sleep(0.3)
-        try:
-            await bridge.send_admin({"reboot": True}, want_response=False)
-        except Exception:
-            pass
-
         n_sections = len([v for v in config.values() if v]) + len([v for v in module_config.values() if v])
-        return {"sent": True, "sections": n_sections, "channels": len(channels)}
+
+        async def send():
+            for section, values in config.items():
+                if section not in CONFIG_SECTIONS or not isinstance(values, dict) or not values:
+                    continue
+                await bridge.send_admin({"set_config": {section: values}}, want_response=False)
+            for section, values in module_config.items():
+                if section not in MODULE_CONFIG_SECTIONS or not isinstance(values, dict) or not values:
+                    continue
+                await bridge.send_admin({"set_module_config": {section: values}}, want_response=False)
+            for ch in channels:
+                if not isinstance(ch, dict) or ch.get("index") is None:
+                    continue
+                channel = {"index": int(ch["index"])}
+                if "settings" in ch:
+                    channel["settings"] = ch["settings"]
+                if "role" in ch:
+                    channel["role"] = ch["role"]
+                await bridge.send_admin({"set_channel": channel}, want_response=False)
+
+        result = await _write_and_verify(bridge, send)
+        return {**result, "sections": n_sections, "channels": len(channels)}
 
     @app.get("/{node_id}/range_test")
     async def device_range_test(node_id: str):
