@@ -725,15 +725,17 @@ function dashboard() {
     async saveSection(sec) {
       sec.saved = false;
       sec.error = "";
+      sec.loading = true;
       const el = document.getElementById("sec_" + sec.name);
       const payload = collectForm(el, sec.schema.fields);
       try {
-        const res = await fetchJSON(this.d(`/config/${sec.name}`), "PUT", payload);
-        if (res.error) throw new Error(res.error.message);
+        await fetchJSON(this.d(`/config/${sec.name}`), "PUT", payload);
         sec.saved = true;
         setTimeout(() => (sec.saved = false), 2500);
       } catch (e) {
         sec.error = "Save failed: " + e;
+      } finally {
+        sec.loading = false;
       }
     },
 
@@ -1525,7 +1527,9 @@ async function fetchJSON(url, method = "GET", body) {
   }
   const base = window.MESH_API || "";
   const res = await fetch(base + url, opts);
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || data.message || `HTTP ${res.status}`);
+  return data;
 }
 
 function b64ToUtf8(b64) {

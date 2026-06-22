@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from core import bridge_config as _bcfg
 from core.bridge_config import update_ble_device
 from core.claude_daemon import run as _claude_daemon_run
-from core.methods import METHODS, get_nodes, _write_and_verify
+from core.methods import METHODS, get_nodes
 from core.mcp_server import mount_mcp
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
 from core.schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
@@ -572,7 +572,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
                     channel["role"] = ch["role"]
                 await bridge.send_admin({"set_channel": channel}, want_response=False)
 
-        result = await _write_and_verify(bridge, send)
+        result = await bridge.write_and_reboot(send)
         return {**result, "sections": n_sections, "channels": len(channels)}
 
     @app.get("/{node_id}/range_test")

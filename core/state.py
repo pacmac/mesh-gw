@@ -289,6 +289,9 @@ class MeshState:
             which = tel.WhichOneof("variant")
             if which:
                 node[which] = _to_dict(getattr(tel, which))
+                own_num = self.my_info.get("my_node_num")
+                if own_num and pkt_from == own_num:
+                    await self._broadcast({"type": "telemetry_update", "from_num": pkt_from, "variant": which, "data": node[which]})
 
         elif pkt.decoded.portnum == 256:  # PRIVATE_APP — tilt telemetry from LIS3DH
             payload = bytes(pkt.decoded.payload)

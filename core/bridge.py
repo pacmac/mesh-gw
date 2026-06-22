@@ -38,6 +38,7 @@ class MeshBridge:
         self.ble_error: str | None = None
         self._mqtt_proxy: MqttProxy | None = None
         self._mqtt_proxy_task: asyncio.Task | None = None
+        self._reboot_waiter: asyncio.Future | None = None  # set during write_and_reboot
 
         if ble_address:
             self._init_ble(ble_address)
@@ -128,6 +129,63 @@ class MeshBridge:
         except Exception as e:
             logger.warning(f"BLE disconnect warning: {e}")
 
+    def _resolve_reboot_waiter(self, success: bool):
+        """Resolve the write_and_reboot future if one is waiting."""
+        if self._reboot_waiter and not self._reboot_waiter.done():
+            try:
+                self._reboot_waiter.set_result(success)
+            except asyncio.InvalidStateError:
+                pass
+
+    async def write_and_reboot(self, send_fn) -> dict:
+        """Write config packets, trigger reboot if needed, wait for reconnect.
+
+        The bridge owns this entire lifecycle — callers just supply the send
+        function and await the result. No external event coordination needed.
+        """
+        if self.ble_state != "ready":
+            raise RuntimeError(f"Device not connected (ble_state={self.ble_state})")
+        if self._reboot_waiter is not None:
+            raise RuntimeError("A save operation is already in progress")
+
+        self._reboot_waiter = asyncio.get_running_loop().create_future()
+
+        try:
+            # Write packets — GATT error here means device disconnected mid-write (reboot started)
+            try:
+                await asyncio.wait_for(send_fn(), timeout=10)
+            except asyncio.TimeoutError:
+                raise RuntimeError("Write timed out — BLE too slow")
+            except Exception:
+                # Yield once so _on_disconnected callback task can run and update ble_state
+                await asyncio.sleep(0)
+                if self.ble_state not in ("reconnecting", "syncing", "ready"):
+                    raise RuntimeError("Write failed — device not rebooting")
+
+            # Trigger reboot only if the device hasn't already started disconnecting
+            if self.ble_state == "ready":
+                try:
+                    await self.send_admin({"reboot_seconds": 2}, want_response=False)
+                except Exception:
+                    await asyncio.sleep(0)
+                    if self.ble_state not in ("reconnecting", "syncing"):
+                        raise RuntimeError("Reboot command failed")
+
+            # Wait for _on_disconnected to resolve us — no fixed timeout shorter than actual reconnect
+            try:
+                await asyncio.wait_for(asyncio.shield(self._reboot_waiter), timeout=120)
+            except asyncio.TimeoutError:
+                raise RuntimeError("Device didn't reconnect within 2 minutes — check device power")
+
+            if not self._reboot_waiter.result():
+                raise RuntimeError(f"Device failed to reconnect after max attempts")
+
+            logger.info("write_and_reboot: reconnected OK")
+            return {"verified": True}
+
+        finally:
+            self._reboot_waiter = None
+
     async def connect_to(self, address: str, pin: str = "", passkey_future=None):
         """Connect to BLE device — runs as a background task from the endpoint.
 
@@ -199,6 +257,7 @@ class MeshBridge:
     async def disconnect_ble(self):
         """Disconnect BLE and clear address."""
         self._user_disconnect = True
+        self._resolve_reboot_waiter(False)
         self.ble_address = None
         self.ble_state = "idle"
         self.ble_error = None
@@ -269,11 +328,13 @@ class MeshBridge:
                     self._cancel_mqtt_proxy()
                     asyncio.create_task(self._safe_request_config())
                     self._mqtt_proxy_task = asyncio.create_task(self._start_mqtt_proxy())
+                    self._resolve_reboot_waiter(True)
                     return
                 elif self.ble.reconnect_attempts >= self.ble.MAX_RECONNECT_ATTEMPTS:
                     self.ble_state = "failed"
                     self.ble_error = f"Reconnection failed after {self.ble.MAX_RECONNECT_ATTEMPTS} attempts — click Retry to try again"
                     self._emit_task("failed", message=self.ble_error)
+                    self._resolve_reboot_waiter(False)
                     return
                 # individual attempt failed, counter < MAX — while loop continues
             logger.info("Reconnection stopped — user disconnect")

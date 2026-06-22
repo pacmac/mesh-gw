@@ -299,53 +299,6 @@ async def _write_direct(bridge: MeshBridge, send_fn) -> dict:
     return {"verified": True}
 
 
-async def _write_and_verify(bridge: MeshBridge, send_fn) -> dict:
-    """Write config, reboot device, wait for reconnect + fresh config dump to confirm."""
-    if bridge.ble_state != "ready":
-        raise RuntimeError(f"Device not connected (ble_state={bridge.ble_state})")
-
-    fence_before = bridge.state.config_complete_fence
-    bridge.state.config_complete = False
-    bridge.state.disconnected_event.clear()
-    bridge.state.reconnected_event.clear()
-
-    # Phase 1 — write (5s): any GATT error surfaces here
-    try:
-        await asyncio.wait_for(send_fn(), timeout=5)
-    except asyncio.TimeoutError:
-        raise RuntimeError("Write timed out — BLE too slow, retry when reconnected")
-    except Exception as e:
-        raise RuntimeError(f"Write failed — {e}")
-
-    await asyncio.sleep(0.3)
-
-    # Phase 2 — reboot (15s): confirm device disconnected
-    try:
-        await bridge.send_admin({"reboot_seconds": 2}, want_response=False)
-        await asyncio.wait_for(bridge.state.disconnected_event.wait(), timeout=15)
-    except asyncio.TimeoutError:
-        raise RuntimeError("Device didn't reboot — config may not have been applied")
-
-    # Phase 3 — reconnect (30s)
-    try:
-        await asyncio.wait_for(bridge.state.reconnected_event.wait(), timeout=30)
-    except asyncio.TimeoutError:
-        raise RuntimeError("Device didn't reconnect within 30s — check device power")
-
-    # Phase 4 — config sync (20s): fence confirms data is post-reboot
-    async def _wait_fence():
-        while bridge.state.config_complete_fence == fence_before:
-            await asyncio.sleep(0.5)
-
-    try:
-        await asyncio.wait_for(_wait_fence(), timeout=60)
-    except asyncio.TimeoutError:
-        raise RuntimeError("Device reconnected but config sync incomplete — try again")
-
-    logger.info("_write_and_verify: verified OK (fence %d→%d)", fence_before, bridge.state.config_complete_fence)
-    return {"verified": True}
-
-
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
     """params: {"section": "lora", "values": {...}}"""
@@ -365,7 +318,7 @@ async def set_config(bridge: MeshBridge, params: dict):
         await bridge.send_admin({key: {section: values}}, want_response=False)
 
     if section in _REBOOT_REQUIRED_SECTIONS:
-        return await _write_and_verify(bridge, send)
+        return await bridge.write_and_reboot(send)
     return await _write_direct(bridge, send)
 
 
