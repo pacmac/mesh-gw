@@ -62,6 +62,8 @@ class BLEHandler:
         self.is_paired:  bool = False  # bonded in BlueZ
         self.is_trusted: bool = False  # trusted in BlueZ (auto-reconnect allowed)
         self.mtu_size:   Optional[int] = None  # negotiated ATT MTU after connect
+        self.pin_required: bool = False  # last connect required a PIN/passkey
+        self.auth_failed:  bool = False  # last connect failed due to auth/pairing rejection
 
         # Track initial vs reconnect
         self._initial_connect = True
@@ -79,7 +81,14 @@ class BLEHandler:
             if not paired:
                 await self._discover_device()
                 logger.info(f"Pairing {self.ble_address} (PIN {pin})…")
-                await self._bluetoothctl_pair(pin)
+                self.pin_required = True
+                try:
+                    await self._bluetoothctl_pair(pin)
+                    self.auth_failed = False
+                except Exception:
+                    self.auth_failed = True
+                    raise
+                self.pin_required = False
                 # Drop bluetoothctl's GATT hold so device re-advertises for bleak
                 subprocess.run(
                     ["bluetoothctl", "disconnect", self.ble_address],

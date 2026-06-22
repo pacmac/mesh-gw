@@ -3,6 +3,7 @@ outgoing ToRadio messages from plain dicts (no protobuf in callers)."""
 import asyncio
 import logging
 import random
+import subprocess
 import time
 
 from google.protobuf import json_format
@@ -15,6 +16,45 @@ from .state import MeshState
 from .tcp_gateway import TcpGateway
 
 logger = logging.getLogger(__name__)
+
+
+_adapter_state_cache: dict = {}
+_adapter_state_ts: float = 0.0
+_ADAPTER_CACHE_TTL = 30.0  # seconds
+
+def _query_adapter_state() -> dict:
+    """Read BlueZ adapter state from bluetoothctl show. Cached for 30s."""
+    global _adapter_state_cache, _adapter_state_ts
+    now = time.monotonic()
+    if _adapter_state_cache and (now - _adapter_state_ts) < _ADAPTER_CACHE_TTL:
+        return _adapter_state_cache
+    try:
+        out = subprocess.run(
+            ["bluetoothctl", "show"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        if not out or "No default controller" in out:
+            result = {"adapter_state": "missing", "adapter_name": None, "adapter_discovering": False}
+        else:
+            powered = "Powered: yes" in out
+            discovering = "Discovering: yes" in out
+            name = None
+            for line in out.splitlines():
+                if line.strip().startswith("Name:"):
+                    name = line.split(":", 1)[1].strip()
+                    break
+            result = {
+                "adapter_state": "up" if powered else "down",
+                "adapter_discovering": discovering,
+                "adapter_name": name,
+            }
+    except FileNotFoundError:
+        result = {"adapter_state": "missing", "adapter_name": None, "adapter_discovering": False}
+    except Exception:
+        result = {"adapter_state": "unknown", "adapter_name": None, "adapter_discovering": False}
+    _adapter_state_cache = result
+    _adapter_state_ts = now
+    return result
 
 BROADCAST_NUM = 0xFFFFFFFF
 ADMIN_REPLY_TIMEOUT = 10.0
@@ -40,6 +80,15 @@ class MeshBridge:
         self._mqtt_proxy_task: asyncio.Task | None = None
         self._reboot_waiter: asyncio.Future | None = None  # set during write_and_reboot
 
+        # Connection stability tracking
+        self.reconnect_count: int = 0          # unexpected disconnects in this session
+        self.last_disconnect_ts: float | None = None
+        self.last_disconnect_rssi: int | None = None
+        self.reboot_reason: str | None = None  # config_save | unexpected | user_disconnect
+
+        # Error history — last 10 errors with timestamps
+        self._error_history: list[dict] = []   # [{ts, message}, ...]
+
         if ble_address:
             self._init_ble(ble_address)
 
@@ -57,16 +106,29 @@ class MeshBridge:
             "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
         }
 
+    def _record_error(self, message: str):
+        """Append to error history (capped at 10 entries)."""
+        self._error_history.append({"ts": time.time(), "message": message})
+        if len(self._error_history) > 10:
+            self._error_history = self._error_history[-10:]
+
     def _ble_link_fields(self) -> dict:
-        """BlueZ link-layer fields included in every state event — no subprocess calls."""
+        """BLE link-layer + stability fields included in every state event."""
         ble_rssi = self.ble.get_rssi() if self.ble else None
         return {
             "ble_rssi": ble_rssi,
             "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
-            "is_found":   self.ble.is_found   if self.ble else False,
-            "is_paired":  self.ble.is_paired  if self.ble else False,
-            "is_trusted": self.ble.is_trusted if self.ble else False,
-            "mtu_size":   self.ble.mtu_size   if self.ble else None,
+            "is_found":             self.ble.is_found      if self.ble else False,
+            "is_paired":            self.ble.is_paired     if self.ble else False,
+            "is_trusted":           self.ble.is_trusted    if self.ble else False,
+            "mtu_size":             self.ble.mtu_size      if self.ble else None,
+            "pin_required":         self.ble.pin_required  if self.ble else False,
+            "auth_failed":          self.ble.auth_failed   if self.ble else False,
+            "reconnect_count":      self.reconnect_count,
+            "last_disconnect_ts":   self.last_disconnect_ts,
+            "last_disconnect_rssi": self.last_disconnect_rssi,
+            "reboot_reason":        self.reboot_reason,
+            "error_history":        list(self._error_history),
         }
 
     async def _emit(self, event_type: str, **data):
@@ -76,6 +138,7 @@ class MeshBridge:
             "ts": int(time.time()),
             "ble_state": self.ble_state,
             **self._ble_link_fields(),
+            **_query_adapter_state(),
             **data,  # caller kwargs override link fields if explicitly set
         })
 
@@ -95,6 +158,7 @@ class MeshBridge:
             "ble_address": self.ble_address,
             "ble_error": self.ble_error,
             **self._ble_link_fields(),
+            **_query_adapter_state(),
             "config_complete": self.state.config_complete,
             "node_count": len(self.state.nodes),
             "my_node_num": self.my_node_num,
@@ -118,6 +182,7 @@ class MeshBridge:
         except Exception as e:
             self.ble_state = "error"
             self.ble_error = str(e)
+            self._record_error(str(e))
             self._emit_task("error", message=str(e))
             raise
         self.ble_state = "syncing"
@@ -206,6 +271,10 @@ class MeshBridge:
         self._user_disconnect = False
         self.ble_state = "connecting"
         self.ble_error = None
+        self.reconnect_count = 0
+        self.last_disconnect_ts = None
+        self.last_disconnect_rssi = None
+        self.reboot_reason = None
         self._emit_task("connecting", address=address)
         try:
             async with self._reconnect_lock:
@@ -245,6 +314,7 @@ class MeshBridge:
             logger.error(f"BLE connect_to failed: {e}")
             self.ble_state = "error"
             self.ble_error = str(e)
+            self._record_error(str(e))
             self.ble_address = None
             self.ble = None
             self._emit_task("error", message=str(e))
@@ -324,8 +394,12 @@ class MeshBridge:
             return
 
         self.state.disconnected_event.set()
+        self.last_disconnect_ts = time.time()
+        self.last_disconnect_rssi = self.ble.get_rssi() if self.ble else None
+        self.reboot_reason = "config_save" if self._reboot_waiter is not None else "unexpected"
+        self.reconnect_count += 1
         self.ble_state = "reconnecting"
-        self._emit_task("reconnecting")
+        self._emit_task("reconnecting", reboot_reason=self.reboot_reason)
 
         async with self._reconnect_lock:
             if self._user_disconnect:
@@ -348,6 +422,7 @@ class MeshBridge:
                 elif self.ble.reconnect_attempts >= self.ble.MAX_RECONNECT_ATTEMPTS:
                     self.ble_state = "failed"
                     self.ble_error = f"Reconnection failed after {self.ble.MAX_RECONNECT_ATTEMPTS} attempts — click Retry to try again"
+                    self._record_error(self.ble_error)
                     self._emit_task("failed", message=self.ble_error)
                     self._resolve_reboot_waiter(False)
                     return
