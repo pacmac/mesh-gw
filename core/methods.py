@@ -279,44 +279,50 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
         raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
 
 
-async def _write_and_verify(bridge: MeshBridge, send_fn, timeout: int = 75) -> dict:
-    """Global closed-loop for every config write: send, reboot, wait for reconnect.
-
-    Waits for a FRESH config_complete_id from the device after reconnect.
-    Clears the event before sending so any previous completion doesn't count.
-    Raises RuntimeError on timeout so asyncOp shows an error toast.
-    """
+async def _write_and_verify(bridge: MeshBridge, send_fn) -> dict:
     if bridge.ble_state != "ready":
-        raise RuntimeError(f"Device not connected (ble_state={bridge.ble_state}) — try again when BLE is ready")
+        raise RuntimeError(f"Device not connected (ble_state={bridge.ble_state})")
 
-    # Clear completion state before writing so we wait for a fresh post-reboot sync
+    fence_before = bridge.state.config_complete_fence
     bridge.state.config_complete = False
-    bridge.state.config_complete_event.clear()
+    bridge.state.disconnected_event.clear()
+    bridge.state.reconnected_event.clear()
 
+    # Phase 1 — write (5s): any GATT error surfaces here
     try:
-        await send_fn()
+        await asyncio.wait_for(send_fn(), timeout=5)
+    except asyncio.TimeoutError:
+        raise RuntimeError("Write timed out — BLE too slow, retry when reconnected")
     except Exception as e:
-        raise RuntimeError(f"Config write failed — BLE error. Try saving again once reconnected.")
+        raise RuntimeError(f"Write failed — {e}")
 
     await asyncio.sleep(0.3)
+
+    # Phase 2 — reboot (5s): confirm device disconnected
     try:
         await bridge.send_admin({"reboot_seconds": 2}, want_response=False)
-    except Exception:
-        pass
-
-    logger.info("_write_and_verify: config sent + reboot issued, ble_state=%s", bridge.ble_state)
-
-    # Wait for the device to finish rebooting and complete a fresh config dump.
-    # config_complete_event is set in state.py when config_complete_id is received,
-    # and cleared by bridge.py in _on_disconnected after reconnect succeeds.
-    try:
-        await asyncio.wait_for(bridge.state.config_complete_event.wait(), timeout=timeout)
-        logger.info("_write_and_verify: verified OK, ble_state=%s", bridge.ble_state)
-        return {"verified": True}
+        await asyncio.wait_for(bridge.state.disconnected_event.wait(), timeout=5)
     except asyncio.TimeoutError:
-        logger.warning("_write_and_verify: timed out after %ds, ble_state=%s config_complete=%s",
-                       timeout, bridge.ble_state, bridge.state.config_complete)
-        raise RuntimeError(f"Device did not reconnect within {timeout}s — config may not have applied")
+        raise RuntimeError("Device didn't reboot — config may not have been applied")
+
+    # Phase 3 — reconnect (30s)
+    try:
+        await asyncio.wait_for(bridge.state.reconnected_event.wait(), timeout=30)
+    except asyncio.TimeoutError:
+        raise RuntimeError("Device didn't reconnect within 30s — check device power")
+
+    # Phase 4 — config sync (20s): fence confirms data is post-reboot
+    async def _wait_fence():
+        while bridge.state.config_complete_fence == fence_before:
+            await asyncio.sleep(0.5)
+
+    try:
+        await asyncio.wait_for(_wait_fence(), timeout=20)
+    except asyncio.TimeoutError:
+        raise RuntimeError("Device reconnected but config sync incomplete — try again")
+
+    logger.info("_write_and_verify: verified OK (fence %d→%d)", fence_before, bridge.state.config_complete_fence)
+    return {"verified": True}
 
 
 @method("set_config")

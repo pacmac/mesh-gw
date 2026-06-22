@@ -61,6 +61,14 @@ class MeshState:
         self.mqtt_config_ready = asyncio.Event()   # moduleConfig.mqtt received — broker config available
         self.config_complete_event = asyncio.Event()  # config_complete_id received — full dump done
 
+        # fence counter — incremented on every config_complete_id; lets _write_and_verify
+        # detect a post-reboot dump without the asyncio.Event clear/wait race
+        self.config_complete_fence: int = 0
+
+        # phase events for _write_and_verify — set/cleared by bridge.py
+        self.disconnected_event = asyncio.Event()  # set on BLE drop, cleared before write
+        self.reconnected_event = asyncio.Event()   # set on BLE reconnect (syncing), cleared before write
+
         _cache_cfg = _bcfg.load().get("message_cache", {})
         self._cache_enabled: bool = bool(_cache_cfg.get("enabled", False))
         self._cache_max_age: int = int(_cache_cfg.get("max_age_seconds", 86400))
@@ -150,6 +158,7 @@ class MeshState:
                 self.mqtt_config_ready.set()
         elif which == "config_complete_id":
             self.config_complete = True
+            self.config_complete_fence += 1
             self.config_complete_event.set()
         elif which == "mqttClientProxyMessage":
             msg = fr.mqttClientProxyMessage
