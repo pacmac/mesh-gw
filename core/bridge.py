@@ -57,13 +57,26 @@ class MeshBridge:
             "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
         }
 
+    def _ble_link_fields(self) -> dict:
+        """BlueZ link-layer fields included in every state event — no subprocess calls."""
+        ble_rssi = self.ble.get_rssi() if self.ble else None
+        return {
+            "ble_rssi": ble_rssi,
+            "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
+            "is_found":   self.ble.is_found   if self.ble else False,
+            "is_paired":  self.ble.is_paired  if self.ble else False,
+            "is_trusted": self.ble.is_trusted if self.ble else False,
+            "mtu_size":   self.ble.mtu_size   if self.ble else None,
+        }
+
     async def _emit(self, event_type: str, **data):
-        """Broadcast a typed state-machine event."""
+        """Broadcast a typed state-machine event — always includes BLE link fields."""
         await self.state._broadcast({
             "type": event_type,
             "ts": int(time.time()),
             "ble_state": self.ble_state,
-            **data,
+            **self._ble_link_fields(),
+            **data,  # caller kwargs override link fields if explicitly set
         })
 
     def _emit_task(self, event_type: str, **data):
@@ -75,15 +88,13 @@ class MeshBridge:
 
     def current_snapshot(self) -> dict:
         """Current state — sent to new WS subscribers immediately on connect."""
-        ble_rssi = self.ble.get_rssi() if self.ble else None
         return {
             "type": "snapshot",
             "ts": int(time.time()),
             "ble_state": self.ble_state,
             "ble_address": self.ble_address,
             "ble_error": self.ble_error,
-            "ble_rssi": ble_rssi,
-            "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
+            **self._ble_link_fields(),
             "config_complete": self.state.config_complete,
             "node_count": len(self.state.nodes),
             "my_node_num": self.my_node_num,

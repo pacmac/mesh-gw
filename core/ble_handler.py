@@ -57,6 +57,12 @@ class BLEHandler:
         # so this is the best reading we can get without raw HCI access)
         self.last_scan_rssi: Optional[int] = None
 
+        # BlueZ link-layer state — updated by query_bluez_state() before each connect
+        self.is_found:   bool = False  # device is in BlueZ device cache (recently seen)
+        self.is_paired:  bool = False  # bonded in BlueZ
+        self.is_trusted: bool = False  # trusted in BlueZ (auto-reconnect allowed)
+        self.mtu_size:   Optional[int] = None  # negotiated ATT MTU after connect
+
         # Track initial vs reconnect
         self._initial_connect = True
 
@@ -259,6 +265,19 @@ class BLEHandler:
                 if "Discovering: no" in show:
                     break
 
+    def query_bluez_state(self):
+        """Read is_found/is_paired/is_trusted from bluetoothctl info (cached on self)."""
+        try:
+            out = subprocess.run(
+                ["bluetoothctl", "info", self.ble_address],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            self.is_found   = bool(out) and "not available" not in out.lower()
+            self.is_paired  = "Paired: yes" in out
+            self.is_trusted = "Trusted: yes" in out
+        except Exception:
+            pass
+
     async def connect(self, pin: str = ""):
         """Connect to BLE device.
 
@@ -269,6 +288,9 @@ class BLEHandler:
         """
         logger.info(f"Connecting to BLE device: {self.ble_address}")
         try:
+            # Snapshot BlueZ state before attempting — surfaced in state events
+            self.query_bluez_state()
+
             # Pre-flight: drop any stale BlueZ GATT hold and untrust the device
             # so BlueZ won't auto-reconnect during BleakClient.connect()
             try:
@@ -281,6 +303,8 @@ class BLEHandler:
                 pass
 
             await self._ensure_paired(pin)
+            # Refresh after pairing may have changed state
+            self.query_bluez_state()
 
             logger.info(f"Connecting to {self.ble_address} via bleak (timeout=20s)...")
             self.client = BleakClient(
@@ -321,8 +345,13 @@ class BLEHandler:
 
             self.reconnect_attempts = 0
             self.disconnection_event.clear()
+            self.is_found = True
+            try:
+                self.mtu_size = self.client.mtu_size
+            except Exception:
+                self.mtu_size = None
             await self.stats.on_ble_connected(self.ble_address)
-            logger.info(f"✅ Connected to BLE device: {self.ble_address}")
+            logger.info(f"✅ Connected to BLE device: {self.ble_address} MTU={self.mtu_size}")
 
             if self._initial_connect:
                 self.running = True
