@@ -7,6 +7,7 @@ CORS enabled for all origins.
 """
 import asyncio
 import logging
+import subprocess
 import time
 from contextlib import asynccontextmanager
 
@@ -51,6 +52,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(RuntimeError)
+    async def runtime_error_handler(request, exc):
+        return JSONResponse({"detail": str(exc)}, status_code=500)
 
     # -- helper: resolve node_id to bridge or 404 ----------------------------
 
@@ -275,6 +280,17 @@ def create_app(dm: DeviceManager) -> FastAPI:
                     merged[k] = v
         return {"total": len(merged), "count": len(merged), "nodes": merged}
 
+    def _bluez_status(address: str) -> dict:
+        """Return paired/trusted state from BlueZ for a given address."""
+        try:
+            out = subprocess.run(
+                ["bluetoothctl", "info", address],
+                capture_output=True, text=True, timeout=5,
+            ).stdout
+            return {"paired": "Paired: yes" in out, "trusted": "Trusted: yes" in out}
+        except Exception:
+            return {"paired": False, "trusted": False}
+
     @app.get("/ble/scan")
     async def ble_scan():
         try:
@@ -285,17 +301,33 @@ def create_app(dm: DeviceManager) -> FastAPI:
                 uuids = [str(u).lower() for u in (adv.service_uuids or [])]
                 is_mesh = MESHTASTIC_SVC in uuids or any(
                     k in (dev.name or "").lower() for k in ("meshtastic", "ta2r", "ta2m"))
+                status = _bluez_status(addr)
                 result.append({
                     "name": dev.name or "Unknown",
                     "address": addr,
                     "rssi": adv.rssi if adv.rssi is not None else -100,
                     "meshtastic": is_mesh,
+                    "paired": status["paired"],
+                    "trusted": status["trusted"],
                 })
             result = [r for r in result if r["meshtastic"]]
             result.sort(key=lambda x: -x["rssi"])
             return {"devices": result}
         except Exception as e:
             raise HTTPException(500, f"Scan failed: {e}")
+
+    @app.delete("/ble/known/{address}")
+    async def ble_remove(address: str):
+        """Remove a device from BlueZ bonding database."""
+        address = address.upper()
+        try:
+            subprocess.run(
+                ["bluetoothctl", "remove", address],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as e:
+            raise HTTPException(500, f"Remove failed: {e}")
+        return {"removed": True, "address": address}
 
     # -- BLE pairing for dynamic-PIN devices ------------------------------------
 
