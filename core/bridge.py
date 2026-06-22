@@ -34,7 +34,7 @@ class MeshBridge:
         self.tcp_gateway: TcpGateway | None = TcpGateway(tcp_port, on_to_radio=self._tcp_to_radio) if tcp_port else None
         self._reconnect_lock = asyncio.Lock()
         self._user_disconnect = False
-        self.ble_state: str = "idle"   # idle|connecting|syncing|ready|reconnecting|error
+        self.ble_state: str = "idle"   # idle|connecting|syncing|ready|reconnecting|failed|error
         self.ble_error: str | None = None
         self._mqtt_proxy: MqttProxy | None = None
         self._mqtt_proxy_task: asyncio.Task | None = None
@@ -149,6 +149,8 @@ class MeshBridge:
                 self.state.my_info_ready.clear()
                 self.state.mqtt_config_ready.clear()
                 self.state.config_complete_event.clear()
+                self.state.disconnected_event.clear()
+                self.state.reconnected_event.clear()
                 self._cancel_mqtt_proxy()
                 logger.info(f"Connecting to BLE device: {address}")
                 for attempt in range(1, 4):
@@ -208,6 +210,8 @@ class MeshBridge:
         self.state.my_info_ready.clear()
         self.state.mqtt_config_ready.clear()
         self.state.config_complete_event.clear()
+        self.state.disconnected_event.clear()
+        self.state.reconnected_event.clear()
         self._cancel_mqtt_proxy()
 
     async def _on_packet(self, data: bytes):
@@ -244,27 +248,32 @@ class MeshBridge:
         if self._reconnect_lock.locked():
             logger.debug("Reconnect already in progress, skipping duplicate _on_disconnected")
             return
+
+        self.state.disconnected_event.set()
         self.ble_state = "reconnecting"
         self._emit_task("reconnecting")
+
         async with self._reconnect_lock:
             if self._user_disconnect:
                 return
             while not self._user_disconnect:
-                # Reset counter when backoff ceiling is reached so we keep retrying at max delay
-                if self.ble.reconnect_attempts >= self.ble.MAX_RECONNECT_ATTEMPTS:
-                    logger.info("Reconnect cycle exhausted, resetting and continuing at max interval")
-                    self.ble.reconnect_attempts = 0
                 if await self.ble.attempt_reconnection():
                     logger.info("Reconnected, re-requesting config")
                     self.ble_state = "syncing"
+                    self.state.reconnected_event.set()
                     self._emit_task("syncing")
                     self.state.config_complete = False
+                    self.state.config_complete_event.clear()
                     self.state.my_info_ready.clear()
                     self.state.mqtt_config_ready.clear()
-                    self.state.config_complete_event.clear()
                     self._cancel_mqtt_proxy()
                     asyncio.create_task(self._safe_request_config())
                     self._mqtt_proxy_task = asyncio.create_task(self._start_mqtt_proxy())
+                    return
+                else:
+                    self.ble_state = "failed"
+                    self.ble_error = f"Reconnection failed after {self.ble.MAX_RECONNECT_ATTEMPTS} attempts — click Retry to try again"
+                    self._emit_task("failed", message=self.ble_error)
                     return
             logger.info("Reconnection stopped — user disconnect")
 
