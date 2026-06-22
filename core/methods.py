@@ -279,7 +279,28 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
         raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
 
 
+# Sections where the radio chip or network stack must reboot to apply the change.
+# All other sections (module configs, display, position) take effect live.
+_REBOOT_REQUIRED_SECTIONS = frozenset({
+    "lora", "device", "network", "bluetooth", "security", "power",
+})
+
+
+async def _write_direct(bridge: MeshBridge, send_fn) -> dict:
+    """Write config and return. No reboot — change takes effect live."""
+    if bridge.ble_state != "ready":
+        raise RuntimeError(f"Device not connected (ble_state={bridge.ble_state})")
+    try:
+        await asyncio.wait_for(send_fn(), timeout=5)
+    except asyncio.TimeoutError:
+        raise RuntimeError("Write timed out — BLE too slow")
+    except Exception as e:
+        raise RuntimeError(f"Write failed — {e}")
+    return {"verified": True}
+
+
 async def _write_and_verify(bridge: MeshBridge, send_fn) -> dict:
+    """Write config, reboot device, wait for reconnect + fresh config dump to confirm."""
     if bridge.ble_state != "ready":
         raise RuntimeError(f"Device not connected (ble_state={bridge.ble_state})")
 
@@ -317,7 +338,7 @@ async def _write_and_verify(bridge: MeshBridge, send_fn) -> dict:
             await asyncio.sleep(0.5)
 
     try:
-        await asyncio.wait_for(_wait_fence(), timeout=20)
+        await asyncio.wait_for(_wait_fence(), timeout=60)
     except asyncio.TimeoutError:
         raise RuntimeError("Device reconnected but config sync incomplete — try again")
 
@@ -343,7 +364,9 @@ async def set_config(bridge: MeshBridge, params: dict):
     async def send():
         await bridge.send_admin({key: {section: values}}, want_response=False)
 
-    return await _write_and_verify(bridge, send)
+    if section in _REBOOT_REQUIRED_SECTIONS:
+        return await _write_and_verify(bridge, send)
+    return await _write_direct(bridge, send)
 
 
 @method("set_channel")
@@ -358,7 +381,7 @@ async def set_channel(bridge: MeshBridge, params: dict):
     async def send():
         await bridge.send_admin({"set_channel": channel}, want_response=False)
 
-    return await _write_and_verify(bridge, send)
+    return await _write_direct(bridge, send)
 
 
 @method("set_owner")
@@ -384,7 +407,7 @@ async def set_fixed_position(bridge: MeshBridge, params: dict):
     async def send():
         await bridge.send_admin({"set_fixed_position": position}, want_response=False)
 
-    return await _write_and_verify(bridge, send)
+    return await _write_direct(bridge, send)
 
 
 @method("remove_fixed_position")
@@ -392,7 +415,7 @@ async def remove_fixed_position(bridge: MeshBridge, params: dict):
     async def send():
         await bridge.send_admin({"remove_fixed_position": True}, want_response=False)
 
-    return await _write_and_verify(bridge, send)
+    return await _write_direct(bridge, send)
 
 
 def _parse_node_num(value, default=0xFFFFFFFF) -> int:

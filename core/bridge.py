@@ -270,11 +270,12 @@ class MeshBridge:
                     asyncio.create_task(self._safe_request_config())
                     self._mqtt_proxy_task = asyncio.create_task(self._start_mqtt_proxy())
                     return
-                else:
+                elif self.ble.reconnect_attempts >= self.ble.MAX_RECONNECT_ATTEMPTS:
                     self.ble_state = "failed"
                     self.ble_error = f"Reconnection failed after {self.ble.MAX_RECONNECT_ATTEMPTS} attempts — click Retry to try again"
                     self._emit_task("failed", message=self.ble_error)
                     return
+                # individual attempt failed, counter < MAX — while loop continues
             logger.info("Reconnection stopped — user disconnect")
 
     async def _request_config(self):

@@ -37,10 +37,8 @@ class BLEHandler:
 
         # Reconnection state
         self.reconnect_attempts = 0
-        self.is_reconnecting = False
         self.services_ready = False  # True only after service discovery completes
         self.disconnection_event = asyncio.Event()
-        self.reconnect_lock = asyncio.Lock()  # Prevent concurrent reconnection
 
         # Callbacks
         self.on_packet_received: Optional[Callable] = None
@@ -63,44 +61,31 @@ class BLEHandler:
         self._initial_connect = True
 
     async def _ensure_paired(self, pin: str = ""):
-        """Check BlueZ pairing/trust state and pair if needed."""
+        """Pair if needed, then untrust so BlueZ won't auto-reconnect before bleak gets GATT."""
         pin = pin or DEFAULT_BLE_PIN
         try:
-            info = subprocess.run(
+            out = subprocess.run(
                 ["bluetoothctl", "info", self.ble_address],
                 capture_output=True, text=True, timeout=5,
-            )
-            out = info.stdout
-            paired  = "Paired: yes"  in out
-            trusted = "Trusted: yes" in out
-
-            if paired and trusted:
-                logger.debug(f"Device {self.ble_address} already paired and trusted")
-                return
+            ).stdout
+            paired = "Paired: yes" in out
 
             if not paired:
                 await self._discover_device()
                 logger.info(f"Pairing {self.ble_address} (PIN {pin})…")
                 await self._bluetoothctl_pair(pin)
-
-            # Trust so BlueZ allows reconnects without prompting
-            logger.info(f"Trusting device {self.ble_address}…")
-            subprocess.run(
-                ["bluetoothctl", "trust", self.ble_address],
-                capture_output=True, timeout=5,
-            )
-
-            if not paired:
-                # bluetoothctl keeps the GATT connection from the pairing
-                # process open, so the device stops advertising and bleak's
-                # scan-based connect() can't find it. Drop that connection so
-                # the device starts advertising again.
-                logger.debug(f"Releasing bluetoothctl connection to {self.ble_address}…")
+                # Drop bluetoothctl's GATT hold so device re-advertises for bleak
                 subprocess.run(
                     ["bluetoothctl", "disconnect", self.ble_address],
                     capture_output=True, timeout=5,
                 )
                 await asyncio.sleep(1)
+
+            # Always untrust — BlueZ must not auto-reconnect before bleak gets GATT
+            subprocess.run(
+                ["bluetoothctl", "untrust", self.ble_address],
+                capture_output=True, timeout=5,
+            )
         except FileNotFoundError:
             logger.warning("bluetoothctl not found — skipping pairing check")
         except RuntimeError:
@@ -275,74 +260,44 @@ class BLEHandler:
                     break
 
     async def connect(self, pin: str = ""):
-        """Connect to BLE device"""
+        """Connect to BLE device.
+
+        Pre-flight disconnect + untrust prevents BlueZ from auto-reconnecting
+        before bleak can acquire the GATT connection — the root cause of
+        "failed to discover services" on every second connect attempt.
+        No BleakScanner.discover() calls here; they trigger the same race.
+        """
         logger.info(f"Connecting to BLE device: {self.ble_address}")
-
         try:
-            # Pre-flight: clear any stale BlueZ GATT connection from a previous
-            # session that didn't clean up (crash, OOM kill, etc.)
+            # Pre-flight: drop any stale BlueZ GATT hold and untrust the device
+            # so BlueZ won't auto-reconnect during BleakClient.connect()
             try:
-                subprocess.run(
-                    ["bluetoothctl", "disconnect", self.ble_address],
-                    capture_output=True, timeout=5,
-                )
+                subprocess.run(["bluetoothctl", "disconnect", self.ble_address],
+                               capture_output=True, timeout=5)
+                subprocess.run(["bluetoothctl", "untrust", self.ble_address],
+                               capture_output=True, timeout=5)
                 await asyncio.sleep(1)
-            except Exception:
-                pass
-
-            # Capture advertising RSSI before pairing/connecting — device stops
-            # advertising once connected, so this is the only opportunity.
-            try:
-                found = await BleakScanner.discover(timeout=3.0, return_adv=True)
-                for addr, (_, adv) in found.items():
-                    if addr.upper() == self.ble_address.upper() and adv.rssi is not None:
-                        self.last_scan_rssi = adv.rssi
-                        logger.debug("Pre-connect RSSI for %s: %d dBm", self.ble_address, adv.rssi)
-                        break
             except Exception:
                 pass
 
             await self._ensure_paired(pin)
 
-            # On reconnect after drop: scan to confirm device is back before connecting
-            if not self._initial_connect:
-                logger.info("Reconnect: scanning for device (10s)...")
-                try:
-                    devices = await BleakScanner.discover(timeout=10.0, return_adv=True)
-                    if not any(a.upper() == self.ble_address.upper() for a in devices):
-                        raise RuntimeError("Device not found in scan — may still be rebooting")
-                    logger.info("Device found in reconnect scan")
-                except RuntimeError:
-                    raise
-                except Exception as e:
-                    logger.warning(f"Reconnect scan error: {e}")
-
-            # Connect directly by address. BlueZ knows the device from the dashboard
-            # /ble/scan that the user ran just before clicking Connect.
-            logger.info(f"Connecting to {self.ble_address} (timeout=20s)...")
+            logger.info(f"Connecting to {self.ble_address} via bleak (timeout=20s)...")
             self.client = BleakClient(
                 self.ble_address, timeout=20.0,
                 disconnected_callback=self._on_ble_disconnect,
             )
             try:
-                timeout = None if self._initial_connect else 15.0
-                if timeout:
-                    await asyncio.wait_for(self.client.connect(), timeout=timeout)
-                else:
-                    await self.client.connect()
+                await self.client.connect()
             except asyncio.TimeoutError:
                 raise RuntimeError("Connection timeout — device may still be rebooting")
 
             if not self.client.is_connected:
                 raise RuntimeError("Failed to establish BLE connection")
 
-            # Wait for service discovery
-            logger.debug("Waiting for service discovery...")
-            # Use shorter timeout during reconnection to fail fast
-            max_wait = 10 if not self._initial_connect else 20
-            wait_interval = 0.5
-            waited = 0
-
+            # Wait for service discovery (shorter on reconnect to fail fast)
+            max_wait = 20 if self._initial_connect else 10
+            waited = 0.0
             while waited < max_wait:
                 try:
                     services = self.client.services
@@ -350,38 +305,28 @@ class BLEHandler:
                         str(s.uuid).lower() == MESHTASTIC_SERVICE_UUID.lower()
                         for s in services
                     ):
-                        logger.debug(f"Service discovery complete ({waited:.1f}s)")
                         self.services_ready = True
+                        logger.debug(f"Service discovery complete ({waited:.1f}s)")
                         break
                 except Exception:
                     pass
-
-                await asyncio.sleep(wait_interval)
-                waited += wait_interval
+                await asyncio.sleep(0.5)
+                waited += 0.5
             else:
-                error_msg = f"Service discovery timed out after {max_wait}s"
-                logger.warning(f"⚠️  {error_msg}")
                 self.services_ready = False
-                # During reconnection, fail fast so next attempt can try
+                error_msg = f"Service discovery timed out after {max_wait}s"
                 if not self._initial_connect:
                     raise RuntimeError(error_msg)
+                logger.warning(f"⚠️  {error_msg}")
 
-            # Reset reconnection state
             self.reconnect_attempts = 0
-            self.is_reconnecting = False
             self.disconnection_event.clear()
-
-            # Update stats
             await self.stats.on_ble_connected(self.ble_address)
-
             logger.info(f"✅ Connected to BLE device: {self.ble_address}")
 
-            # Start polling task ONLY on initial connect, not on reconnect
-            # (reconnect happens within the existing polling loop)
             if self._initial_connect:
                 self.running = True
                 self.poll_task = asyncio.create_task(self._poll_from_radio())
-                logger.debug(f"✅ Started polling FromRadio characteristic")
                 self._initial_connect = False
 
         except Exception as e:
@@ -507,95 +452,52 @@ class BLEHandler:
         logger.debug("Polling loop ended")
 
     async def attempt_reconnection(self) -> bool:
+        """Single reconnection attempt with exponential backoff delay.
+
+        Returns True on success, False on failure (individual or max exceeded).
+        Caller checks reconnect_attempts vs MAX_RECONNECT_ATTEMPTS to distinguish
+        "keep trying" from "give up."
         """
-        Attempt to reconnect with exponential backoff.
-
-        Returns:
-            True if reconnected successfully, False if max attempts exceeded
-        """
-        # Quick check before acquiring lock to prevent redundant attempts
-        if self.is_reconnecting:
-            logger.debug("⏸️  Reconnection already in progress, waiting for it to complete...")
-            # Wait for the other reconnection to finish
-            # Max 600s to allow for all 10 reconnection attempts with exponential backoff
-            max_wait = 600
-            waited = 0
-            while self.is_reconnecting and waited < max_wait:
-                await asyncio.sleep(0.5)
-                waited += 0.5
-
-            if self.is_reconnecting:
-                logger.warning(f"⚠️  Reconnection still in progress after {max_wait}s")
-                return False
-
-            # Reconnection finished, check result
-            result = self.client and self.client.is_connected
-            logger.debug(f"✅ Waited for reconnection to complete: {'success' if result else 'failed'}")
-            return result
-
-        async with self.reconnect_lock:
-            # Check again after acquiring lock
-            if self.is_reconnecting:
-                logger.debug("⏸️  Reconnection already in progress (after lock)")
-                return self.client and self.client.is_connected
-
-            if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
-                logger.error(
-                    f"💀 Maximum reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) "
-                    f"exceeded. Giving up."
-                )
-                return False
-
-            self.is_reconnecting = True
-            self.reconnect_attempts += 1
-
-            # Calculate delay with exponential backoff
-            delay = min(
-                self.INITIAL_RECONNECT_DELAY * (
-                    self.RECONNECT_BACKOFF_FACTOR ** (self.reconnect_attempts - 1)
-                ),
-                self.MAX_RECONNECT_DELAY
+        if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
+            logger.error(
+                f"Maximum reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) exceeded."
             )
+            return False
 
-            logger.info(
-                f"🔄 Reconnection attempt {self.reconnect_attempts}/"
-                f"{self.MAX_RECONNECT_ATTEMPTS} in {delay:.1f}s..."
-            )
+        self.reconnect_attempts += 1
+        delay = min(
+            self.INITIAL_RECONNECT_DELAY * (
+                self.RECONNECT_BACKOFF_FACTOR ** (self.reconnect_attempts - 1)
+            ),
+            self.MAX_RECONNECT_DELAY,
+        )
+        logger.info(
+            "Reconnect attempt %d/%d in %.1fs...",
+            self.reconnect_attempts, self.MAX_RECONNECT_ATTEMPTS, delay,
+        )
+        await self.stats.on_reconnect_attempt()
+        await asyncio.sleep(delay)
 
-            await self.stats.on_reconnect_attempt()
-            await asyncio.sleep(delay)
-
+        if self.client:
             try:
-                # Fully clean up old client before creating new one
-                if self.client:
-                    logger.debug("Cleaning up old BLE client...")
-                    try:
-                        if self.client.is_connected:
-                            await self.client.disconnect()
-                            logger.debug("Disconnected old client")
-                    except Exception as e:
-                        logger.debug(f"Error disconnecting old client: {e}")
-
-                    # Release the old client object
-                    self.client = None
-
-                    # Give Windows time to release BLE resources
-                    await asyncio.sleep(1.0)
-                    logger.debug("Released old client resources")
-
-                # Reconnect with fresh client
-                await self.connect()
-
-                logger.info("✅ Reconnection successful")
-                await self.stats.on_reconnect_success()
-                self.reconnect_attempts = 0
-                self.is_reconnecting = False
-                return True
-
+                if self.client.is_connected:
+                    await self.client.disconnect()
             except Exception as e:
-                logger.error(f"❌ Reconnection attempt failed: {e}")
-                self.is_reconnecting = False
-                return False
+                logger.debug(f"Error cleaning up old client: {e}")
+            self.client = None
+            await asyncio.sleep(1.0)
+
+        try:
+            await self.connect()
+            await self.stats.on_reconnect_success()
+            self.reconnect_attempts = 0
+            return True
+        except Exception as e:
+            logger.warning(
+                "Reconnect attempt %d/%d failed: %s",
+                self.reconnect_attempts, self.MAX_RECONNECT_ATTEMPTS, e,
+            )
+            return False
 
     async def send(self, packet_bytes: bytes):
         """
@@ -611,12 +513,6 @@ class BLEHandler:
             logger.warning("⚠️  Cannot send to BLE - not connected")
             raise RuntimeError("BLE client not connected")
 
-        # Don't send during reconnection - characteristics may not be ready
-        if self.is_reconnecting:
-            logger.debug("⏸️  Skipping send during reconnection")
-            raise RuntimeError("BLE client reconnecting, please retry")
-
-        # Don't send if services aren't ready (after connect but before service discovery)
         if not self.services_ready:
             logger.debug("⏸️  Skipping send - BLE services not ready")
             raise RuntimeError("BLE services not ready, please retry")
@@ -683,7 +579,6 @@ class BLEHandler:
         # Reset state for next connection
         self._initial_connect = True
         self.reconnect_attempts = 0
-        self.is_reconnecting = False
         self.services_ready = False
 
     def get_rssi(self) -> int | None:
