@@ -291,6 +291,10 @@ class MeshBridge:
                 mqtt_proxy=self._mqtt_proxy is not None and not self._mqtt_proxy._stopped,
                 has_my_info=bool(self.state.my_info),
                 has_mqtt_config=self.state.mqtt_config_ready.is_set(),
+                my_info=self.state.my_info,
+                metadata=self.state.metadata,
+                config=self.state.config,
+                module_config=self.state.module_config,
             )
 
     async def _tcp_to_radio(self, payload: bytes):
