@@ -298,10 +298,10 @@ async def _write_and_verify(bridge: MeshBridge, send_fn) -> dict:
 
     await asyncio.sleep(0.3)
 
-    # Phase 2 — reboot (5s): confirm device disconnected
+    # Phase 2 — reboot (15s): confirm device disconnected
     try:
         await bridge.send_admin({"reboot_seconds": 2}, want_response=False)
-        await asyncio.wait_for(bridge.state.disconnected_event.wait(), timeout=5)
+        await asyncio.wait_for(bridge.state.disconnected_event.wait(), timeout=15)
     except asyncio.TimeoutError:
         raise RuntimeError("Device didn't reboot — config may not have been applied")
 
