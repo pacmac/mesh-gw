@@ -137,6 +137,16 @@ def create_app(dm: DeviceManager) -> FastAPI:
         asyncio.create_task(dm.disconnect(node_id))
         return {"disconnecting": True, "node_id": node_id}
 
+    @app.post("/devices/{node_id}/retry")
+    async def retry_device(node_id: str):
+        """Reset reconnect backoff and trigger an immediate reconnect attempt."""
+        bridge = _bridge(node_id)
+        if bridge.ble:
+            bridge.ble.reconnect_attempts = 0
+        if bridge.ble_state not in ("reconnecting",):
+            asyncio.create_task(bridge._on_disconnected())
+        return {"retrying": True, "node_id": node_id}
+
     @app.post("/ota")
     async def ota_update(body: dict = Body(...)):
         """Trigger a BLE OTA firmware update.

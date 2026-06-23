@@ -492,17 +492,12 @@ class BLEHandler:
     async def attempt_reconnection(self) -> bool:
         """Single reconnection attempt with exponential backoff delay.
 
-        Returns True on success, False on failure (individual or max exceeded).
-        Caller checks reconnect_attempts vs MAX_RECONNECT_ATTEMPTS to distinguish
-        "keep trying" from "give up."
+        Retries indefinitely — counter is capped at MAX_RECONNECT_ATTEMPTS so
+        the delay stays at MAX_RECONNECT_DELAY rather than growing forever.
+        Returns True on success, False on this attempt failing (keep trying).
         """
-        if self.reconnect_attempts >= self.MAX_RECONNECT_ATTEMPTS:
-            logger.error(
-                f"Maximum reconnection attempts ({self.MAX_RECONNECT_ATTEMPTS}) exceeded."
-            )
-            return False
-
-        self.reconnect_attempts += 1
+        # Cap counter so delay stays at MAX_RECONNECT_DELAY once reached
+        self.reconnect_attempts = min(self.reconnect_attempts + 1, self.MAX_RECONNECT_ATTEMPTS)
         delay = min(
             self.INITIAL_RECONNECT_DELAY * (
                 self.RECONNECT_BACKOFF_FACTOR ** (self.reconnect_attempts - 1)
@@ -510,8 +505,8 @@ class BLEHandler:
             self.MAX_RECONNECT_DELAY,
         )
         logger.info(
-            "Reconnect attempt %d/%d in %.1fs...",
-            self.reconnect_attempts, self.MAX_RECONNECT_ATTEMPTS, delay,
+            "Reconnect attempt %d (delay %.1fs)...",
+            self.reconnect_attempts, delay,
         )
         await self.stats.on_reconnect_attempt()
         await asyncio.sleep(delay)

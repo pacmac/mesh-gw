@@ -240,7 +240,7 @@ class DeviceManager:
                         logger.info("Bridge aliased: %s -> %s", temp_key, node_id)
                 await self._broadcast({**event, "device": node_id})
         except asyncio.CancelledError:
-            pass
+            await self._broadcast({"type": "device_removed", "device": node_id})
         except Exception as e:
             logger.error("Watcher for %s crashed: %s", node_id, e)
         finally:
