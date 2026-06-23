@@ -22,7 +22,7 @@ from core.bridge_config import update_ble_device
 from core.claude_daemon import run as _claude_daemon_run
 from core.methods import METHODS, get_nodes
 from core.mcp_server import mount_mcp
-from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS
+from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, REBOOT_SECTIONS, SECTION_META
 from core.schema import get_section_schema, get_channel_schema, get_owner_schema, get_fixed_position_schema
 from .device_manager import DeviceManager
 from .help import HELP_TEXT
@@ -370,6 +370,13 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def ws_all(websocket: WebSocket):
         device_filter = websocket.query_params.get("device", "")
         await websocket.accept()
+        # Push current snapshot for every active device — no HTTP needed by subscribers
+        for node_id, bridge in dm._devices.items():
+            if device_filter and node_id != device_filter:
+                continue
+            snapshot = bridge.current_snapshot()
+            snapshot["device"] = node_id
+            await websocket.send_json(snapshot)
         for bridge in dm._devices.values():
             for event in bridge.state.get_cached_messages():
                 if device_filter and event.get("device") != device_filter:
@@ -391,7 +398,11 @@ def create_app(dm: DeviceManager) -> FastAPI:
     # routes to avoid /{node_id}/range_test shadowing /schema/range_test etc.
     @app.get("/sections")
     async def get_sections():
-        return {"config": list(CONFIG_SECTIONS), "module_config": list(MODULE_CONFIG_SECTIONS)}
+        return {
+            "config": list(CONFIG_SECTIONS),
+            "module_config": list(MODULE_CONFIG_SECTIONS),
+            "meta": SECTION_META,
+        }
 
     @app.get("/schema/channel")
     async def schema_channel():

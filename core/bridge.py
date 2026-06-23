@@ -151,6 +151,10 @@ class MeshBridge:
 
     def current_snapshot(self) -> dict:
         """Current state — sent to new WS subscribers immediately on connect."""
+        local = self.state.nodes.get(str(self.my_node_num), {}).get("user", {}) if self.my_node_num else {}
+        hw_model = self.state.metadata.get("hw_model") or None
+        from .ota_esp32 import is_nrf52
+        gw = self.tcp_gateway
         return {
             "type": "snapshot",
             "ts": int(time.time()),
@@ -167,6 +171,14 @@ class MeshBridge:
             "last_rx_rssi": self.state.last_rx_rssi,
             "has_my_info": bool(self.state.my_info),
             "has_mqtt_config": self.state.mqtt_config_ready.is_set(),
+            # Device identity — so subscribers never need HTTP /devices
+            "short_name": local.get("short_name", ""),
+            "long_name": local.get("long_name", ""),
+            "hw_model": hw_model,
+            "firmware_version": self.state.metadata.get("firmware_version") or None,
+            "ota_protocol": "nrf52-dfu" if is_nrf52(hw_model or "") else "esp32-unified-ota",
+            "tcp_port": gw.port if gw else None,
+            "tcp_clients": gw.client_count if gw else 0,
         }
 
     async def start(self):

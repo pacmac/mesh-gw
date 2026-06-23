@@ -167,15 +167,33 @@ class MeshState:
             logger.info(f"mqttClientProxyMessage: topic={msg.topic} len={len(payload)} type={payload_type} retained={msg.retained}")
             if self.on_mqtt_proxy_message:
                 self.on_mqtt_proxy_message(msg.topic, payload, msg.retained)
-            if msg.data and logger.isEnabledFor(logging.DEBUG):
+            if msg.data:
                 try:
                     from meshtastic import mqtt_pb2
                     env = mqtt_pb2.ServiceEnvelope()
                     env.ParseFromString(msg.data)
-                    env_dict = _to_dict(env)
-                    pkt = env_dict.get('packet', {})
-                    logger.debug(f"  ServiceEnvelope: channel={env_dict.get('channel_id')} gateway={env_dict.get('gateway_id')}")
-                    logger.debug(f"  packet: from={pkt.get('from')} to={pkt.get('to')} portnum={pkt.get('decoded',{}).get('portnum')} hop_limit={pkt.get('hop_limit')} via_mqtt={pkt.get('via_mqtt')} keys={list(pkt.keys())}")
+                    pkt = env.packet
+                    logger.debug(f"  ServiceEnvelope: channel={env.channel_id} gateway={env.gateway_id} portnum={pkt.decoded.portnum}")
+                    if pkt.decoded.portnum == portnums_pb2.PortNum.RANGE_TEST_APP:
+                        pkt_from = getattr(pkt, "from")
+                        try:
+                            seq_text = pkt.decoded.payload.decode("utf-8", errors="replace")
+                        except Exception:
+                            seq_text = ""
+                        entry = {
+                            "ts":       int(time.time()),
+                            "from_num": pkt_from,
+                            "rssi":     pkt.rx_rssi if pkt.rx_rssi else None,
+                            "snr":      round(pkt.rx_snr, 1) if pkt.rx_snr else None,
+                            "hops":     max(0, pkt.hop_start - pkt.hop_limit) if pkt.hop_start else 0,
+                            "seq":      seq_text or None,
+                            "via_mqtt": True,
+                        }
+                        self.range_test_log.append(entry)
+                        if len(self.range_test_log) > 500:
+                            self.range_test_log = self.range_test_log[-500:]
+                        await self._broadcast({"type": "range_test_entry", "data": entry})
+                        logger.info(f"range_test_entry (MQTT proxy): from=!{pkt_from:x} seq={seq_text}")
                 except Exception as e:
                     logger.debug(f"  (ServiceEnvelope decode failed: {e})")
         suppress_broadcast = False
@@ -261,6 +279,8 @@ class MeshState:
 
         pkt_from = getattr(pkt, "from")
         logger.debug(f"PKT portnum={pkt.decoded.portnum} from={hex(pkt_from & 0xffffffff)} hop_start={pkt.hop_start} hop_limit={pkt.hop_limit} payload_len={len(pkt.decoded.payload)}")
+        if pkt.decoded.portnum == portnums_pb2.PortNum.RANGE_TEST_APP:
+            logger.info(f"RANGE_TEST_APP: device={self.device_id} from=!{pkt_from:x} rssi={pkt.rx_rssi} snr={pkt.rx_snr}")
         node = self.nodes.setdefault(str(pkt_from), {"num": pkt_from})
 
         if pkt.decoded.portnum == portnums_pb2.PortNum.POSITION_APP:

@@ -9,7 +9,7 @@ import logging
 from fastapi import HTTPException
 
 from .bridge import MeshBridge
-from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, config_kind
+from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, REBOOT_SECTIONS, SECTION_META, config_kind
 
 logger = logging.getLogger(__name__)
 
@@ -168,40 +168,33 @@ async def get_config(bridge: MeshBridge, params: dict):
 
 @method("get_status")
 async def get_status(bridge: MeshBridge, params: dict):
-    state = bridge.state
-    ble_connected = bool(bridge.ble and bridge.ble.client and bridge.ble.client.is_connected)
-    return {
-        "ble_connected": ble_connected,
-        "ble_address": bridge.ble_address,
-        "ble_state": bridge.ble_state,
-        "ble_error": bridge.ble_error,
-        "ble_rssi": (ble_rssi := bridge.ble.get_rssi() if bridge.ble else None),
-        "ble_rssi_pct": max(0, min(100, round((ble_rssi + 100) / 60 * 100))) if ble_rssi is not None else None,
-        "config_complete": state.config_complete,
-        "node_count": len(state.nodes),
-        "my_node_num": bridge.my_node_num,
-        "has_my_info": bool(state.my_info),
-        "has_mqtt_config": state.mqtt_config_ready.is_set(),
-        "last_rx_snr": state.last_rx_snr,
-        "last_rx_rssi": state.last_rx_rssi,
-        "mqtt_proxy_connected": bridge._mqtt_proxy is not None and not bridge._mqtt_proxy._stopped,
-        "ready": bridge.ble_state == "ready" and state.config_complete,
-    }
+    snap = bridge.current_snapshot()
+    snap.pop("type", None)
+    snap.pop("ts", None)
+    return snap
 
 
 # -- live admin reads (round-trip to the radio) ------------------------------
 
 @method("get_config_live")
 async def get_config_live(bridge: MeshBridge, params: dict):
-    """Live admin fetch of a config or module_config section by name,
-    e.g. params={"section": "lora"} or {"section": "mqtt"}."""
+    """Live admin fetch of a config or module_config section by name.
+
+    __ metadata is merged from SECTION_META (sections.py) — the SSOT.
+    Never add __ field logic here; edit sections.py instead.
+    """
     section = params["section"]
     kind = config_kind(section)
     if kind == "config":
         resp = await bridge.send_admin({"get_config_request": CONFIG_SECTIONS[section]})
-        return resp.get("get_config_response", {})
-    resp = await bridge.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS[section]})
-    return resp.get("get_module_config_response", {})
+        data = resp.get("get_config_response", {})
+    else:
+        resp = await bridge.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS[section]})
+        data = resp.get("get_module_config_response", {})
+    inner = data.get(section, {})
+    if isinstance(inner, dict):
+        data = {**data, section: {**inner, **SECTION_META.get(section, {})}}
+    return data
 
 
 @method("get_channel_live")
@@ -213,7 +206,8 @@ async def get_channel_live(bridge: MeshBridge, params: dict):
 @method("get_owner_live")
 async def get_owner_live(bridge: MeshBridge, params: dict):
     resp = await bridge.send_admin({"get_owner_request": True})
-    return resp.get("get_owner_response", {})
+    data = resp.get("get_owner_response", {})
+    return {**data, **SECTION_META.get("owner", {})}
 
 
 # -- writes -------------------------------------------------------------------
@@ -222,9 +216,7 @@ async def get_owner_live(bridge: MeshBridge, params: dict):
 # the device applies them but never sends a reply, so we'd otherwise
 # always time out waiting for one.
 
-_FORCED_VALUES: dict[str, dict] = {
-    "range_test": {"enabled": True},
-}
+_FORCED_VALUES: dict[str, dict] = {}
 
 
 _PASSWORD_FIELDS: dict[str, set[str]] = {
@@ -279,13 +271,6 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
         raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
 
 
-# Sections where the radio chip or network stack must reboot to apply the change.
-# All other sections (module configs, display, position) take effect live.
-_REBOOT_REQUIRED_SECTIONS = frozenset({
-    "lora", "device", "network", "bluetooth", "security", "power",
-})
-
-
 async def _write_direct(bridge: MeshBridge, send_fn) -> dict:
     """Write config and return. No reboot — change takes effect live."""
     if bridge.ble_state != "ready":
@@ -301,9 +286,14 @@ async def _write_direct(bridge: MeshBridge, send_fn) -> dict:
 
 @method("set_config")
 async def set_config(bridge: MeshBridge, params: dict):
-    """params: {"section": "lora", "values": {...}}"""
+    """params: {"section": "lora", "values": {...}}
+
+    __ prefixed keys (e.g. __reboot) are metadata injected by get_config_live
+    for UI/pipeline use. Strip them here so they are never sent to the radio.
+    """
     section = params["section"]
-    submitted = params["values"]
+    # Strip __ metadata fields — they are UI hints, not radio config.
+    submitted = {k: v for k, v in params["values"].items() if not k.startswith("__")}
     kind = config_kind(section)
     _validate_config_keys(bridge, section, submitted)
     cached = (bridge.state.module_config if kind == "module_config" else bridge.state.config).get(section, {})
@@ -317,7 +307,7 @@ async def set_config(bridge: MeshBridge, params: dict):
     async def send():
         await bridge.send_admin({key: {section: values}}, want_response=False)
 
-    if section in _REBOOT_REQUIRED_SECTIONS:
+    if section in REBOOT_SECTIONS:
         return await bridge.write_and_reboot(send)
     return await _write_direct(bridge, send)
 
@@ -337,11 +327,34 @@ async def set_channel(bridge: MeshBridge, params: dict):
     return await _write_direct(bridge, send)
 
 
+_OWNER_FIELDS = {"long_name", "short_name", "is_licensed", "role", "is_unmessagable"}
+
 @method("set_owner")
 async def set_owner(bridge: MeshBridge, params: dict):
-    """params: {long_name?, short_name?, is_licensed?}. No reboot needed."""
-    owner = {k: v for k, v in params.items() if k in ("long_name", "short_name", "is_licensed")}
-    await bridge.send_admin({"set_owner": owner}, want_response=False)
+    """params: {long_name?, short_name?, is_licensed?, role?, is_unmessagable?}
+
+    role lives in DeviceConfig (not User) — route it through set_config("device")
+    so it actually persists across reboots. Other owner fields go via setOwner.
+    __ metadata keys are ignored.
+    """
+    owner = {k: v for k, v in params.items() if k in _OWNER_FIELDS}
+    role = owner.pop("role", None)
+
+    # Write non-role owner fields first if any
+    result = {"verified": True}
+    if owner:
+        async def send_owner():
+            await bridge.send_admin({"set_owner": owner}, want_response=False)
+        result = await _write_direct(bridge, send_owner)
+
+    if role is not None:
+        device_cfg = bridge.state.config.get("device", {})
+        if not device_cfg:
+            raise RuntimeError("Device config not synced — cannot safely update role")
+        return await set_config(bridge, {"section": "device", "values": {**device_cfg, "role": role}})
+
+    return result
+
     return {"verified": True}
 
 
