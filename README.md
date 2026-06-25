@@ -79,18 +79,20 @@ It does **not** contain: dashboard UI, rotator logic, radar, node history, or an
 
 | Endpoint | Description |
 |---|---|
-| `POST /ota` | Trigger BLE OTA firmware update for an nRF52 device |
+| `POST /ota` | Trigger BLE OTA firmware update (nRF52 or ESP32) |
 
-Body: `{ "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "/path/to/firmware.zip", "node_id": "!aabbccdd" }`
+Body: `{ "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "/path/to/firmware", "node_id": "!aabbccdd" }`
 
 - `ble_addr` and `firmware` are required; `node_id` is optional (used only to label WS events)
-- Returns `{"started": true}` immediately — the update runs as a background task
+- Returns `{"started": true, "protocol": "<protocol>"}` immediately — the update runs as a background task
 - Does **not** require the bridge to already be connected to the target device over BLE; it opens its own direct BLE connection for DFU
-- Implemented via [recrof/nrf_dfu_py](https://github.com/recrof/nrf_dfu_py) (Nordic Secure DFU over BLE/bleak)
+- **Protocol is auto-detected** from the device's `hw_model`:
+  - **nRF52 devices** (RAK4631, T-Echo, etc.) — Nordic Secure DFU over BLE via [recrof/nrf_dfu_py](https://github.com/recrof/nrf_dfu_py); firmware must be a `.zip` DFU package
+  - **ESP32 devices** (Heltec, T-Beam, etc.) — `esp32-unified-ota` GATT protocol; firmware must be a `.bin` file
 - Progress is streamed to all `/events` WebSocket subscribers as `ota_start` → `ota_progress` → `ota_complete` or `ota_error`
 
 ```json
-{"type": "ota_start",    "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "firmware": "firmware.zip"}
+{"type": "ota_start",    "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "firmware": "firmware.zip", "protocol": "nrf52-dfu"}
 {"type": "ota_progress", "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {"pct": 42}}
 {"type": "ota_complete", "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {...}}
 {"type": "ota_error",    "ble_addr": "AA:BB:CC:DD:EE:FF", "device": "!aabbccdd", "data": {"error": "..."}}
