@@ -79,15 +79,26 @@ It does **not** contain: dashboard UI, rotator logic, radar, node history, or an
 
 | Endpoint | Description |
 |---|---|
+| `GET /ota/firmware?node_id=!xxxx` | List firmware files available for this device's `hw_model` |
+| `GET /ota/releases` | Meshtastic GitHub firmware releases (cached 1 h) |
+| `POST /ota/firmware/download` | Download a release asset into `{ota.dir}/{hw_model}/` |
 | `POST /ota` | Trigger BLE OTA firmware update (nRF52 or ESP32) |
 
-Body: `{ "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "/path/to/firmware", "node_id": "!aabbccdd" }`
+**Firmware directory:** set `ota.dir` in `bridge_config.yaml` to a local directory path. Files are stored in `{ota.dir}/{hw_model}/` subdirectories named by the device's hardware model (e.g. `RAK4631/`, `HELTEC_V3/`).
 
-- `ble_addr` and `firmware` are required; `node_id` is optional (used only to label WS events)
-- Returns `{"started": true, "protocol": "<protocol>"}` immediately — the update runs as a background task
-- Does **not** require the bridge to already be connected to the target device over BLE; it opens its own direct BLE connection for DFU
+`GET /ota/firmware` returns `{ files: [{name, size, mtime}], hw_model, dir, configured }`.
+
+`GET /ota/releases` returns `{ releases: [{tag, name, published, prerelease, assets}] }`.
+
+`POST /ota/firmware/download` body: `{ "node_id": "!xxxx", "url": "<github asset url>", "filename": "<name>" }` — streams download progress to `/events` as `ota_download_start` → `ota_download_progress` → `ota_download_complete` or `ota_download_error`.
+
+`POST /ota` body: `{ "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "<filename or full path>", "node_id": "!aabbccdd" }`
+
+- `ble_addr` and `firmware` are required; `node_id` is optional
+- If `firmware` is a bare filename (no path separator), it is resolved to `{ota.dir}/{hw_model}/{filename}` automatically
+- Returns `{"started": true, "protocol": "<protocol>"}` immediately
 - **Protocol is auto-detected** from the device's `hw_model`:
-  - **nRF52 devices** (RAK4631, T-Echo, etc.) — Nordic Secure DFU over BLE via [recrof/nrf_dfu_py](https://github.com/recrof/nrf_dfu_py); firmware must be a `.zip` DFU package
+  - **nRF52 devices** (RAK4631, T-Echo, etc.) — Nordic Secure DFU over BLE; firmware must be a `.zip` DFU package
   - **ESP32 devices** (Heltec, T-Beam, etc.) — `esp32-unified-ota` GATT protocol; firmware must be a `.bin` file
 - Progress is streamed to all `/events` WebSocket subscribers as `ota_start` → `ota_progress` → `ota_complete` or `ota_error`
 
@@ -191,6 +202,9 @@ ble_devices:
     auto_connect: false
     tcp_port: 4404
 
+ota:
+  dir: /srv/meshtastic/firmware  # root dir; firmware stored in {dir}/{hw_model}/
+
 message_cache:
   enabled: false            # replay recent text messages to new WS clients
   max_messages: 100         # ring buffer size
@@ -257,6 +271,10 @@ Events on `/events` (and `/{node_id}/events`) are JSON objects:
 | `ota_progress` | OTA progress — `data.pct` is 0–100 |
 | `ota_complete` | OTA finished successfully |
 | `ota_error` | OTA failed — `data.error` contains the reason |
+| `ota_download_start` | Firmware asset download started |
+| `ota_download_progress` | Download progress — `data.pct`, `data.done`, `data.total` |
+| `ota_download_complete` | Download finished — `filename`, `size` |
+| `ota_download_error` | Download failed — `data.error` |
 
 ```json
 {"type": "packet",      "data": {...},                          "device": "!aabbccdd"}

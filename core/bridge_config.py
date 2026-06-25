@@ -34,6 +34,9 @@ DEFAULTS = {
         "ha_discovery":         False,
         "ha_discovery_prefix":  "homeassistant",
     },
+    "ota": {
+        "dir": "",      # root directory; firmware stored in {dir}/{hw_model}/
+    },
     "claude_chat": {
         "enabled":          False,
         "trigger_word":     "@claude",

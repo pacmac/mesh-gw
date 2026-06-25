@@ -147,6 +147,138 @@ def create_app(dm: DeviceManager) -> FastAPI:
             asyncio.create_task(bridge._on_disconnected())
         return {"retrying": True, "node_id": node_id}
 
+    # -- OTA firmware management -----------------------------------------------
+
+    _releases_cache: dict = {"data": None, "ts": 0.0}
+    _RELEASES_TTL = 3600.0
+
+    @app.get("/ota/firmware")
+    async def ota_list_firmware(node_id: str = Query(...)):
+        """List firmware files available for this device's hw_model.
+
+        Returns files from {ota.dir}/{hw_model}/ filtered by protocol extension.
+        """
+        import time
+        from pathlib import Path
+        from core.bridge_config import load as _load_cfg
+        from core.ota_esp32 import is_nrf52
+
+        ota_dir = _load_cfg().get("ota", {}).get("dir", "")
+        if not ota_dir:
+            return {"files": [], "hw_model": None, "dir": None, "configured": False}
+
+        bridge = dm.get(node_id)
+        hw_model = (bridge.state.metadata.get("hw_model") or "") if bridge else ""
+        if not hw_model:
+            return {"files": [], "hw_model": None, "dir": None, "configured": True, "error": "hw_model not available yet"}
+
+        hw_dir = Path(ota_dir) / hw_model
+        ext = ".zip" if is_nrf52(hw_model) else ".bin"
+
+        if not hw_dir.exists():
+            return {"files": [], "hw_model": hw_model, "dir": str(hw_dir), "configured": True}
+
+        files = sorted(
+            [{"name": f.name, "size": f.stat().st_size, "mtime": int(f.stat().st_mtime)}
+             for f in hw_dir.iterdir() if f.is_file() and f.suffix == ext],
+            key=lambda x: x["mtime"], reverse=True,
+        )
+        return {"files": files, "hw_model": hw_model, "dir": str(hw_dir), "configured": True}
+
+    @app.get("/ota/releases")
+    async def ota_releases():
+        """Return Meshtastic firmware releases from GitHub, cached 1 h."""
+        import time
+        import httpx
+
+        now = time.monotonic()
+        if _releases_cache["data"] and now - _releases_cache["ts"] < _RELEASES_TTL:
+            return _releases_cache["data"]
+
+        url = "https://api.github.com/repos/meshtastic/firmware/releases?per_page=15"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            r = await client.get(url, headers={
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "mesh-gw/1.0",
+            })
+            r.raise_for_status()
+            raw = r.json()
+
+        releases = [
+            {
+                "tag":        rel["tag_name"],
+                "name":       rel["name"],
+                "published":  rel["published_at"],
+                "prerelease": rel["prerelease"],
+                "assets": [
+                    {"name": a["name"], "url": a["browser_download_url"], "size": a["size"]}
+                    for a in rel["assets"]
+                    if a["name"].endswith((".bin", ".zip")) and "ota" not in a["name"].lower()
+                ],
+            }
+            for rel in raw
+        ]
+        result = {"releases": releases}
+        _releases_cache["data"] = result
+        _releases_cache["ts"] = now
+        return result
+
+    @app.post("/ota/firmware/download")
+    async def ota_download_firmware(body: dict = Body(...)):
+        """Download a firmware asset from GitHub into {ota.dir}/{hw_model}/."""
+        from pathlib import Path
+        from core.bridge_config import load as _load_cfg
+
+        node_id  = body.get("node_id")
+        url      = body.get("url")
+        filename = body.get("filename")
+
+        if not node_id or not url or not filename:
+            raise HTTPException(400, "node_id, url, and filename are required")
+
+        ota_dir = _load_cfg().get("ota", {}).get("dir", "")
+        if not ota_dir:
+            raise HTTPException(400, "ota.dir not configured in bridge_config.yaml")
+
+        bridge   = dm.get(node_id)
+        hw_model = (bridge.state.metadata.get("hw_model") or "") if bridge else ""
+        if not hw_model:
+            raise HTTPException(400, "hw_model not available — device still syncing?")
+
+        hw_dir = Path(ota_dir) / hw_model
+        hw_dir.mkdir(parents=True, exist_ok=True)
+        dest = hw_dir / filename
+
+        await dm._broadcast({"type": "ota_download_start", "device": node_id, "filename": filename, "hw_model": hw_model})
+
+        async def _run():
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+                    async with client.stream("GET", url, headers={"User-Agent": "mesh-gw/1.0"}) as resp:
+                        resp.raise_for_status()
+                        total = int(resp.headers.get("content-length", 0))
+                        done  = 0
+                        last_pct = -1
+                        with open(dest, "wb") as f:
+                            async for chunk in resp.aiter_bytes(65536):
+                                f.write(chunk)
+                                done += len(chunk)
+                                if total:
+                                    pct = round(done / total * 100)
+                                    if pct != last_pct:
+                                        last_pct = pct
+                                        await dm._broadcast({"type": "ota_download_progress", "device": node_id, "data": {"pct": pct, "done": done, "total": total}})
+                await dm._broadcast({"type": "ota_download_complete", "device": node_id, "filename": filename, "size": done})
+            except Exception as e:
+                logger.exception("OTA download failed for %s", node_id)
+                if dest.exists():
+                    dest.unlink(missing_ok=True)
+                await dm._broadcast({"type": "ota_download_error", "device": node_id, "data": {"error": str(e)}})
+
+        asyncio.create_task(_run())
+        return {"started": True, "filename": filename, "dest": str(dest)}
+
     @app.post("/ota")
     async def ota_update(body: dict = Body(...)):
         """Trigger a BLE OTA firmware update.
@@ -155,11 +287,13 @@ def create_app(dm: DeviceManager) -> FastAPI:
           nRF52 devices (RAK4631 etc.) → Nordic Legacy DFU (.zip)
           ESP32 devices                → esp32-unified-ota (.bin)
 
-        Body: { "node_id": "!xxxx", "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "/path/to/file" }
+        Body: { "node_id": "!xxxx", "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "<filename or full path>" }
+        If firmware is a bare filename (no path separator), it is resolved via ota.dir/hw_model/.
         Streams progress via /events WS as ota_start / ota_progress / ota_complete / ota_error.
         Returns immediately with {"started": true}.
         """
         from pathlib import Path
+        from core.bridge_config import load as _load_cfg
         from core.ota_esp32 import is_nrf52
 
         ble_addr = (body.get("ble_addr") or body.get("ble_address") or "").strip() or None
@@ -168,6 +302,16 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
         if not ble_addr or not fw_path:
             raise HTTPException(400, "ble_addr and firmware are required")
+
+        # Auto-resolve bare filename via ota.dir/hw_model/
+        if "/" not in fw_path and "\\" not in fw_path:
+            from core.bridge_config import load as _load_cfg
+            _pre = dm.get(node_id) or (dm.get_by_ble(ble_addr) if hasattr(dm, "get_by_ble") else None)
+            _hw  = (_pre.state.metadata.get("hw_model") or "") if _pre else ""
+            _dir = _load_cfg().get("ota", {}).get("dir", "")
+            if _dir and _hw:
+                fw_path = str(Path(_dir) / _hw / fw_path)
+
         if not Path(fw_path).is_file():
             raise HTTPException(400, f"firmware file not found: {fw_path}")
 
