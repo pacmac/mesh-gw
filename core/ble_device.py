@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import random
 import time
+import urllib.request
 from dataclasses import dataclass
 from typing import Optional
 
@@ -259,6 +261,10 @@ class BleDevice:
         self._last_state_event: dict = {}
         self._paired: Optional[bool] = None
         self._trusted: Optional[bool] = None
+        self._has_pin: Optional[bool] = None
+
+        # Set when UI supplies a PIN so the pairing retry loop wakes immediately
+        self._pair_retry_event: asyncio.Event = asyncio.Event()
 
         # BLE resources — set during _connection_loop
         self._client: Optional[BleakClient] = None
@@ -333,7 +339,7 @@ class BleDevice:
             "message": message,
             "pct": pct,
             "deadline": deadline,
-            "has_pin": None,
+            "has_pin": self._has_pin,
             "paired":  self._paired,
             "trusted": self._trusted,
             "display": {
@@ -440,6 +446,28 @@ class BleDevice:
             }
             self._last_state_event = event
             self._enqueue(event)
+
+    def retry_pair(self) -> None:
+        """Called by the server when the UI has just saved a PIN — wakes the pairing retry wait."""
+        self._pair_retry_event.set()
+
+    async def _check_has_pin(self) -> bool:
+        """Query node-dash for a stored ble_pin for this device's MAC address."""
+        import os
+        url = os.environ.get("NODE_DASH_URL", "http://localhost:8000")
+        def _fetch():
+            try:
+                req = urllib.request.Request(
+                    f"{url}/device-config/{self._addr}",
+                    headers={"Accept": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=3) as r:
+                    data = json.loads(r.read())
+                    return bool(data.get("ble_pin"))
+            except Exception as e:
+                logger.debug("%s: _check_has_pin fetch failed: %s", self._addr, e)
+                return False
+        return await asyncio.to_thread(_fetch)
 
     async def trigger_ota(self, fw_path: str) -> None:
         if self._state != READY:
@@ -801,8 +829,35 @@ class BleDevice:
             logger.debug("%s: bleak_db → paired=%s trusted=%s", self._addr, self._paired, self._trusted)
 
             if not self._paired:
-                logger.warning("%s: not paired — attempting pairing", self._addr)
+                # Check whether a PIN is stored in node-dash for this device.
+                # The BlueZ agent (ble_agent.py) will fetch it on RequestPasskey —
+                # we just need has_pin here so the UI knows whether to prompt.
+                self._has_pin = await self._check_has_pin()
+                logger.warning("%s: not paired — has_pin=%s — attempting pairing",
+                               self._addr, self._has_pin)
+                self._pair_retry_event.clear()
                 self._transition(NEED_PAIR, message="Pairing…")
+
+                if not self._has_pin:
+                    # No PIN stored — wait for the UI to supply one (up to 120s),
+                    # woken early by retry_pair() when the user saves a PIN.
+                    logger.info("%s: no PIN — waiting for UI input (120s)", self._addr)
+                    try:
+                        await asyncio.wait_for(self._pair_retry_event.wait(), timeout=120.0)
+                    except asyncio.TimeoutError:
+                        pass
+                    self._pair_retry_event.clear()
+                    # Re-check: did the user save a PIN?
+                    self._has_pin = await self._check_has_pin()
+                    if not self._has_pin:
+                        logger.warning("%s: still no PIN after wait — giving up this cycle", self._addr)
+                        await _safe_disconnect(client)
+                        self._transition(OFFLINE)
+                        await asyncio.sleep(self._ble_cfg.connect_retry_delay_s)
+                        self._transition(SCANNING)
+                        connect_attempts = 0
+                        continue
+
                 try:
                     await client.pair()
                     db2 = bleak_db(client)

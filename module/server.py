@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
 from core.app_router import AppRouter
+from core.ble_agent import setup_pairing_agent
 from core.bridge_config import update_ble_device
 from core.config import load as _load_config
 from core.methods import METHODS, get_nodes
@@ -44,6 +45,16 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        import os
+        # Register BlueZ pairing agent before devices start connecting
+        node_dash_url = os.environ.get("NODE_DASH_URL", "http://localhost:8000")
+        try:
+            _agent_bus = await setup_pairing_agent(node_dash_url)
+            app.state.agent_bus = _agent_bus
+        except Exception as e:
+            logger.warning("BlueZ pairing agent registration failed: %s", e)
+            app.state.agent_bus = None
+
         # Load config and start all auto-connect devices
         device_configs, ble_cfg, ota_cfg = _load_config()
         app.state.ota_cfg = ota_cfg
@@ -72,6 +83,9 @@ def create_app(dm: DeviceManager) -> FastAPI:
             await asyncio.wait_for(dm.stop_all(), timeout=15.0)
         except asyncio.TimeoutError:
             logger.warning("Device shutdown timed out")
+
+        if getattr(app.state, "agent_bus", None):
+            app.state.agent_bus.disconnect()
 
     app = FastAPI(title="mesh-gw", lifespan=lifespan)
     app.add_middleware(
@@ -210,6 +224,15 @@ def create_app(dm: DeviceManager) -> FastAPI:
         if not fields:
             raise HTTPException(400, f"No recognised fields. Allowed: {sorted(allowed)}")
         return update_ble_device(address, fields)
+
+    @app.post("/ble/{address}/pair")
+    async def ble_pair_retry(address: str):
+        """Wake a device stuck in NEED_PAIR after the UI has saved a PIN."""
+        dev = dm.get_by_ble(address.upper())
+        if dev is None:
+            raise HTTPException(404, f"Unknown device: {address}")
+        dev.retry_pair()
+        return {"ok": True, "address": address.upper()}
 
     @app.delete("/ble/known/{address}")
     async def ble_remove(address: str):
