@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
+from core.app_router import AppRouter
 from core.bridge_config import update_ble_device
 from core.config import load as _load_config
 from core.methods import METHODS, get_nodes
@@ -52,8 +53,15 @@ def create_app(dm: DeviceManager) -> FastAPI:
         # Start event drain loop — pulls from shared BleDevice queue, fans out to WS subscribers
         drain_task = asyncio.create_task(_drain_loop(dm), name="event-drain")
 
+        # Start AppRouter — decodes all packets and emits typed events back to dm.queue
+        app_router = AppRouter(dm, dm.queue)
+        app.state.app_router = app_router
+        await app_router.start()
+
         async with _mcp_mgr[0].run():
             yield
+
+        await app_router.stop()
 
         drain_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
@@ -533,8 +541,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
             "has_telemetry": has_telemetry, "node_roles": node_roles,
         }
         merged: dict = {}
+        router = getattr(app.state, "app_router", None)
         for dev in dm.all():
-            data = await get_nodes(dev, params)
+            live_nodes = router.get_nodes(dev.addr) if router else None
+            data = await get_nodes(dev, params, nodes_override=live_nodes)
             for k, v in (data.get("nodes") or {}).items():
                 if k not in merged or (v.get("last_heard") or 0) > (merged[k].get("last_heard") or 0):
                     merged[k] = v
@@ -673,16 +683,22 @@ def create_app(dm: DeviceManager) -> FastAPI:
         has_telemetry: bool = False,
         node_roles: List[str] = Query(default=[]),
     ):
-        return await _call(node_id, "get_nodes", {
+        dev = _device(node_id)
+        router = getattr(app.state, "app_router", None)
+        live_nodes = router.get_nodes(dev.addr) if router else None
+        return await get_nodes(dev, {
             "max_age": max_age, "max_hops": max_hops,
             "named_only": named_only, "has_position": has_position,
             "hide_mqtt": hide_mqtt, "has_signal": has_signal,
             "has_telemetry": has_telemetry, "node_roles": node_roles,
-        })
+        }, nodes_override=live_nodes)
 
     @app.get("/{node_id}/nodes/{num}")
     async def device_node(node_id: str, num: int):
-        return await _call(node_id, "get_nodes", {"num": num})
+        dev = _device(node_id)
+        router = getattr(app.state, "app_router", None)
+        live_nodes = router.get_nodes(dev.addr) if router else None
+        return await get_nodes(dev, {"num": num}, nodes_override=live_nodes)
 
     @app.get("/{node_id}/channels")
     async def device_channels(node_id: str):

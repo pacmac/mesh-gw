@@ -11,21 +11,33 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
-import struct
 import time
 from typing import TYPE_CHECKING
 
 from google.protobuf.json_format import MessageToDict
 from meshtastic import protocols
+from meshtastic.protobuf import portnums_pb2
 
 if TYPE_CHECKING:
     from module.device_manager import DeviceManager
 
 logger = logging.getLogger(__name__)
 
-PORTNUM_ADMIN  = 6
-PORTNUM_TILT   = 256   # PRIVATE_APP — 5×little-endian float32 (roll, pitch, x, y, z)
+PORTNUM_ADMIN = 6
+
+
+def _portnum_int(portnum) -> int | None:
+    """Normalise portnum to int. MessageToDict converts enum to string name."""
+    if portnum is None:
+        return None
+    if isinstance(portnum, int):
+        return portnum
+    try:
+        return portnums_pb2.PortNum.Value(portnum)
+    except ValueError:
+        return None
 
 
 class AppRouter:
@@ -52,7 +64,6 @@ class AppRouter:
     async def stop(self) -> None:
         if self._task and not self._task.done():
             self._task.cancel()
-            import contextlib
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
         if self._input is not None:
@@ -78,11 +89,11 @@ class AppRouter:
     # ------------------------------------------------------------------
 
     async def _route(self, event: dict) -> None:
-        addr     = event.get("addr", "")
-        node_id  = event.get("node_id")
-        pkt      = event.get("data", {}).get("packet", {})
-        decoded  = pkt.get("decoded", {})
-        portnum  = decoded.get("portnum")
+        addr        = event.get("addr", "")
+        node_id     = event.get("node_id")
+        pkt         = event.get("data", {}).get("packet", {})
+        decoded     = pkt.get("decoded", {})
+        portnum     = _portnum_int(decoded.get("portnum"))
         payload_b64 = decoded.get("payload", "")
 
         if portnum is None:
@@ -140,8 +151,8 @@ class AppRouter:
         # Re-broadcast packet event with decoded sub-message merged in
         if sub_decoded is not None:
             merged_decoded = dict(decoded)
-            handler_name = handler.name if handler else "private_app"
-            merged_decoded[handler_name] = sub_decoded
+            merged_decoded["portnum"] = portnum          # normalise to int
+            merged_decoded[handler.name] = sub_decoded
             merged_pkt = dict(pkt)
             merged_pkt["decoded"] = merged_decoded
             self._emit({
@@ -152,8 +163,18 @@ class AppRouter:
                 "data":    {"packet": merged_pkt},
             })
         else:
-            # Pass through original packet unchanged
-            self._emit(event)
+            # Pass through original packet with portnum normalised to int
+            merged_decoded = dict(decoded)
+            merged_decoded["portnum"] = portnum
+            merged_pkt = dict(pkt)
+            merged_pkt["decoded"] = merged_decoded
+            self._emit({
+                "type":    "packet",
+                "addr":    addr,
+                "device":  addr,
+                "node_id": node_id,
+                "data":    {"packet": merged_pkt},
+            })
 
         # Update node cache — signal metrics on every packet
         if from_num is not None:
@@ -184,7 +205,6 @@ class AppRouter:
                     node["position"] = sub_decoded
                     updated = True
                 elif handler.name == "telemetry":
-                    # Find the populated oneof variant key
                     for variant_key in (
                         "device_metrics", "environment_metrics",
                         "power_metrics", "local_stats", "air_quality_metrics",
@@ -201,11 +221,11 @@ class AppRouter:
                         "data":   dict(node),
                     })
 
-            # ADMIN_APP — extract session_passkey and feed back to BleDevice
+            # ADMIN_APP — extract session_passkey and call back to BleDevice
             if portnum == PORTNUM_ADMIN:
                 self._handle_admin(addr, sub_decoded)
 
-        elif not handler:
+        elif handler is None:
             # Unregistered portnum — emit private_app with raw payload
             self._emit({
                 "type":        "private_app",
@@ -215,21 +235,6 @@ class AppRouter:
                 "portnum":     portnum,
                 "payload_b64": payload_b64,
             })
-
-            # Tilt special-case: portnum 256, 5×little-endian float32
-            if portnum == PORTNUM_TILT and len(raw_bytes) >= 20:
-                roll, pitch, x, y, z = struct.unpack_from("<5f", raw_bytes)
-                logger.debug(
-                    "app_router: tilt addr=%s roll=%.1f pitch=%.1f x=%.3f y=%.3f z=%.3f",
-                    addr, roll, pitch, x, y, z,
-                )
-                self._emit(_typed("tilt", {
-                    "roll":  round(roll, 2),
-                    "pitch": round(pitch, 2),
-                    "x":     round(x, 3),
-                    "y":     round(y, 3),
-                    "z":     round(z, 3),
-                }))
 
     def _handle_admin(self, addr: str, decoded: dict) -> None:
         passkey_b64 = decoded.get("session_passkey")

@@ -48,15 +48,15 @@ async def get_info(bridge, params: dict):
 
 
 @method("get_nodes")
-async def get_nodes(bridge, params: dict):
+async def get_nodes(bridge, params: dict, nodes_override: dict | None = None):
     import time
+    all_nodes = nodes_override if nodes_override is not None else bridge.nodes
     if "num" in params:
-        node = bridge.nodes.get(str(params["num"]))
+        node = all_nodes.get(str(params["num"]))
         if node is None:
             raise KeyError(f"unknown node: {params['num']}")
         return {"node": node}
 
-    all_nodes = bridge.nodes
     total = len(all_nodes)
 
     max_age      = int(params.get("max_age", 0))
