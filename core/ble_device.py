@@ -44,7 +44,8 @@ OTA_TX_UUID      = "62ec0272-3ec5-11eb-b378-0242ac130003"  # device → client (
 DFU_SERVICE_UUID        = "00001530-1212-efde-1523-785feabcd123"
 DFU_CONTROL_POINT_UUID  = "00001531-1212-efde-1523-785feabcd123"
 
-PORTNUM_ADMIN_APP = 6   # portnums_pb2.PortNum.ADMIN_APP
+PORTNUM_ADMIN_APP      = 6   # portnums_pb2.PortNum.ADMIN_APP
+PORTNUM_TRACEROUTE_APP = 70  # portnums_pb2.PortNum.TRACEROUTE_APP
 
 # Detected during DISCOVERING to identify firmware < 2.3. Never used for I/O.
 # FROMRADIO UUID never changed. Firmware version is detected via FROMNUM.
@@ -618,6 +619,29 @@ class BleDevice:
         toradio.packet.CopyFrom(inner)
         await self.send_toradio(toradio.SerializeToString())
         logger.debug("%s: send_admin sent: %s", self._addr, list(message.keys()))
+
+    async def send_traceroute(self, to: int) -> dict:
+        """Send a traceroute request. Response arrives as a TRACEROUTE_APP packet event."""
+        if self._state != READY:
+            raise RuntimeError(f"{self._addr}: send_traceroute called in state {self._state}")
+
+        hop_limit = self._config.get("lora", {}).get("hop_limit", 3)
+        pkt_id    = random.randint(1, 0xFFFFFFFF)
+
+        inner = mesh_pb2.MeshPacket()
+        inner.id        = pkt_id
+        inner.to        = to
+        inner.hop_limit = hop_limit
+        inner.want_ack  = False
+        inner.decoded.portnum       = PORTNUM_TRACEROUTE_APP
+        inner.decoded.payload       = mesh_pb2.RouteDiscovery().SerializeToString()
+        inner.decoded.want_response = True
+
+        toradio = mesh_pb2.ToRadio()
+        toradio.packet.CopyFrom(inner)
+        await self.send_toradio(toradio.SerializeToString())
+        logger.debug("%s: send_traceroute to=!%x id=%d", self._addr, to, pkt_id)
+        return {"sent": True, "id": pkt_id, "to": to}
 
     async def purge_nodedb(self) -> dict:
         """Reset the device node database and wait for the reboot cycle to complete.
