@@ -23,7 +23,6 @@ Topic structure (prefix configurable, default "mesh"):
     {ha_prefix}/device_tracker/{id}/config    retained JSON — GPS tracker
 """
 import asyncio
-import base64
 import json
 import logging
 import time
@@ -161,25 +160,13 @@ class MqttPublisher:
 
     async def _handle_event(self, event: dict):
         ev_type = event.get("type")
-        if ev_type == "packet":
-            await self._handle_packet(event)
-        elif ev_type == "my_info":
-            await self._publish_status()
-
-    async def _handle_packet(self, event: dict):
-        pkt = (event.get("data") or {}).get("packet", {})
-        decoded = pkt.get("decoded", {})
-        portnum = decoded.get("portnum", "")
-        from_num = pkt.get("from")
+        from_num = event.get("from_num")
         if not from_num:
             return
-
         node_key = _node_key(from_num)
-        snr = pkt.get("rx_snr")
-        rssi = pkt.get("rx_rssi")
 
-        if portnum == "NODEINFO_APP":
-            user = decoded.get("user", {})
+        if ev_type == "user":
+            user = event.get("data", {})
             self._pub(f"{self._prefix}/{node_key}/nodeinfo", json.dumps({
                 "long_name":  user.get("long_name", ""),
                 "short_name": user.get("short_name", ""),
@@ -190,8 +177,8 @@ class MqttPublisher:
             if self._ha_discovery:
                 self._publish_ha_discovery(from_num, user)
 
-        elif portnum == "POSITION_APP":
-            pos = decoded.get("position", {})
+        elif ev_type == "position":
+            pos = event.get("data", {})
             lat_i = pos.get("latitude_i")
             lon_i = pos.get("longitude_i")
             if lat_i is not None and lon_i is not None:
@@ -201,24 +188,26 @@ class MqttPublisher:
                     "altitude":  pos.get("altitude"),
                 }))
 
-        elif portnum == "TELEMETRY_APP":
-            tel = decoded.get("telemetry", {})
+        elif ev_type == "telemetry":
+            tel = event.get("data", {})
             dm = tel.get("device_metrics", {})
             em = tel.get("environment_metrics", {})
+            snr  = event.get("rx_snr")
+            rssi = event.get("rx_rssi")
             payload: dict = {}
             if dm:
                 payload.update({k: v for k, v in {
-                    "battery_level":        dm.get("battery_level"),
-                    "voltage":              dm.get("voltage"),
-                    "uptime_seconds":       dm.get("uptime_seconds"),
-                    "channel_utilization":  dm.get("channel_utilization"),
-                    "air_util_tx":          dm.get("air_util_tx"),
+                    "battery_level":       dm.get("battery_level"),
+                    "voltage":             dm.get("voltage"),
+                    "uptime_seconds":      dm.get("uptime_seconds"),
+                    "channel_utilization": dm.get("channel_utilization"),
+                    "air_util_tx":         dm.get("air_util_tx"),
                 }.items() if v is not None})
             if em:
                 payload.update({k: v for k, v in {
-                    "temperature":          em.get("temperature"),
-                    "relative_humidity":    em.get("relative_humidity"),
-                    "barometric_pressure":  em.get("barometric_pressure"),
+                    "temperature":         em.get("temperature"),
+                    "relative_humidity":   em.get("relative_humidity"),
+                    "barometric_pressure": em.get("barometric_pressure"),
                 }.items() if v is not None})
             if snr is not None:
                 payload["snr"] = snr
@@ -227,19 +216,14 @@ class MqttPublisher:
             if payload:
                 self._pub(f"{self._prefix}/{node_key}/telemetry", json.dumps(payload))
 
-        elif portnum == "TEXT_MESSAGE_APP":
-            raw = decoded.get("payload", "")
-            try:
-                text = base64.b64decode(raw).decode("utf-8")
-            except Exception:
-                text = str(raw)
-            to_num = pkt.get("to", 0xFFFFFFFF)
+        elif ev_type == "text":
+            text = (event.get("data") or {}).get("text", "")
+            to_num = event.get("to_num", 0xFFFFFFFF)
             self._pub(f"{self._prefix}/{node_key}/message", json.dumps({
                 "from":      node_key,
                 "from_num":  from_num,
                 "to":        _node_key(to_num) if to_num != 0xFFFFFFFF else "broadcast",
                 "to_num":    to_num,
-                "channel":   pkt.get("channel", 0),
                 "text":      text,
                 "timestamp": int(time.time()),
             }))
