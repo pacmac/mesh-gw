@@ -136,24 +136,15 @@ async def get_status(bridge, params: dict):
 
 @method("get_config_live")
 async def get_config_live(bridge, params: dict):
-    """Live admin fetch — falls back to cached state if send_admin not yet implemented."""
+    """Return cached config for a single section plus spec metadata.
+
+    Admin request-response (live read) is not yet implemented; firmware applies
+    writes synchronously so cached state is accurate immediately after set_config.
+    """
     section = params["section"]
-    if not hasattr(bridge, "send_admin"):
-        # Return cached state with spec metadata injected
-        kind = config_kind(section)
-        cached = (bridge.module_config if kind == "module_config" else bridge.config).get(section, {})
-        return {section: {**cached, **SECTION_META.get(section, {})}}
     kind = config_kind(section)
-    if kind == "config":
-        resp = await bridge.send_admin({"get_config_request": CONFIG_SECTIONS[section]})
-        data = resp.get("get_config_response", {})
-    else:
-        resp = await bridge.send_admin({"get_module_config_request": MODULE_CONFIG_SECTIONS[section]})
-        data = resp.get("get_module_config_response", {})
-    inner = data.get(section, {})
-    if isinstance(inner, dict):
-        data = {**data, section: {**inner, **SECTION_META.get(section, {})}}
-    return data
+    cached = (bridge.module_config if kind == "module_config" else bridge.config).get(section, {})
+    return {section: {**cached, **SECTION_META.get(section, {})}}
 
 
 @method("get_channel_live")
