@@ -272,8 +272,13 @@ async def set_config(bridge, params: dict):
         await bridge.send_admin({key: {section: values}}, want_response=False)
 
     if section in REBOOT_SECTIONS:
-        return await bridge.write_and_reboot(send)
-    return await _write_direct(bridge, send)
+        result = await bridge.write_and_reboot(send)
+    else:
+        result = await _write_direct(bridge, send)
+    # Update in-memory cache so get_config_live returns fresh state immediately.
+    # bridge.config / bridge.module_config return the live dicts (not copies).
+    (bridge.module_config if kind == "module_config" else bridge.config)[section] = values
+    return result
 
 
 @method("set_channel")
