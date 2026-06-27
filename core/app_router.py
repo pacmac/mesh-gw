@@ -148,33 +148,9 @@ class AppRouter:
             except Exception:
                 pass
 
-        # Re-broadcast packet event with decoded sub-message merged in
-        if sub_decoded is not None:
-            merged_decoded = dict(decoded)
-            merged_decoded["portnum"] = portnum          # normalise to int
-            merged_decoded[handler.name] = sub_decoded
-            merged_pkt = dict(pkt)
-            merged_pkt["decoded"] = merged_decoded
-            self._emit({
-                "type":    "packet",
-                "addr":    addr,
-                "device":  addr,
-                "node_id": node_id,
-                "data":    {"packet": merged_pkt},
-            })
-        else:
-            # Pass through original packet with portnum normalised to int
-            merged_decoded = dict(decoded)
-            merged_decoded["portnum"] = portnum
-            merged_pkt = dict(pkt)
-            merged_pkt["decoded"] = merged_decoded
-            self._emit({
-                "type":    "packet",
-                "addr":    addr,
-                "device":  addr,
-                "node_id": node_id,
-                "data":    {"packet": merged_pkt},
-            })
+        # The original raw `packet` event from BleDevice already reaches all WS
+        # subscribers via _drain_loop. AppRouter only emits typed events — never
+        # re-emits `packet`, which would loop back through its own subscriber queue.
 
         # Update node cache — signal metrics on every packet
         if from_num is not None:
