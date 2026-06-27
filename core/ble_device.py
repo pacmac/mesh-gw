@@ -831,20 +831,34 @@ class BleDevice:
             # True if the device is known to BlueZ (direct connect is safe).
             in_cache = await self._release_stale_bluez_connection()
             if not in_cache:
-                # Device has never been seen by BlueZ on this host.
-                # The gateway does not scan autonomously — scanning is user-triggered
-                # from the UI (POST /scan). Log and back off; user must initiate discovery.
-                logger.warning(
-                    "%s: not in BlueZ cache — discovery required (UI: Add Device)",
+                # Device not in BlueZ cache (scan may have expired). Run a short
+                # targeted discovery to re-populate the cache, then re-check.
+                logger.info(
+                    "%s: not in BlueZ cache — running targeted discovery (timeout=12s)",
                     self._addr,
                 )
-                self._transition(OFFLINE)
-                if not self._cfg.auto_connect:
-                    return
-                await asyncio.sleep(self._ble_cfg.scan_pause_s)
-                self._transition(SCANNING)
-                connect_attempts = 0
-                continue
+                try:
+                    found = await BleakScanner.find_device_by_address(
+                        self._addr, timeout=12.0,
+                    )
+                except Exception as e:
+                    logger.warning("%s: targeted discovery failed: %s", self._addr, e)
+                    found = None
+                if found is not None:
+                    logger.info("%s: re-discovered — retrying cache check", self._addr)
+                    in_cache = await self._release_stale_bluez_connection()
+                if not in_cache:
+                    logger.warning(
+                        "%s: not in BlueZ cache after discovery — device not advertising",
+                        self._addr,
+                    )
+                    self._transition(OFFLINE)
+                    if not self._cfg.auto_connect:
+                        return
+                    await asyncio.sleep(self._ble_cfg.scan_pause_s)
+                    self._transition(SCANNING)
+                    connect_attempts = 0
+                    continue
 
             # ── CONNECTING ────────────────────────────────────────────
             self._reset_session_data()
