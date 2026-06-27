@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 from bleak import BleakClient
-from bleak.backends.bluezdbus.manager import get_global_bluez_manager
 from bleak.exc import BleakError, BleakDeviceNotFoundError
 from google.protobuf import json_format
 from meshtastic.protobuf import mesh_pb2
@@ -203,26 +202,22 @@ async def _safe_disconnect(client: BleakClient) -> None:
         await client.disconnect()
 
 
-async def bleak_db(addr: str) -> dict:
-    """Query bleak's internal BlueZ property cache for a known device.
+def bleak_db(client: BleakClient) -> dict:
+    """Read BlueZ device properties from a connected BleakClient.
 
-    Returns a dict with connected/paired/trusted for addr, read directly
-    from the manager that bleak already maintains — no scan, no dbus calls.
-    Returns all-False defaults if the device is not in the cache yet.
+    bleak populates client._backend._device_info with the BlueZ props dict
+    during connect() — Paired, Trusted, Connected etc. are all there.
+    No dbus call, no scan, no new modules.
+    Returns all-False defaults if properties are not available.
     """
-    _IFACE = "org.bluez.Device1"
     result = {"connected": False, "paired": False, "trusted": False}
     try:
-        manager = await get_global_bluez_manager()
-        for path, interfaces in manager._properties.items():
-            dev = interfaces.get(_IFACE, {})
-            if dev.get("Address", "").upper() == addr.upper():
-                result["connected"] = bool(dev.get("Connected", False))
-                result["paired"]    = bool(dev.get("Paired",    False))
-                result["trusted"]   = bool(dev.get("Trusted",   False))
-                break
+        info = client._backend._device_info or {}
+        result["connected"] = bool(info.get("Connected", False))
+        result["paired"]    = bool(info.get("Paired",    False))
+        result["trusted"]   = bool(info.get("Trusted",   False))
     except Exception as e:
-        logger.debug("bleak_db(%s): %s", addr, e)
+        logger.debug("bleak_db: %s", e)
     return result
 
 
@@ -800,7 +795,7 @@ class BleDevice:
 
             connect_attempts = 0
 
-            db = await bleak_db(self._addr)
+            db = bleak_db(client)
             self._paired  = db["paired"]
             self._trusted = db["trusted"]
             logger.debug("%s: bleak_db → paired=%s trusted=%s", self._addr, self._paired, self._trusted)
