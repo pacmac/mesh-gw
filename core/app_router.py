@@ -40,6 +40,8 @@ class AppRouter:
         self._out = out_queue
         self._input: asyncio.Queue | None = None
         self._task: asyncio.Task | None = None
+        # Live node cache: _nodes[ble_addr][str(from_num)] = node dict
+        self._nodes: dict[str, dict[str, dict]] = {}
 
     async def start(self) -> None:
         self._input = self._dm.subscribe()
@@ -56,6 +58,10 @@ class AppRouter:
         if self._input is not None:
             self._dm.unsubscribe(self._input)
             self._input = None
+
+    def get_nodes(self, addr: str) -> dict:
+        """Return live node cache for a device. Keyed by str(from_num)."""
+        return self._nodes.get(addr.upper(), {})
 
     async def _run(self) -> None:
         while True:
@@ -149,9 +155,51 @@ class AppRouter:
             # Pass through original packet unchanged
             self._emit(event)
 
+        # Update node cache — signal metrics on every packet
+        if from_num is not None:
+            node = self._nodes.setdefault(addr.upper(), {}).setdefault(
+                str(from_num), {"num": from_num}
+            )
+            if rx_rssi:
+                node["rssi"] = rx_rssi
+            if rx_snr:
+                node["snr"] = round(rx_snr, 1)
+            if hop_start:
+                node["hops"] = hops
+            node["via_mqtt"] = via_mqtt
+            node["last_heard"] = int(time.time())
+
         # Typed app event
         if sub_decoded is not None and handler:
             self._emit(_typed(handler.name, sub_decoded))
+
+            # Merge into node cache by type
+            if from_num is not None:
+                node = self._nodes[addr.upper()][str(from_num)]
+                updated = False
+                if handler.name == "user":
+                    node["user"] = sub_decoded
+                    updated = True
+                elif handler.name == "position":
+                    node["position"] = sub_decoded
+                    updated = True
+                elif handler.name == "telemetry":
+                    # Find the populated oneof variant key
+                    for variant_key in (
+                        "device_metrics", "environment_metrics",
+                        "power_metrics", "local_stats", "air_quality_metrics",
+                    ):
+                        if variant_key in sub_decoded:
+                            node[variant_key] = sub_decoded[variant_key]
+                            updated = True
+                            break
+                if updated:
+                    self._emit({
+                        "type":   "node_update",
+                        "addr":   addr,
+                        "device": addr,
+                        "data":   dict(node),
+                    })
 
             # ADMIN_APP — extract session_passkey and feed back to BleDevice
             if portnum == PORTNUM_ADMIN:
