@@ -153,13 +153,11 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def add_device(body: dict = Body(...)):
         """Add a device to config and start connecting."""
         address = (body.get("address") or "").strip().upper()
-        pin = str(body.get("pin") or "")
         if not address:
             raise HTTPException(400, "address required")
         tcp_port = body.get("tcp_port") or None
         if tcp_port is not None:
             tcp_port = int(tcp_port)
-        display_name = str(body.get("display_name") or "")
         auto_connect = bool(body.get("auto_connect", True))
 
         if body.get("persist", True):
@@ -167,23 +165,12 @@ def create_app(dm: DeviceManager) -> FastAPI:
             devices = cfg.get("ble_devices") or []
             addrs = [d.get("address", "").upper() for d in devices]
             if address not in addrs:
-                entry: dict = {"address": address, "pin": pin, "auto_connect": auto_connect}
+                entry: dict = {"address": address, "auto_connect": auto_connect}
                 if tcp_port is not None:
                     entry["tcp_port"] = tcp_port
-                if display_name:
-                    entry["display_name"] = display_name
                 devices.append(entry)
                 cfg["ble_devices"] = devices
                 _bcfg.save(cfg)
-            else:
-                # Device already in config — update pin if it changed
-                for d in devices:
-                    if d.get("address", "").upper() == address:
-                        if pin != d.get("pin", ""):
-                            d["pin"] = pin
-                            cfg["ble_devices"] = devices
-                            _bcfg.save(cfg)
-                        break
 
         # Reconcile picks up config changes; then explicitly start if auto_connect
         # (reconcile only calls start() for new addresses, not existing OFFLINE devices)
@@ -236,10 +223,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
         cfg["ble_devices"] = [
             d for d in cfg.get("ble_devices", [])
             if d.get("address", "").upper() != address
-        ]
-        cfg["known_ble_addresses"] = [
-            a for a in cfg.get("known_ble_addresses", [])
-            if a.upper() != address
         ]
         _bcfg.save(cfg)
         return {"removed": True, "address": address}
@@ -446,13 +429,12 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
         _cfg = _bcfg.load()
         configured = {d["address"].upper() for d in _cfg.get("ble_devices", [])}
-        known = {a.upper() for a in _cfg.get("known_ble_addresses", [])}
         result = []
         for addr, (dev, adv) in found.items():
             adv_uuids = [str(u).lower() for u in (adv.service_uuids or [])]
             is_mesh = (MESHTASTIC_SVC in adv_uuids or BLEOTA_SVC in adv_uuids
                        or "meshtastic" in (dev.name or "").lower()
-                       or addr.upper() in configured or addr.upper() in known)
+                       or addr.upper() in configured)
             if not is_mesh:
                 continue
             result.append({

@@ -113,7 +113,7 @@ class DeviceManager:
         for addr in new_addrs - current:
             cfg = new_by_addr[addr]
             logger.info("reconcile: adding %s (auto_connect=%s)", addr, cfg.auto_connect)
-            dev = BleDevice(cfg.address, cfg.pin, cfg, ble_cfg, ota_cfg, self._queue)
+            dev = BleDevice(cfg.address, cfg, ble_cfg, ota_cfg, self._queue)
             self._devices[addr] = dev
             if cfg.auto_connect:
                 await dev.start()

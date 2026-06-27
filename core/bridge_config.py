@@ -1,4 +1,4 @@
-"""Bridge connection config — BLE device addresses/pins persisted across restarts."""
+"""Bridge connection config — BLE device addresses persisted across restarts."""
 import logging
 import os
 
@@ -17,8 +17,7 @@ _BLE_DEVICE_DEFAULTS = {
 }
 
 DEFAULTS = {
-    "ble_devices": [],  # list of {address, pin, tcp_port?, auto_connect?} to auto-connect on startup
-    "known_ble_addresses": [],  # addresses ever seen as Meshtastic/bleota — appear in scans even with no adv UUID
+    "ble_devices": [],  # list of {address, tcp_port?, auto_connect?, hw_model?, lora_region?}
     # Per-logger level overrides. Set a logger name to DEBUG/INFO/WARNING/ERROR.
     # Example: {"core.state": "DEBUG", "core.ble_handler": "WARNING"}
     "logging": {},
@@ -89,17 +88,6 @@ def get_ble_device(address: str) -> dict:
         if d.get("address", "").upper() == address.upper():
             return {**_BLE_DEVICE_DEFAULTS, **d}
     return {**_BLE_DEVICE_DEFAULTS, "address": address.upper()}
-
-
-def add_known_address(address: str) -> None:
-    """Record a BLE address as a known Meshtastic/OTA device so it appears in future scans."""
-    addr = address.upper()
-    cfg = load()
-    known = [a.upper() for a in (cfg.get("known_ble_addresses") or [])]
-    if addr not in known:
-        known.append(addr)
-        cfg["known_ble_addresses"] = known
-        save(cfg)
 
 
 def update_ble_device(address: str, fields: dict) -> dict:

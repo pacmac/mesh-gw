@@ -243,14 +243,12 @@ class BleDevice:
     def __init__(
         self,
         addr: str,
-        pin: str,
         cfg: BleDeviceConfig,
         ble_cfg: BleConfig,
         ota_cfg: OtaConfig,
         queue: asyncio.Queue,
     ) -> None:
         self._addr = addr.upper()
-        self._pin = pin
         self._cfg = cfg
         self._ble_cfg = ble_cfg
         self._ota_cfg = ota_cfg
@@ -335,7 +333,7 @@ class BleDevice:
             "message": message,
             "pct": pct,
             "deadline": deadline,
-            "has_pin": bool(self._pin),
+            "has_pin": None,
             "paired":  self._paired,
             "trusted": self._trusted,
             "display": {
@@ -524,7 +522,6 @@ class BleDevice:
     async def update_config(self, cfg: BleDeviceConfig) -> None:
         """Hot-reload per-device config. Preserves the BLE connection."""
         self._cfg = cfg
-        self._pin = cfg.pin
         self._data.tcp_port = cfg.tcp_port
 
     # ------------------------------------------------------------------

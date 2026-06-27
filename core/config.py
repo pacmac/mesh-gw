@@ -86,8 +86,6 @@ class OtaConfig:
 @dataclass
 class BleDeviceConfig:
     address: str = ""
-    pin: str = ""
-    display_name: str = ""
     auto_connect: bool = True
     tcp_port: Optional[int] = None
     flags: list[str] = field(default_factory=list)
@@ -154,8 +152,6 @@ def _device_config_from_dict(raw: dict) -> BleDeviceConfig:
     addr = str(raw.get("address", "")).upper().strip()
     return BleDeviceConfig(
         address=addr,
-        pin=str(raw.get("pin", "")),
-        display_name=str(raw.get("display_name", "")),
         auto_connect=bool(raw.get("auto_connect", True)),
         tcp_port=int(raw["tcp_port"]) if raw.get("tcp_port") is not None else None,
         flags=list(raw.get("flags", [])),
