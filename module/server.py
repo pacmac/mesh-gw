@@ -574,9 +574,16 @@ def create_app(dm: DeviceManager) -> FastAPI:
     @app.websocket("/events")
     async def ws_all(websocket: WebSocket):
         device_filter = websocket.query_params.get("device", "")
+        # ?subscribe=topic1,topic2 or ?subscribe=* (None = all)
+        sub_param = websocket.query_params.get("subscribe")
+        if sub_param and sub_param != "*":
+            topics: set[str] | None = {t.strip() for t in sub_param.split(",") if t.strip()}
+        else:
+            topics = None  # wildcard — send everything
+
         await websocket.accept()
 
-        # Snapshot all current devices on connect (spec § "Snapshot on WebSocket connect")
+        # Always send device_snapshot on connect regardless of topic filter
         snapshots = []
         for dev in dm.all():
             snap = dev.snapshot
@@ -587,17 +594,55 @@ def create_app(dm: DeviceManager) -> FastAPI:
             await websocket.send_json({"type": "device_snapshot", "devices": snapshots})
 
         q = dm.subscribe()
-        try:
-            while True:
-                event = await q.get()
+        # topics is wrapped in a list so the inner tasks can mutate it
+        topic_box: list[set[str] | None] = [topics]
+        stop_event = asyncio.Event()
+
+        async def _send_loop():
+            while not stop_event.is_set():
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
                 if device_filter and event.get("addr", "").upper() != device_filter.upper():
                     continue
-                await websocket.send_json(event)
-        except WebSocketDisconnect:
-            pass
+                t = topic_box[0]
+                if t is not None and event.get("type") not in t:
+                    continue
+                try:
+                    await websocket.send_json(event)
+                except Exception:
+                    stop_event.set()
+                    return
+
+        async def _recv_loop():
+            while not stop_event.is_set():
+                try:
+                    raw = await websocket.receive_text()
+                    import json as _json
+                    msg = _json.loads(raw)
+                    if msg.get("type") == "subscribe":
+                        new_topics = msg.get("topics")
+                        if new_topics == "*" or new_topics is None:
+                            topic_box[0] = None
+                        elif isinstance(new_topics, list):
+                            topic_box[0] = set(new_topics)
+                except WebSocketDisconnect:
+                    stop_event.set()
+                    return
+                except Exception:
+                    pass
+
+        send_task = asyncio.create_task(_send_loop())
+        recv_task = asyncio.create_task(_recv_loop())
+        try:
+            await asyncio.gather(send_task, recv_task)
         except Exception:
             pass
         finally:
+            stop_event.set()
+            send_task.cancel()
+            recv_task.cancel()
             dm.unsubscribe(q)
 
     # =========================================================================
@@ -756,3 +801,4 @@ async def _drain_loop(dm: DeviceManager) -> None:
                 logger.warning(
                     "WS subscriber queue full — dropping %s event", event.get("type")
                 )
+
