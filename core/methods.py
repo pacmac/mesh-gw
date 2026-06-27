@@ -160,16 +160,13 @@ async def get_channel_live(bridge, params: dict):
 
 @method("get_owner_live")
 async def get_owner_live(bridge, params: dict):
-    if not hasattr(bridge, "send_admin"):
-        d = bridge.data
-        return {
-            "short_name": d.short_name,
-            "long_name": d.long_name,
-            **SECTION_META.get("owner", {}),
-        }
-    resp = await bridge.send_admin({"get_owner_request": True})
-    data = resp.get("get_owner_response", {})
-    return {**data, **SECTION_META.get("owner", {})}
+    """Return cached owner from device data. Admin request-response not yet implemented."""
+    d = bridge.data
+    return {
+        "short_name": d.short_name,
+        "long_name": d.long_name,
+        **SECTION_META.get("owner", {}),
+    }
 
 
 # -- writes -------------------------------------------------------------------
@@ -315,6 +312,11 @@ async def set_owner(bridge, params: dict):
         async def send_owner():
             await bridge.send_admin({"set_owner": owner}, want_response=False)
         result = await _write_direct(bridge, send_owner)
+        # Update in-memory cache so get_owner_live returns fresh data
+        if "short_name" in owner:
+            bridge.data.short_name = owner["short_name"]
+        if "long_name" in owner:
+            bridge.data.long_name = owner["long_name"]
 
     if role is not None:
         device_cfg = bridge.config.get("device", {})
@@ -323,8 +325,6 @@ async def set_owner(bridge, params: dict):
         return await set_config(bridge, {"section": "device", "values": {**device_cfg, "role": role}})
 
     return result
-
-    return {"verified": True}
 
 
 @method("get_fixed_position")
