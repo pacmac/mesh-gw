@@ -750,6 +750,10 @@ class BleDevice:
                     self._addr, timeout=12.0,
                 )
             except Exception as e:
+                if "inprogress" in str(e).lower():
+                    logger.debug("%s: adapter busy — retrying scan in 5s", self._addr)
+                    await asyncio.sleep(5.0)
+                    continue
                 logger.warning("%s: discovery failed: %s", self._addr, e)
                 found = None
             if found is None:
