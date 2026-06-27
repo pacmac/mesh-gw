@@ -1413,12 +1413,23 @@ class BleDevice:
                 return "idle"
             continue
 
-        # Now confirmed Meshtastic — request HIGH connection priority.
-        # We intentionally skip _acquire_mtu() here because AcquireNotify (which bleak
-        # uses internally for MTU negotiation) sends a CCCD Write Request to the device.
-        # On NimBLE/ESP32-C3 (F4:12), the CCCD ACK from the device never arrives, leaving
-        # BlueZ's ATT client stuck in InProgress — which blocks every subsequent WriteValue.
-        # Meshtastic packets are small enough that the default BLE MTU is sufficient.
+        # Now confirmed Meshtastic — negotiate MTU if safe, then request HIGH priority.
+        # _acquire_mtu() uses AcquireWrite when a write-without-response characteristic
+        # exists (safe: no CCCD write needed), or falls back to AcquireNotify otherwise
+        # (sends a CCCD Write Request that NimBLE/ESP32-C3 never ACKs, leaving BlueZ's
+        # ATT client stuck in InProgress and blocking all subsequent WriteValue calls).
+        # Only call it when write-without-response is available so F4:12 is unaffected.
+        _has_wwr = any(
+            "write-without-response" in c.properties
+            for c in client.services.characteristics.values()
+        )
+        if _has_wwr:
+            try:
+                await client._backend._acquire_mtu()
+                self._data.mtu = client.mtu_size
+                logger.debug("%s: MTU = %d", self._addr, self._data.mtu)
+            except Exception as e:
+                logger.warning("%s: _acquire_mtu() failed (%s), MTU unknown", self._addr, e)
 
         if self._ble_cfg.conn_priority_enabled:
             await self._request_conn_priority("high")
