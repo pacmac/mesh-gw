@@ -15,7 +15,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient
+from bleak.backends.bluezdbus.manager import get_global_bluez_manager
 from bleak.exc import BleakError, BleakDeviceNotFoundError
 from google.protobuf import json_format
 from meshtastic.protobuf import mesh_pb2
@@ -130,9 +131,6 @@ class InvalidTransition(Exception):
     pass
 
 
-# Module-level lock: only one BleDevice may hold the BLE scanner at a time.
-# BlueZ/bleak raises org.bluez.Error.InProgress if two scans start simultaneously.
-_scan_lock: asyncio.Lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -745,29 +743,10 @@ class BleDevice:
         connect_attempts = 0
 
         while True:
-            # ── SCANNING: discover device before connecting ────────────
-            try:
-                found = await BleakScanner.find_device_by_address(
-                    self._addr, timeout=12.0,
-                )
-            except Exception as e:
-                if "inprogress" in str(e).lower():
-                    logger.debug("%s: adapter busy — retrying scan in 5s", self._addr)
-                    await asyncio.sleep(5.0)
-                    continue
-                logger.warning("%s: discovery failed: %s", self._addr, e)
-                found = None
-            if found is None:
-                logger.warning("%s: device not found — not advertising", self._addr)
-                self._transition(OFFLINE)
-                if not self._cfg.auto_connect:
-                    return
-                await asyncio.sleep(self._ble_cfg.scan_pause_s)
-                self._transition(SCANNING)
-                connect_attempts = 0
-                continue
-
             # ── CONNECTING ────────────────────────────────────────────
+            # BlueZ already knows configured devices — connect directly,
+            # no scan required. BleakDeviceNotFoundError means the device
+            # is not advertising; back off and retry.
             self._reset_session_data()
             self._transition(CONNECTING)
             client = BleakClient(self._addr, timeout=self._ble_cfg.connect_timeout_s)
@@ -835,32 +814,6 @@ class BleDevice:
 
             await asyncio.sleep(self._ble_cfg.scan_pause_s)
             self._transition(SCANNING)
-
-    async def _scan_once(self, timeout_s: float = 30.0) -> bool:
-        """Scan for self._addr. Returns True if found within timeout_s.
-
-        NOT used in the normal connection loop or OTA flow — scanning is user-triggered
-        only (POST /scan from UI). Retained for future user-initiated device discovery.
-        Uses the module-level _scan_lock so only one BleakScanner runs at a time.
-        """
-        found = asyncio.Event()
-        loop = asyncio.get_running_loop()
-
-        def _cb(device, _adv):
-            if device.address.upper() == self._addr:
-                loop.call_soon_threadsafe(found.set)
-
-        async with _scan_lock:
-            scanner = BleakScanner(detection_callback=_cb)
-            await scanner.start()
-            try:
-                await asyncio.wait_for(found.wait(), timeout=timeout_s)
-                return True
-            except asyncio.TimeoutError:
-                return False
-            finally:
-                with contextlib.suppress(Exception):
-                    await scanner.stop()
 
     def _emit_progress(self, pct: int) -> None:
         """Emit an OTA_FLASHING progress event without a state transition.
