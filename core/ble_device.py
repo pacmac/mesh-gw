@@ -59,6 +59,7 @@ _NONCE_NODES_ONLY  = 69421  # SPECIAL_NONCE_ONLY_NODES  — skip config, dump no
 OFFLINE                  = "OFFLINE"
 SCANNING              = "SCANNING"
 CONNECTING            = "CONNECTING"
+NEED_PAIR             = "NEED_PAIR"
 DISCOVERING           = "DISCOVERING"
 SYNCING               = "SYNCING"
 READY                 = "READY"
@@ -79,7 +80,8 @@ REGION_UNSET          = "REGION_UNSET"
 _LEGAL: dict[str, frozenset[str]] = {
     OFFLINE:                  frozenset({SCANNING}),
     SCANNING:              frozenset({CONNECTING, OFFLINE}),
-    CONNECTING:            frozenset({DISCOVERING, SCANNING, OFFLINE}),
+    CONNECTING:            frozenset({DISCOVERING, NEED_PAIR, SCANNING, OFFLINE}),
+    NEED_PAIR:             frozenset({OFFLINE}),
     DISCOVERING:           frozenset({SYNCING, OTA_BOOTLOADER_STUCK, FIRMWARE_INCOMPATIBLE, CONNECTING, OFFLINE}),
     SYNCING:               frozenset({READY, REGION_UNSET, CONNECTING, OFFLINE}),
     READY:                 frozenset({RECONNECTING, OTA_PENDING, OFFLINE}),
@@ -108,6 +110,7 @@ _DISPLAY: dict[str, tuple] = {
     OFFLINE:                  ("Offline",               "muted",   "offline",      False, False, False),
     SCANNING:              ("Connecting…",        "info",    "connecting",   True,  False, False),
     CONNECTING:            ("Connecting…",       "info",    "connecting",   True,  False, False),
+    NEED_PAIR:             ("Pairing required",        "warning", "pair",         False, False, True),
     DISCOVERING:           ("Discovering…",      "info",    "discovering",  True,  False, False),
     SYNCING:               ("Syncing…",          "info",    "syncing",      True,  False, False),
     READY:                 ("Connected",              "success", "ready",        False, False, False),
@@ -799,6 +802,32 @@ class BleDevice:
             self._paired  = db["paired"]
             self._trusted = db["trusted"]
             logger.debug("%s: bleak_db → paired=%s trusted=%s", self._addr, self._paired, self._trusted)
+
+            if not self._paired:
+                logger.warning("%s: not paired — attempting pairing", self._addr)
+                self._transition(NEED_PAIR, message="Pairing…")
+                try:
+                    await client.pair()
+                    db2 = bleak_db(client)
+                    self._paired  = db2["paired"]
+                    self._trusted = db2["trusted"]
+                    logger.info("%s: pairing complete — paired=%s", self._addr, self._paired)
+                except Exception as e:
+                    logger.error("%s: pairing failed: %s", self._addr, e)
+                    await _safe_disconnect(client)
+                    self._transition(OFFLINE)
+                    await asyncio.sleep(self._ble_cfg.connect_retry_delay_s)
+                    self._transition(SCANNING)
+                    connect_attempts = 0
+                    continue
+                if not self._paired:
+                    logger.error("%s: pair() succeeded but still not paired", self._addr)
+                    await _safe_disconnect(client)
+                    self._transition(OFFLINE)
+                    await asyncio.sleep(self._ble_cfg.connect_retry_delay_s)
+                    self._transition(SCANNING)
+                    connect_attempts = 0
+                    continue
 
             session_done = await self._run_one_session(client)
 
