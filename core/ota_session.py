@@ -91,27 +91,49 @@ class OtaSession:
         sha256_hex = self._fw_hash.hex()
         cmd = f"OTA {size} {sha256_hex}\n".encode()
         await client.write_gatt_char(OTA_WRITE_UUID, cmd, response=False)
-        resp = await self._read_response(timeout)
-        logger.debug("bleota OTA response: %r", resp)
+        # Bootloader sends ERASING (async, while erasing) then OK when ready.
+        # Loop until we see a terminal response.
+        erase_timeout = max(timeout, 60.0)
+        while True:
+            resp = await self._read_response(erase_timeout)
+            logger.debug("bleota OTA response: %r", resp)
+            if resp == "ERASING":
+                logger.debug("bleota: partition erase in progress…")
+                continue
+            break
         if resp.startswith("ERR Hash Rejected"):
             return "nvs_mismatch"
         if not resp.startswith("OK"):
             return f"error:OTA unexpected: {resp!r}"
 
-        # ── Flash chunks ──────────────────────────────────────────────
+        # ── Flash chunks (BLE: wait for ACK after each chunk) ────────
         on_transition(OTA_FLASHING)
         chunk_size = self._ota_cfg.chunk_size
         total = len(self._fw_bytes)
+        offsets = range(0, total, chunk_size)
+        n_chunks = len(offsets)
         sent = 0
         last_pct = -1
         last_emit = asyncio.get_running_loop().time()
 
-        for offset in range(0, total, chunk_size):
+        for i, offset in enumerate(offsets):
             chunk = self._fw_bytes[offset : offset + chunk_size]
+            is_last = (i == n_chunks - 1)
             await client.write_gatt_char(OTA_WRITE_UUID, chunk, response=False)
             sent += len(chunk)
-            if self._ota_cfg.chunk_delay_ms > 0:
-                await asyncio.sleep(self._ota_cfg.chunk_delay_ms / 1000.0)
+
+            # BLE requires ACK per chunk; last chunk gets OK (or ERR) from endOta()
+            ack = await self._read_response(30.0)
+            if is_last:
+                if ack.startswith("ERR"):
+                    return f"error:flash verify: {ack}"
+                if not ack.startswith("OK"):
+                    logger.warning("bleota final response unexpected: %r", ack)
+            else:
+                if ack != "ACK":
+                    if ack.startswith("ERR"):
+                        return f"error:chunk ack: {ack}"
+                    logger.warning("bleota expected ACK, got %r", ack)
 
             pct = int(sent * 100 / total)
             now = asyncio.get_running_loop().time()
@@ -120,14 +142,6 @@ class OtaSession:
                 last_pct = pct
                 last_emit = now
 
-        # ── REBOOT ───────────────────────────────────────────────────
-        await client.write_gatt_char(OTA_WRITE_UUID, b"REBOOT\n", response=False)
-        try:
-            resp = await self._read_response(timeout)
-            logger.debug("bleota REBOOT response: %r", resp)
-        except asyncio.TimeoutError:
-            # Some firmware versions don't send the final OK before rebooting
-            logger.debug("bleota REBOOT: no response (device rebooting)")
-
+        # Device reboots automatically 2 s after sending final OK — no REBOOT needed
         logger.info("OTA flash complete — %d bytes sent", total)
         return "ok"

@@ -72,6 +72,7 @@ OTA_NVS_MISMATCH      = "OTA_NVS_MISMATCH"
 OTA_SERIAL_WAIT       = "OTA_SERIAL_WAIT"
 OTA_SERIAL_ERASING    = "OTA_SERIAL_ERASING"
 OTA_ERROR             = "OTA_ERROR"
+REGION_UNSET          = "REGION_UNSET"
 
 # Legal transition table (BLE-SPEC.md § "Legal transitions")
 _LEGAL: dict[str, frozenset[str]] = {
@@ -79,7 +80,7 @@ _LEGAL: dict[str, frozenset[str]] = {
     SCANNING:              frozenset({CONNECTING, OFFLINE}),
     CONNECTING:            frozenset({DISCOVERING, SCANNING, OFFLINE}),
     DISCOVERING:           frozenset({SYNCING, OTA_BOOTLOADER_STUCK, FIRMWARE_INCOMPATIBLE, CONNECTING, OFFLINE}),
-    SYNCING:               frozenset({READY, CONNECTING, OFFLINE}),
+    SYNCING:               frozenset({READY, REGION_UNSET, CONNECTING, OFFLINE}),
     READY:                 frozenset({RECONNECTING, OTA_PENDING, OFFLINE}),
     RECONNECTING:          frozenset({DISCOVERING, OFFLINE}),
     FIRMWARE_INCOMPATIBLE: frozenset({OFFLINE}),
@@ -92,6 +93,7 @@ _LEGAL: dict[str, frozenset[str]] = {
     OTA_SERIAL_WAIT:       frozenset({OTA_SERIAL_ERASING, OTA_ERROR}),
     OTA_SERIAL_ERASING:    frozenset({OFFLINE, OTA_ERROR}),
     OTA_ERROR:             frozenset({OFFLINE}),
+    REGION_UNSET:          frozenset({OFFLINE}),
 }
 
 # States that cannot reach OFFLINE in a single transition — must route through OTA_ERROR first.
@@ -119,6 +121,7 @@ _DISPLAY: dict[str, tuple] = {
     OTA_SERIAL_WAIT:       ("Action required",         "warning", "action",       False, False, True),
     OTA_SERIAL_ERASING:    ("Erasing NVS…",      "warning", "erasing",      False, True,  False),
     OTA_ERROR:             ("OTA failed",              "error",   "error",        False, False, False),
+    REGION_UNSET:          ("LoRa region not set",     "warning", "config",       False, False, True),
 }
 
 
@@ -201,6 +204,36 @@ async def _safe_disconnect(client: BleakClient) -> None:
         await client.disconnect()
 
 
+async def _remove_bluez_bond(addr: str) -> None:
+    """Remove the BlueZ pairing bond for addr via dbus-fast."""
+    try:
+        from dbus_fast.aio import MessageBus
+        from dbus_fast import BusType
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        introspection = await bus.introspect("org.bluez", "/")
+        proxy = bus.get_proxy_object("org.bluez", "/", introspection)
+        mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
+        objects = await mgr.call_get_managed_objects()
+        def _unwrap(v):
+            return v.value if hasattr(v, "value") else v
+        dev_path = adapter_path = None
+        for path, interfaces in objects.items():
+            d = interfaces.get("org.bluez.Device1", {})
+            if _unwrap(d.get("Address", "")).upper() == addr.upper():
+                dev_path = path
+            if "org.bluez.Adapter1" in interfaces:
+                adapter_path = path
+        if dev_path and adapter_path:
+            adapter_intro = await bus.introspect("org.bluez", adapter_path)
+            adapter = bus.get_proxy_object("org.bluez", adapter_path, adapter_intro)
+            iface = adapter.get_interface("org.bluez.Adapter1")
+            await iface.call_remove_device(dev_path)
+            logger.info("%s: BlueZ bond removed", addr)
+        bus.disconnect()
+    except Exception as e:
+        logger.debug("%s: BlueZ bond removal skipped: %s", addr, e)
+
+
 def _proto_to_dict(msg) -> dict:
     return json_format.MessageToDict(msg, preserving_proto_field_name=True)
 
@@ -247,6 +280,7 @@ class BleDevice:
         self._want_config_id: Optional[int] = None
         self._sync_complete: asyncio.Event = asyncio.Event()
         self._fromnum_event: asyncio.Event = asyncio.Event()
+        self._lora_region_unset: bool = False
 
         # OTA (step 7)
         self._ota: Optional[object] = None
@@ -1123,6 +1157,7 @@ class BleDevice:
 
         if result == "ok":
             self._transition(OTA_COMPLETE)
+            await _remove_bluez_bond(self._addr)
             self._transition(OFFLINE)
             return "scan_immediately"  # OTA_COMPLETE: device is alive and rebooting to Meshtastic
 
@@ -1420,6 +1455,42 @@ class BleDevice:
                     self._transition(OFFLINE)
                     return "idle"
 
+        # ── REGION_UNSET check ─────────────────────────────────────────
+        if self._lora_region_unset:
+            self._lora_region_unset = False
+            auto_region = self._cfg.lora_region.strip().upper()
+            self._data.sync_duration_s = round(time.monotonic() - _sync_start, 1)
+            if auto_region:
+                logger.info("%s: LoRa region unset — auto-configuring %s", self._addr, auto_region)
+                try:
+                    from meshtastic.protobuf import admin_pb2, config_pb2
+                    region_num = config_pb2.Config.LoRaConfig.RegionCode.Value(auto_region)
+                    admin = admin_pb2.AdminMessage()
+                    admin.set_config.lora.region = region_num
+                    inner = mesh_pb2.MeshPacket()
+                    inner.to = self._own_node_num
+                    inner.decoded.portnum = 68  # PORTNUM_ADMIN_APP
+                    inner.decoded.payload = admin.SerializeToString()
+                    tr = mesh_pb2.ToRadio()
+                    tr.packet.CopyFrom(inner)
+                    await asyncio.wait_for(
+                        client.write_gatt_char(TORADIO_UUID, tr.SerializeToString(), response=True),
+                        timeout=5.0,
+                    )
+                    logger.info("%s: LoRa region %s written — device will reboot", self._addr, auto_region)
+                except Exception as e:
+                    logger.warning("%s: failed to write LoRa region: %s", self._addr, e)
+            else:
+                logger.warning(
+                    "%s: LoRa region unset — add lora_region: EU_868 (or your region) "
+                    "to ble_devices entry in bridge_config.yaml",
+                    self._addr,
+                )
+            self._transition(REGION_UNSET)
+            await _safe_disconnect(client)
+            self._transition(OFFLINE)
+            return "scan_immediately"
+
         # Subscribe to FROMNUM now that config sync is complete
         try:
             await client.start_notify(FROMNUM_UUID, self._on_fromnum)
@@ -1518,18 +1589,44 @@ class BleDevice:
     # ------------------------------------------------------------------
 
     async def _run_sync(self, client: BleakClient) -> None:
-        """Send want_config and read FROMRADIO until config_complete received."""
-        pkt = mesh_pb2.ToRadio()
-        pkt.want_config_id = self._want_config_id
-        await client.write_gatt_char(TORADIO_UUID, pkt.SerializeToString(), response=True)
+        """Send want_config and read FROMRADIO until config_complete received.
 
-        while True:
-            raw = await client.read_gatt_char(FROMRADIO_UUID)
-            if raw:
-                await self._decode_fromradio(bytes(raw))
-                if self._sync_complete.is_set():
-                    break
-            # empty read — firmware will block next read until ready
+        Subscribe to FROMNUM before sending want_config — NimBLE devices (ESP32-C3)
+        only push FROMRADIO data once they detect an active FROMNUM subscriber.
+        The subscription is torn down in the finally block so the post-sync code
+        can re-subscribe for the notify loop.
+        """
+        self._fromnum_event.clear()
+        logger.debug("%s: sync — subscribing FROMNUM before want_config", self._addr)
+        await client.start_notify(FROMNUM_UUID, self._on_fromnum)
+        try:
+            pkt = mesh_pb2.ToRadio()
+            pkt.want_config_id = self._want_config_id
+            logger.debug("%s: sync — sending want_config_id=%d", self._addr, self._want_config_id)
+            await client.write_gatt_char(TORADIO_UUID, pkt.SerializeToString(), response=True)
+            logger.debug("%s: sync — want_config GATT write ACKed", self._addr)
+            # Trigger initial drain immediately (handles fast-responding devices like RAK4631)
+            self._fromnum_event.set()
+            _read_count = 0
+            while not self._sync_complete.is_set():
+                await self._fromnum_event.wait()
+                self._fromnum_event.clear()
+                logger.debug("%s: sync — FROMNUM fired, draining FROMRADIO", self._addr)
+                while True:
+                    raw = await client.read_gatt_char(FROMRADIO_UUID)
+                    if not raw:
+                        logger.debug("%s: sync — FROMRADIO empty after %d packets", self._addr, _read_count)
+                        break
+                    _read_count += 1
+                    logger.debug("%s: sync — FROMRADIO pkt #%d len=%d bytes=%s",
+                                 self._addr, _read_count, len(raw), raw[:8].hex())
+                    await self._decode_fromradio(bytes(raw))
+                    if self._sync_complete.is_set():
+                        return
+        finally:
+            logger.debug("%s: sync — stop_notify FROMNUM", self._addr)
+            with contextlib.suppress(Exception):
+                await client.stop_notify(FROMNUM_UUID)
 
     # ------------------------------------------------------------------
     # Notify loop — FROMNUM notification-driven FROMRADIO reads while READY
@@ -1575,6 +1672,7 @@ class BleDevice:
             self._tcp_gateway.broadcast(raw)
 
         which = fr.WhichOneof("payload_variant")
+        logger.debug("%s: FROMRADIO which=%s", self._addr, which)
 
         if which == "my_info":
             num = fr.my_info.my_node_num
@@ -1582,6 +1680,7 @@ class BleDevice:
             self._data.node_id = f"!{num:08x}"
             self._data.my_node_num = num
             self._my_info = _proto_to_dict(fr.my_info)
+            logger.debug("%s: my_info node_num=!%08x", self._addr, num)
 
         elif which == "node_info":
             ni = fr.node_info
@@ -1589,6 +1688,8 @@ class BleDevice:
             key = str(ni.num)
             self._sync_nodes[key] = node_dict
             self._data.node_count = len(self._sync_nodes)
+            logger.debug("%s: node_info num=!%08x short=%s",
+                         self._addr, ni.num, ni.user.short_name if ni.HasField("user") else "?")
 
             # Populate DeviceData from own node
             if ni.num == self._own_node_num and ni.HasField("user"):
@@ -1620,11 +1721,21 @@ class BleDevice:
             section = fr.config.WhichOneof("payload_variant")
             if section:
                 self._config[section] = _proto_to_dict(getattr(fr.config, section))
+                if section == "lora":
+                    region = self._config["lora"].get("region", 0)
+                    logger.debug("%s: config lora region=%s(%s)",
+                                 self._addr, region, self._config["lora"])
+                    if region == 0:
+                        self._lora_region_unset = True
+                        logger.debug("%s: config lora region UNSET — will go REGION_UNSET after sync", self._addr)
+                else:
+                    logger.debug("%s: config section=%s", self._addr, section)
 
         elif which == "moduleConfig":
             section = fr.moduleConfig.WhichOneof("payload_variant")
             if section:
                 self._module_config[section] = _proto_to_dict(getattr(fr.moduleConfig, section))
+            logger.debug("%s: moduleConfig section=%s", self._addr, section)
 
         elif which == "channel":
             ch = _proto_to_dict(fr.channel)
@@ -1632,6 +1743,7 @@ class BleDevice:
             while len(self._channels) <= idx:
                 self._channels.append({})
             self._channels[idx] = ch
+            logger.debug("%s: channel idx=%d", self._addr, idx)
 
         elif which == "metadata":
             self._metadata = _proto_to_dict(fr.metadata)
@@ -1641,8 +1753,13 @@ class BleDevice:
                 from meshtastic.protobuf import mesh_pb2 as _m
                 hw_name = _m.HardwareModel.Name(fr.metadata.hw_model)
                 self._data.hw_model = hw_name if hw_name else str(fr.metadata.hw_model)
+            logger.debug("%s: metadata fw=%s hw=%s", self._addr,
+                         fr.metadata.firmware_version, fr.metadata.hw_model)
 
         elif which == "config_complete_id":
+            logger.debug("%s: config_complete_id=%d want=%d match=%s",
+                         self._addr, fr.config_complete_id, self._want_config_id or 0,
+                         fr.config_complete_id == self._want_config_id)
             if fr.config_complete_id == self._want_config_id:
                 self._sync_complete.set()
 
@@ -1664,6 +1781,12 @@ class BleDevice:
 
         elif which == "rebooted":
             logger.info("%s: device rebooted", self._addr)
+
+        elif which is None:
+            logger.debug("%s: FROMRADIO — empty/unknown payload (raw len=%d)", self._addr, len(raw))
+
+        else:
+            logger.debug("%s: FROMRADIO — unhandled which=%s", self._addr, which)
 
     def set_session_passkey(self, passkey: bytes) -> None:
         """Called by AppRouter when it decodes an ADMIN_APP response containing a session_passkey."""

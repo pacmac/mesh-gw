@@ -91,6 +91,8 @@ class BleDeviceConfig:
     auto_connect: bool = True
     tcp_port: Optional[int] = None
     flags: list[str] = field(default_factory=list)
+    hw_model: str = ""   # e.g. "HELTEC_HT62"; used for rescue OTA when no sync has completed
+    lora_region: str = ""  # e.g. "EU_868"; auto-sent when region is unset after sync
 
 
 def _ble_config_from_dict(raw: dict) -> BleConfig:
@@ -157,6 +159,8 @@ def _device_config_from_dict(raw: dict) -> BleDeviceConfig:
         auto_connect=bool(raw.get("auto_connect", True)),
         tcp_port=int(raw["tcp_port"]) if raw.get("tcp_port") is not None else None,
         flags=list(raw.get("flags", [])),
+        hw_model=str(raw.get("hw_model", "")),
+        lora_region=str(raw.get("lora_region", "")),
     )
 
 

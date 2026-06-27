@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
+from core.ble_device import _remove_bluez_bond
 from core.app_router import AppRouter
 from core.bridge_config import update_ble_device
 from core.config import load as _load_config
@@ -175,9 +176,23 @@ def create_app(dm: DeviceManager) -> FastAPI:
                 devices.append(entry)
                 cfg["ble_devices"] = devices
                 _bcfg.save(cfg)
+            else:
+                # Device already in config — update pin if it changed
+                for d in devices:
+                    if d.get("address", "").upper() == address:
+                        if pin != d.get("pin", ""):
+                            d["pin"] = pin
+                            cfg["ble_devices"] = devices
+                            _bcfg.save(cfg)
+                        break
 
-        # Trigger reconcile so the new device is started
+        # Reconcile picks up config changes; then explicitly start if auto_connect
+        # (reconcile only calls start() for new addresses, not existing OFFLINE devices)
         await dm.reload_config()
+        if auto_connect:
+            dev = dm.get_by_ble(address)
+            if dev is not None:
+                await dev.start()
         return {"connecting": auto_connect, "address": address, "tcp_port": tcp_port}
 
     @app.post("/devices/{addr}/connect")
@@ -228,35 +243,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
             if a.upper() != address
         ]
         _bcfg.save(cfg)
-        # Remove BlueZ bond via dbus-fast (no bluetoothctl)
-        try:
-            from dbus_fast.aio import MessageBus
-            from dbus_fast import BusType
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            introspection = await bus.introspect("org.bluez", "/")
-            proxy = bus.get_proxy_object("org.bluez", "/", introspection)
-            mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
-            objects = await mgr.call_get_managed_objects()
-            def _unwrap(v):
-                return v.value if hasattr(v, "value") else v
-            dev_path = None
-            adapter_path = None
-            for path, interfaces in objects.items():
-                d = interfaces.get("org.bluez.Device1", {})
-                a = _unwrap(d.get("Address", ""))
-                if a.upper() == address:
-                    dev_path = path
-                if "org.bluez.Adapter1" in interfaces:
-                    adapter_path = path
-            if dev_path and adapter_path:
-                adapter_intro = await bus.introspect("org.bluez", adapter_path)
-                adapter = bus.get_proxy_object("org.bluez", adapter_path, adapter_intro)
-                iface = adapter.get_interface("org.bluez.Adapter1")
-                await iface.call_remove_device(dev_path)
-                logger.info("Removed BlueZ bond for %s", address)
-            bus.disconnect()
-        except Exception as e:
-            logger.debug("BlueZ bond removal for %s: %s", address, e)
+        await _remove_bluez_bond(address)
         return {"removed": True, "address": address}
 
     # -- OTA ------------------------------------------------------------------
@@ -278,12 +265,22 @@ def create_app(dm: DeviceManager) -> FastAPI:
         hw_dir = _hw_dir(request, hw_model)
         if not hw_dir.exists():
             return {"files": [], "hw_model": hw_model, "dir": str(hw_dir)}
+        import re as _re
+        _SKIP = {"mt-esp32c3-ota.bin"}
+        def _fw_entry(f):
+            m = _re.search(r"(\d+\.\d+\.\d+)", f.name)
+            version = m.group(1) if m else None
+            prepared = bool(version and (hw_dir / version / "nvs_ota_hash.bin").exists())
+            ota_ready = f.suffix == ".bin"
+            return {"name": f.name, "size": f.stat().st_size, "mtime": int(f.stat().st_mtime),
+                    "ota_ready": ota_ready, "version": version, "prepared": prepared}
         files = sorted(
-            [{"name": f.name, "size": f.stat().st_size, "mtime": int(f.stat().st_mtime)}
-             for f in hw_dir.iterdir()
+            [_fw_entry(f) for f in hw_dir.iterdir()
              if f.is_file() and f.suffix in {".zip", ".bin"}
              and not f.name.endswith(".factory.bin")
-             and not f.name.startswith("littlefs-")],
+             and not f.name.startswith("littlefs-")
+             and not f.name.startswith("nvs_")
+             and f.name not in _SKIP],
             key=lambda x: x["mtime"], reverse=True,
         )
         return {"files": files, "hw_model": hw_model, "dir": str(hw_dir)}
@@ -339,6 +336,32 @@ def create_app(dm: DeviceManager) -> FastAPI:
         contents = await file.read()
         dest.write_bytes(contents)
         return {"filename": file.filename, "size": len(contents), "hw_model": hw_model, "dir": str(hw_dir)}
+
+    @app.post("/ota/firmware/prepare")
+    async def ota_prepare_firmware(request: Request, body: dict = Body(...)):
+        """Create versioned folder for a firmware file: copy fw + generate NVS + copy bleota.
+
+        Body: { "node_id": "...", "filename": "firmware-xxx-2.7.26.xxx.bin" }
+        Optionally: { "bleota_bin": "/absolute/path/to/mt-esp32c3-ota.bin" }
+        """
+        from pathlib import Path
+        from core.nvs_image import prepare_fw_version
+        node_id  = body.get("node_id")
+        filename = body.get("filename")
+        if not node_id or not filename:
+            raise HTTPException(400, "node_id and filename are required")
+        dev = dm.get(node_id)
+        hw_model = (dev.data.hw_model or "") if dev else ""
+        if not hw_model:
+            raise HTTPException(400, "hw_model not available — device still syncing?")
+        hw_dir = _hw_dir(request, hw_model)
+        bleota_override = body.get("bleota_bin")
+        bleota = Path(bleota_override) if bleota_override else None
+        try:
+            result = prepare_fw_version(hw_dir, filename, bleota)
+        except (FileNotFoundError, ValueError) as e:
+            raise HTTPException(400, str(e))
+        return result
 
     @app.post("/ota/firmware/download")
     async def ota_download_firmware(request: Request, body: dict = Body(...)):
@@ -403,7 +426,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
         fw_path = _hw_dir(request, hw_model) / fw_name
         if not fw_path.is_file():
             raise HTTPException(400, f"firmware file not found: {fw_path}")
-        await dev.trigger_ota(str(fw_path))
+        if dev.state in ("OFFLINE", "OTA_BOOTLOADER_STUCK"):
+            await dev.trigger_ota_stuck(str(fw_path))
+        else:
+            await dev.trigger_ota(str(fw_path))
         return {"started": True, "addr": dev.addr, "firmware": fw_name, "hw_model": hw_model}
 
     # -- BLE scan -------------------------------------------------------------
