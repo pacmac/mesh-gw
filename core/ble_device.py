@@ -860,20 +860,12 @@ class BleDevice:
 
                 try:
                     await client.pair()
-                    db2 = bleak_db(client)
-                    self._paired  = db2["paired"]
-                    self._trusted = db2["trusted"]
-                    logger.info("%s: pairing complete — paired=%s", self._addr, self._paired)
+                    # BlueZ Paired D-Bus property lags after pair() returns; trust the
+                    # successful call and continue — bleak_db() on next cycle confirms.
+                    self._paired = True
+                    logger.info("%s: pairing complete", self._addr)
                 except Exception as e:
                     logger.error("%s: pairing failed: %s", self._addr, e)
-                    await _safe_disconnect(client)
-                    self._transition(OFFLINE)
-                    await asyncio.sleep(self._ble_cfg.connect_retry_delay_s)
-                    self._transition(SCANNING)
-                    connect_attempts = 0
-                    continue
-                if not self._paired:
-                    logger.error("%s: pair() succeeded but still not paired", self._addr)
                     await _safe_disconnect(client)
                     self._transition(OFFLINE)
                     await asyncio.sleep(self._ble_cfg.connect_retry_delay_s)
