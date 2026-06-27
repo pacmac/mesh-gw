@@ -203,6 +203,29 @@ async def _safe_disconnect(client: BleakClient) -> None:
         await client.disconnect()
 
 
+async def bleak_db(addr: str) -> dict:
+    """Query bleak's internal BlueZ property cache for a known device.
+
+    Returns a dict with connected/paired/trusted for addr, read directly
+    from the manager that bleak already maintains — no scan, no dbus calls.
+    Returns all-False defaults if the device is not in the cache yet.
+    """
+    _IFACE = "org.bluez.Device1"
+    result = {"connected": False, "paired": False, "trusted": False}
+    try:
+        manager = await get_global_bluez_manager()
+        for path, interfaces in manager._properties.items():
+            dev = interfaces.get(_IFACE, {})
+            if dev.get("Address", "").upper() == addr.upper():
+                result["connected"] = bool(dev.get("Connected", False))
+                result["paired"]    = bool(dev.get("Paired",    False))
+                result["trusted"]   = bool(dev.get("Trusted",   False))
+                break
+    except Exception as e:
+        logger.debug("bleak_db(%s): %s", addr, e)
+    return result
+
+
 def _proto_to_dict(msg) -> dict:
     return json_format.MessageToDict(msg, preserving_proto_field_name=True)
 
@@ -238,6 +261,8 @@ class BleDevice:
         self._state: str = OFFLINE
         self._data: DeviceData = DeviceData(tcp_port=cfg.tcp_port)
         self._last_state_event: dict = {}
+        self._paired: Optional[bool] = None
+        self._trusted: Optional[bool] = None
 
         # BLE resources — set during _connection_loop
         self._client: Optional[BleakClient] = None
@@ -313,6 +338,8 @@ class BleDevice:
             "pct": pct,
             "deadline": deadline,
             "has_pin": bool(self._pin),
+            "paired":  self._paired,
+            "trusted": self._trusted,
             "display": {
                 "badge_color": badge_color,
                 "badge_text": badge_text,
@@ -772,6 +799,11 @@ class BleDevice:
                 continue
 
             connect_attempts = 0
+
+            db = await bleak_db(self._addr)
+            self._paired  = db["paired"]
+            self._trusted = db["trusted"]
+            logger.debug("%s: bleak_db → paired=%s trusted=%s", self._addr, self._paired, self._trusted)
 
             session_done = await self._run_one_session(client)
 
