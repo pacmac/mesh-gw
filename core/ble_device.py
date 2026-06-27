@@ -259,9 +259,9 @@ class BleDevice:
         # Admin session passkey refresh task
         self._passkey_task: Optional[asyncio.Task] = None
 
-        # Mesh state cache — exposed via properties for methods.py (step 5)
-        self._nodes: dict[str, dict] = {}
-        self._range_test_log: list[dict] = []
+        # Sync-time node buffer — populated during SYNCING, used for READY seed emit.
+        # Live node cache lives in AppRouter after the BLE/AppRouter split.
+        self._sync_nodes: dict[str, dict] = {}
         self._channels: list[dict] = []
         self._config: dict = {}
         self._module_config: dict = {}
@@ -457,7 +457,7 @@ class BleDevice:
 
     @property
     def nodes(self) -> dict:
-        return self._nodes
+        return self._sync_nodes
 
     @property
     def channels(self) -> list:
@@ -1360,12 +1360,12 @@ class BleDevice:
         self._enqueue(self._data.as_event(self._addr))
         # Seed own-device node into node-list so nodeSelf populates in the browser
         own_key = str(self._own_node_num)
-        if own_key in self._nodes:
+        if own_key in self._sync_nodes:
             self._enqueue({
                 "type": "node_update",
                 "device": self._addr,
                 "addr": self._addr,
-                "data": dict(self._nodes[own_key]),
+                "data": dict(self._sync_nodes[own_key]),
             })
 
         # Schedule priority downgrade to BALANCED after conn_priority_downgrade_s (matches Android)
@@ -1510,8 +1510,8 @@ class BleDevice:
             ni = fr.node_info
             node_dict = _proto_to_dict(ni)
             key = str(ni.num)
-            self._nodes[key] = node_dict
-            self._data.node_count = len(self._nodes)
+            self._sync_nodes[key] = node_dict
+            self._data.node_count = len(self._sync_nodes)
 
             # Populate DeviceData from own node
             if ni.num == self._own_node_num and ni.HasField("user"):
@@ -1570,181 +1570,26 @@ class BleDevice:
                 self._sync_complete.set()
 
         elif which == "packet":
-            # Extract session_passkey from any admin GET response (portnum 68, ADMIN_APP).
-            # Device includes session_passkey in all get_x_response packets.
-            # Client must include it in all set_x commands. Expires after 300s.
             logger.debug("%s: packet portnum=%d payload_len=%d",
                          self._addr, fr.packet.decoded.portnum,
                          len(fr.packet.decoded.payload))
-            if fr.packet.decoded.portnum == PORTNUM_ADMIN_APP and fr.packet.decoded.payload:
-                try:
-                    from meshtastic.protobuf import admin_pb2
-                    admin_resp = admin_pb2.AdminMessage()
-                    admin_resp.ParseFromString(fr.packet.decoded.payload)
-                    logger.debug("%s: admin response — WhichOneof=%s session_passkey_len=%d",
-                                 self._addr,
-                                 admin_resp.WhichOneof("payload_variant"),
-                                 len(admin_resp.session_passkey))
-                    if admin_resp.session_passkey:
-                        self._data.session_passkey = admin_resp.session_passkey.hex()
-                        self._data.session_passkey_refreshed_at = time.monotonic()
-                        logger.debug("%s: session_passkey refreshed", self._addr)
-                except Exception as exc:
-                    logger.debug("%s: admin parse error: %s", self._addr, exc)
-
-            # Only emit as events after we're in READY (not during SYNCING)
+            # Only emit as events after we're in READY (not during SYNCING).
+            # Payload stays as raw bytes — AppRouter handles all decoding and routing.
             if self._state == READY:
                 pkt_dict = _proto_to_dict(fr.packet)
                 self._enqueue({
                     "type": "packet",
                     "addr": self._addr,
-                    "device": self._addr,   # alias — node-dash consumers use ev.device
+                    "device": self._addr,
                     "node_id": self._data.node_id,
-                    "data": {"packet": pkt_dict},  # wrapped — node-dash reads ev.data.packet
+                    "data": {"packet": pkt_dict},
                 })
-                self._update_node_from_packet(fr.packet, pkt_dict)
-                portnum = fr.packet.decoded.portnum
-                if portnum == 67:    # TELEMETRY_APP
-                    self._update_telemetry_from_packet(fr.packet)
-                elif portnum == 256: # PRIVATE_APP — tilt payload
-                    self._decode_tilt_packet(fr.packet)
 
         elif which == "rebooted":
             logger.info("%s: device rebooted", self._addr)
 
-    def _update_node_from_packet(self, pkt, pkt_dict: dict) -> None:
-        """Update _nodes from live POSITION/NODEINFO/TELEMETRY/RANGE_TEST packets
-        and track signal metrics per node."""
-        from meshtastic.protobuf import mesh_pb2 as _mesh, portnums_pb2, telemetry_pb2
-        pkt_from = getattr(pkt, "from")
-        node = self._nodes.setdefault(str(pkt_from), {"num": pkt_from})
-        portnum = pkt.decoded.portnum
-
-        try:
-            if portnum == portnums_pb2.PortNum.POSITION_APP:
-                pos = _mesh.Position()
-                pos.ParseFromString(pkt.decoded.payload)
-                node["position"] = _proto_to_dict(pos)
-
-            elif portnum == portnums_pb2.PortNum.NODEINFO_APP:
-                user = _mesh.User()
-                user.ParseFromString(pkt.decoded.payload)
-                node["user"] = _proto_to_dict(user)
-
-            elif portnum == portnums_pb2.PortNum.TELEMETRY_APP:
-                tel = telemetry_pb2.Telemetry()
-                tel.ParseFromString(pkt.decoded.payload)
-                which = tel.WhichOneof("variant")
-                if which:
-                    node[which] = _proto_to_dict(getattr(tel, which))
-
-            elif portnum == portnums_pb2.PortNum.RANGE_TEST_APP:
-                seq_text = pkt.decoded.payload.decode("utf-8", errors="replace")
-                entry = {
-                    "ts": int(time.time()),
-                    "from_num": pkt_from,
-                    "rssi": pkt.rx_rssi or None,
-                    "snr": round(pkt.rx_snr, 1) if pkt.rx_snr else None,
-                    "hops": max(0, pkt.hop_start - pkt.hop_limit) if pkt.hop_start else 0,
-                    "seq": seq_text,
-                }
-                self._range_test_log.append(entry)
-                if len(self._range_test_log) > 500:
-                    self._range_test_log = self._range_test_log[-500:]
-        except Exception as e:
-            logger.debug("%s: packet decode error portnum=%d: %s", self._addr, portnum, e)
-
-        # Signal metrics on every packet
-        if pkt.rx_snr:
-            node["snr"] = round(pkt.rx_snr, 1)
-        if pkt.rx_rssi:
-            node["rssi"] = pkt.rx_rssi
-        if pkt.hop_start:
-            node["hops"] = max(0, pkt.hop_start - pkt.hop_limit)
-        node["via_mqtt"] = bool(pkt.via_mqtt)
-        node["last_heard"] = int(time.time())
-
-        # Emit node_update for NODEINFO, POSITION, and TELEMETRY so node-list / index.js can store env metrics live
-        if portnum in (portnums_pb2.PortNum.NODEINFO_APP, portnums_pb2.PortNum.POSITION_APP, portnums_pb2.PortNum.TELEMETRY_APP):
-            self._enqueue({
-                "type": "node_update",
-                "device": self._addr,
-                "addr": self._addr,
-                "data": dict(node),
-            })
-
-    def _decode_tilt_packet(self, pkt) -> None:
-        """Decode a PRIVATE_APP tilt payload: 5 little-endian floats (roll, pitch, x, y, z)."""
-        import struct
-        raw = bytes(pkt.decoded.payload)
-        if len(raw) < 20:
-            logger.warning("%s: tilt packet too short (%d bytes)", self._addr, len(raw))
-            return
-        roll, pitch, x, y, z = struct.unpack_from("<5f", raw)
-        logger.debug("%s: tilt roll=%.1f pitch=%.1f x=%.3f y=%.3f z=%.3f",
-                     self._addr, roll, pitch, x, y, z)
-        self._enqueue({
-            "type": "tilt_update",
-            "addr": self._addr,
-            "device": self._data.node_id,
-            "node_id": self._data.node_id,
-            "from_num": self._own_node_num,
-            "data": {"roll": round(roll, 2), "pitch": round(pitch, 2),
-                     "x": round(x, 3), "y": round(y, 3), "z": round(z, 3)},
-        })
-
-    def _update_telemetry_from_packet(self, pkt) -> None:
-        """Update DeviceData from a decoded telemetry MeshPacket and emit telemetry event."""
-        try:
-            from meshtastic.protobuf import telemetry_pb2
-            tel = telemetry_pb2.Telemetry()
-            tel.ParseFromString(pkt.decoded.payload)
-            which = tel.WhichOneof("variant")
-            if which == "device_metrics":
-                dm = tel.device_metrics
-                if dm.battery_level:
-                    self._data.battery_level = dm.battery_level
-                if dm.voltage:
-                    self._data.voltage = round(dm.voltage, 2)
-                if dm.channel_utilization:
-                    self._data.channel_utilization = round(dm.channel_utilization, 2)
-                if dm.air_util_tx:
-                    self._data.air_util_tx = round(dm.air_util_tx, 2)
-                if dm.uptime_seconds:
-                    self._data.uptime_s = dm.uptime_seconds
-                self._enqueue(self._data.as_event(self._addr))
-            elif which == "environment_metrics":
-                em = tel.environment_metrics
-                self._enqueue({
-                    "type": "telemetry_update",
-                    "variant": "environment_metrics",
-                    "addr": self._addr,
-                    "node_id": self._data.node_id,
-                    "from_num": self._own_node_num,
-                    "data": {
-                        "temperature":        round(em.temperature, 2) if em.temperature else None,
-                        "relative_humidity":  round(em.relative_humidity, 2) if em.relative_humidity else None,
-                        "barometric_pressure": round(em.barometric_pressure, 2) if em.barometric_pressure else None,
-                        "gas_resistance":     round(em.gas_resistance, 2) if em.gas_resistance else None,
-                    },
-                })
-            elif which == "power_metrics":
-                self._enqueue({
-                    "type": "telemetry_update",
-                    "variant": "power_metrics",
-                    "addr": self._addr,
-                    "node_id": self._data.node_id,
-                    "from_num": self._own_node_num,
-                    "data": _proto_to_dict(tel.power_metrics),
-                })
-            elif which == "local_stats":
-                self._enqueue({
-                    "type": "telemetry_update",
-                    "variant": "local_stats",
-                    "addr": self._addr,
-                    "node_id": self._data.node_id,
-                    "from_num": self._own_node_num,
-                    "data": _proto_to_dict(tel.local_stats),
-                })
-        except Exception as e:
-            logger.warning("%s: telemetry decode error: %s", self._addr, e)
+    def set_session_passkey(self, passkey: bytes) -> None:
+        """Called by AppRouter when it decodes an ADMIN_APP response containing a session_passkey."""
+        self._data.session_passkey = passkey.hex()
+        self._data.session_passkey_refreshed_at = time.monotonic()
+        logger.debug("%s: session_passkey refreshed by AppRouter", self._addr)
