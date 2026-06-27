@@ -314,6 +314,7 @@ class BleDevice:
             "message": message,
             "pct": pct,
             "deadline": deadline,
+            "has_pin": bool(self._pin),
             "display": {
                 "badge_color": badge_color,
                 "badge_text": badge_text,
