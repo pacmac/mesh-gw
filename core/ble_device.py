@@ -240,60 +240,74 @@ async def _pair_with_pin(client: "BleakClient", addr: str, pin: str) -> None:
 
     Meshtastic devices configured with a fixed or random PIN use
     PROPERTY_WRITE_AUTHEN | PROPERTY_WRITE_ENC on TORADIO, requiring an
-    authenticated encrypted connection before any GATT writes succeed.
-    This registers a minimal org.bluez.Agent1 passkey agent, triggers pairing,
-    then unregisters the agent.
+    authenticated encrypted connection. This registers a minimal passkey agent
+    using raw D-Bus messages (no introspection) to avoid signature-inference
+    issues, triggers pairing, then unregisters the agent.
     """
     try:
         from dbus_fast.aio import MessageBus
-        from dbus_fast import BusType
-        from dbus_fast.service import ServiceInterface, method as dbus_method
+        from dbus_fast import BusType, MessageType
+        from dbus_fast.message import Message
+        from dbus_fast.service import ServiceInterface, method as _dbus_method
 
         AGENT_PATH = "/com/meshtastic/gw/PairingAgent"
+        pin_int = int(pin)
 
         class _PasskeyAgent(ServiceInterface):
-            def __init__(self, _pin: str) -> None:
+            def __init__(self) -> None:
                 super().__init__("org.bluez.Agent1")
-                self._pin = int(_pin)
 
-            @dbus_method()
+            @_dbus_method()
             def Release(self) -> None:
                 pass
 
-            @dbus_method()
-            def RequestPasskey(self, device: "o") -> "u":  # type: ignore[override]
+            @_dbus_method()
+            def RequestPasskey(self, device: "o") -> "u":
                 logger.info("%s: passkey agent returning PIN", addr)
-                return self._pin
+                return pin_int
 
-            @dbus_method()
-            def DisplayPasskey(self, device: "o", passkey: "u", entered: "q") -> None:  # type: ignore[override]
+            @_dbus_method()
+            def DisplayPasskey(self, device: "o", passkey: "u", entered: "q") -> None:
                 pass
 
-            @dbus_method()
-            def RequestConfirmation(self, device: "o", passkey: "u") -> None:  # type: ignore[override]
+            @_dbus_method()
+            def RequestConfirmation(self, device: "o", passkey: "u") -> None:
                 logger.info("%s: passkey agent auto-confirming %d", addr, passkey)
 
-            @dbus_method()
-            def RequestAuthorization(self, device: "o") -> None:  # type: ignore[override]
+            @_dbus_method()
+            def RequestAuthorization(self, device: "o") -> None:
                 pass
 
-            @dbus_method()
-            def AuthorizeService(self, device: "o", uuid: "s") -> None:  # type: ignore[override]
+            @_dbus_method()
+            def AuthorizeService(self, device: "o", uuid: "s") -> None:
                 pass
 
-            @dbus_method()
+            @_dbus_method()
             def Cancel(self) -> None:
                 pass
 
         bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        agent = _PasskeyAgent(pin)
+        agent = _PasskeyAgent()
         bus.export(AGENT_PATH, agent)
 
-        mgr_intro = await bus.introspect("org.bluez", "/org/bluez")
-        mgr_proxy = bus.get_proxy_object("org.bluez", "/org/bluez", mgr_intro)
-        agentmgr = mgr_proxy.get_interface("org.bluez.AgentManager1")
-        await agentmgr.call_register_agent(AGENT_PATH, "KeyboardOnly")
-        await agentmgr.call_request_default_agent(AGENT_PATH)
+        # Use raw messages to avoid signature-inference issues with introspection
+        async def _bluez_call(path: str, interface: str, member: str,
+                              signature: str = "", body: list | None = None) -> None:
+            reply = await bus.call(Message(
+                destination="org.bluez",
+                path=path,
+                interface=interface,
+                member=member,
+                signature=signature,
+                body=body or [],
+            ))
+            if reply.message_type == MessageType.ERROR:
+                raise RuntimeError(f"D-Bus error {reply.error_name}: {reply.body}")
+
+        await _bluez_call("/org/bluez", "org.bluez.AgentManager1",
+                          "RegisterAgent", "os", [AGENT_PATH, "KeyboardOnly"])
+        await _bluez_call("/org/bluez", "org.bluez.AgentManager1",
+                          "RequestDefaultAgent", "o", [AGENT_PATH])
         logger.debug("%s: passkey agent registered — pairing", addr)
         try:
             await client.pair()
@@ -302,7 +316,8 @@ async def _pair_with_pin(client: "BleakClient", addr: str, pin: str) -> None:
             logger.warning("%s: pair() result: %s (may already be paired)", addr, e)
         finally:
             with contextlib.suppress(Exception):
-                await agentmgr.call_unregister_agent(AGENT_PATH)
+                await _bluez_call("/org/bluez", "org.bluez.AgentManager1",
+                                  "UnregisterAgent", "o", [AGENT_PATH])
             bus.disconnect()
     except Exception as e:
         logger.warning("%s: passkey agent setup failed: %s", addr, e)
