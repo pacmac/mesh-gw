@@ -70,7 +70,7 @@ SECTION_META: dict[str, dict] = {
     },
     "range_test": {
         "__reboot": False,
-        "__notes": ["Enabling this causes firmware to consume range test packets internally — disable to receive range test results via BLE."],
+        "__notes": ["Set 'sender' to a non-zero interval (seconds) to transmit range test packets. Leave at 0 (unset) to receive only. hop_limit=0 so packets do not relay — direct RF only."],
     },
     "owner": {
         "__reboot": True,

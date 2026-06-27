@@ -38,6 +38,10 @@ class MeshState:
         # reply (Data.reply_id == request_id) is decoded
         self._pending = {}
 
+        # Session passkey returned by the device in admin responses (fw >= 2.7.18).
+        # Must be echoed back in sensitive admin sends (OTA, factory-reset, etc.).
+        self.session_passkey: bytes = b""
+
         # async queues for websocket subscribers
         self._subscribers = set()
 
@@ -264,6 +268,26 @@ class MeshState:
             self._suppress_packet_ids.discard(pkt.id)
             return True
 
+        # ROUTING_APP — mesh ACK/NAK for a DM we sent (want_ack=True)
+        if pkt.decoded.portnum == portnums_pb2.PortNum.ROUTING_APP:
+            try:
+                routing = mesh_pb2.Routing()
+                routing.ParseFromString(pkt.decoded.payload)
+                error_reason = routing.error_reason
+                # request_id on the routing packet points back to the original TX packet
+                orig_id = pkt.decoded.request_id
+                if orig_id:
+                    await self._broadcast({
+                        "type": "routing_ack",
+                        "packet_id": orig_id,
+                        "error_reason": error_reason,
+                        "error_name": mesh_pb2.Routing.ErrorReason.Name(error_reason),
+                        "from_num": getattr(pkt, "from"),
+                    })
+            except Exception as e:
+                logger.debug(f"ROUTING_APP parse error: {e}")
+            return True  # suppress raw packet broadcast
+
         # Admin replies are correlated to a pending request via request_id
         if pkt.decoded.portnum == portnums_pb2.PortNum.ADMIN_APP:
             req_id = pkt.decoded.reply_id or pkt.decoded.request_id
@@ -272,6 +296,9 @@ class MeshState:
                 admin = admin_pb2.AdminMessage()
                 try:
                     admin.ParseFromString(pkt.decoded.payload)
+                    if admin.session_passkey:
+                        self.session_passkey = bytes(admin.session_passkey)
+                        logger.debug("admin session passkey captured (%d bytes)", len(self.session_passkey))
                     fut.set_result(_to_dict(admin))
                 except Exception as e:
                     fut.set_exception(e)

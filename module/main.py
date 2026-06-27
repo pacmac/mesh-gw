@@ -1,18 +1,13 @@
-"""mesh-rest-bridge multi-device server entry point.
+"""mesh-gw server entry point.
 
 Usage:
-    python -m module.main [BLE_ADDRESS ...] [--http-port 8000] [--verbose]
-    python -m module.main AA:BB:CC:DD:EE:FF 11:22:33:44:55:66 --http-port 8000
+    python -m module.main [--http-port 8001] [--verbose]
 
-BLE addresses can also be stored in bridge_config.yaml under 'ble_devices':
-    ble_devices:
-      - address: AA:BB:CC:DD:EE:FF
-        pin: ""
-      - address: 11:22:33:44:55:66
-        pin: ""
-
-Command-line addresses are connected in addition to any persisted ones.
+BLE device list is loaded from core/bridge_config.yaml under 'ble_devices'.
+All auto-connect devices are started during server startup (lifespan).
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
@@ -22,10 +17,8 @@ import sys
 
 import uvicorn
 
-# Allow running from the project root without installing
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core import bridge_config as _bcfg
 from module.device_manager import DeviceManager
 from module.server import create_app
 
@@ -37,25 +30,15 @@ def setup_logging(verbose: bool, log_config: dict | None = None):
         level=logging.DEBUG if verbose else logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    # Per-logger level overrides from bridge_config.yaml logging section.
-    # Example config:
-    #   logging:
-    #     core.state: DEBUG
-    #     core.ble_handler: WARNING
     for logger_name, level_str in (log_config or {}).items():
         level = getattr(logging, str(level_str).upper(), None)
         if level is not None:
             logging.getLogger(logger_name).setLevel(level)
 
 
-async def run(addresses: list[tuple[str, str]], http_port: int):
-    """addresses: list of (ble_address, pin) tuples."""
-    dm = DeviceManager()
-    mqtt_cfg = _bcfg.load().get("mqtt_publish", {})
-    if mqtt_cfg.get("enabled"):
-        dm.start_mqtt_publisher(mqtt_cfg)
-        logger.info("MQTT publisher started -> %s (prefix=%s)",
-                    mqtt_cfg.get("broker"), mqtt_cfg.get("topic_prefix", "mesh"))
+async def run(http_port: int) -> None:
+    queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+    dm = DeviceManager(queue)
     app = create_app(dm)
 
     config = uvicorn.Config(app, host="0.0.0.0", port=http_port, log_level="info")
@@ -63,89 +46,40 @@ async def run(addresses: list[tuple[str, str]], http_port: int):
 
     loop = asyncio.get_running_loop()
 
-    def handle_signal():
+    def _handle_signal():
         logger.info("Shutdown signal received")
         server.should_exit = True
 
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, handle_signal)
+        loop.add_signal_handler(sig, _handle_signal)
 
     loop.add_signal_handler(
         signal.SIGHUP,
         lambda: asyncio.create_task(dm.reload_config()),
     )
 
-    async def connect_all():
-        if not addresses:
-            logger.info("No BLE addresses configured — use POST /devices to connect")
-            return
-        for addr, pin, tcp_port in addresses:
-            try:
-                key = await dm.connect(addr, pin=pin, tcp_port=tcp_port)
-                logger.info("Initiated connection: %s -> %s (tcp_port=%s)", addr, key, tcp_port)
-            except Exception as e:
-                logger.error("Failed to start connection to %s: %s", addr, e)
-
-    connect_task = asyncio.create_task(connect_all())
-
-    try:
-        await server.serve()
-    finally:
-        connect_task.cancel()
-        logger.info("Shutting down all device connections…")
-        try:
-            await asyncio.wait_for(dm.stop_all(), timeout=15.0)
-        except asyncio.TimeoutError:
-            logger.warning("Device shutdown timed out")
-        logger.info("Shutdown complete")
+    await server.serve()
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Meshtastic multi-device BLE-to-JSON bridge")
-    parser.add_argument(
-        "addresses", nargs="*",
-        help="BLE MAC address(es) of Meshtastic device(s) to connect at startup",
-    )
+    parser = argparse.ArgumentParser(description="Meshtastic BLE gateway")
     parser.add_argument("--http-port", type=int, default=8000)
-    parser.add_argument("--pin", default="", help="BLE PIN (applied to all command-line addresses)")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
 
-    cfg = _bcfg.load()
-    setup_logging(args.verbose, log_config=cfg.get("logging", {}))
-    logger.info("mesh-rest-bridge-multi starting on port %d", args.http_port)
-    persisted = cfg.get("ble_devices") or []
-    # Legacy single-device config
-    if not persisted and cfg.get("ble", {}).get("address"):
-        persisted = [{"address": cfg["ble"]["address"], "pin": cfg["ble"].get("pin", "")}]
+    # Load just for log config at startup — reconcile() in lifespan handles everything else
+    try:
+        from core import bridge_config as _bcfg
+        cfg = _bcfg.load()
+        log_config = cfg.get("logging", {})
+    except Exception:
+        log_config = {}
 
-    addresses: list[tuple[str, str, int | None]] = []
-    seen: set[str] = set()
-
-    for entry in persisted:
-        addr = (entry.get("address") or "").strip().upper()
-        if addr and addr not in seen:
-            if not entry.get("auto_connect", True):
-                logger.info("Skipping auto-connect (disabled): %s", addr)
-                seen.add(addr)
-                continue
-            addresses.append((addr, entry.get("pin", "") or "", entry.get("tcp_port") or None))
-            seen.add(addr)
-
-    for addr in args.addresses:
-        addr = addr.strip().upper()
-        if addr and addr not in seen:
-            addresses.append((addr, args.pin, None))
-            seen.add(addr)
-
-    if addresses:
-        for addr, _, tcp_port in addresses:
-            logger.info("Will connect to: %s (tcp_port=%s)", addr, tcp_port)
-    else:
-        logger.info("No BLE addresses configured — use POST /devices to connect")
+    setup_logging(args.verbose, log_config=log_config)
+    logger.info("mesh-gw starting on port %d", args.http_port)
 
     try:
-        asyncio.run(run(addresses, args.http_port))
+        asyncio.run(run(args.http_port))
     except KeyboardInterrupt:
         logger.info("Exiting…")
 

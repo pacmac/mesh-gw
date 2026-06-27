@@ -243,9 +243,22 @@ BLE connections are preserved across a reload.
 
 ## Running
 
+mesh-gw runs as a **systemctl service on the local dev server**. The BLE adapter and all Meshtastic hardware are local to this host.
+
 ```bash
-pip install -r requirements.txt
-python -m module.main AA:BB:CC:DD:EE:FF 11:22:33:44:55:66 --http-port 8001
+systemctl start mesh-gw        # start
+systemctl stop mesh-gw         # stop
+systemctl restart mesh-gw      # restart (required after code changes)
+systemctl reload mesh-gw       # reload config only — sends SIGHUP, preserves BLE connections
+journalctl -u mesh-gw -f       # follow logs
+journalctl -u mesh-gw -n 50    # last 50 lines
+```
+
+The service file is `mesh-gw.service` in this directory. To run manually for debugging:
+
+```bash
+cd /usr/share/pac/dev/projects/mt-radar/mesh-gw
+venv/bin/python -m module.main --http-port 8001 --verbose
 ```
 
 ## MQTT Proxy

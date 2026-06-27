@@ -477,6 +477,7 @@ function dashboard() {
       ws.onopen = () => { this.wsConnected = true; };
       ws.onclose = () => {
         this.wsConnected = false;
+        this.availableDevices = this.availableDevices.map(d => ({ ...d, ble_state: 'offline' }));
         if (ws === this._ws) setTimeout(() => this.connectWS(), 3000);
       };
       ws.onerror = () => ws.close();

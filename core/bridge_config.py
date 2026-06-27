@@ -8,6 +8,9 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "bridge_config.yaml")
 
+# Default OTA dir used when ota.dir is empty — auto-created on first use.
+DEFAULT_OTA_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "ota_firmware"))
+
 _BLE_DEVICE_DEFAULTS = {
     "auto_connect": True,   # connect automatically on bridge startup
     "tcp_port":    None,    # Meshtastic TCP port (4403 convention); None = disabled
@@ -15,6 +18,7 @@ _BLE_DEVICE_DEFAULTS = {
 
 DEFAULTS = {
     "ble_devices": [],  # list of {address, pin, tcp_port?, auto_connect?} to auto-connect on startup
+    "known_ble_addresses": [],  # addresses ever seen as Meshtastic/bleota — appear in scans even with no adv UUID
     # Per-logger level overrides. Set a logger name to DEBUG/INFO/WARNING/ERROR.
     # Example: {"core.state": "DEBUG", "core.ble_handler": "WARNING"}
     "logging": {},
@@ -85,6 +89,17 @@ def get_ble_device(address: str) -> dict:
         if d.get("address", "").upper() == address.upper():
             return {**_BLE_DEVICE_DEFAULTS, **d}
     return {**_BLE_DEVICE_DEFAULTS, "address": address.upper()}
+
+
+def add_known_address(address: str) -> None:
+    """Record a BLE address as a known Meshtastic/OTA device so it appears in future scans."""
+    addr = address.upper()
+    cfg = load()
+    known = [a.upper() for a in (cfg.get("known_ble_addresses") or [])]
+    if addr not in known:
+        known.append(addr)
+        cfg["known_ble_addresses"] = known
+        save(cfg)
 
 
 def update_ble_device(address: str, fields: dict) -> dict:

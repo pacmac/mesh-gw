@@ -1,25 +1,29 @@
-"""Multi-device REST server.
+"""Multi-device REST/WS server.
 
 Routes are device-namespaced under /{node_id}/ (e.g. /!3f172791/nodes).
 Server-level routes are flat (/status, /devices, /bridge_config, /events).
 No static files — dashboard is a separate service.
 CORS enabled for all origins.
+
+Source of truth: docs/BLE-SPEC.md § "module/server.py — HTTP surface only"
 """
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import logging
-import subprocess
 import time
 from contextlib import asynccontextmanager
-
-from bleak import BleakScanner
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Body, Query
 from typing import List
+
+from bleak import BleakClient, BleakScanner
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Body, Query, Form, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
 from core.bridge_config import update_ble_device
-from core.claude_daemon import run as _claude_daemon_run
+from core.config import load as _load_config
 from core.methods import METHODS, get_nodes
 from core.mcp_server import mount_mcp
 from core.sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, REBOOT_SECTIONS, SECTION_META
@@ -35,17 +39,33 @@ def _err(code: int, message: str, status: int = 400):
 
 
 def create_app(dm: DeviceManager) -> FastAPI:
-    _mcp_mgr: list = []  # one-element list so the closure can see the final value
+    _mcp_mgr: list = []
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        daemon_task = asyncio.create_task(_claude_daemon_run(), name="claude-daemon")
+        # Load config and start all auto-connect devices
+        device_configs, ble_cfg, ota_cfg = _load_config()
+        app.state.ota_cfg = ota_cfg
+        await dm.reconcile(device_configs, ble_cfg, ota_cfg)
+        logger.info("Started %d BLE device(s)", len(dm.all()))
+
+        # Start event drain loop — pulls from shared BleDevice queue, fans out to WS subscribers
+        drain_task = asyncio.create_task(_drain_loop(dm), name="event-drain")
+
         async with _mcp_mgr[0].run():
             yield
-        daemon_task.cancel()
 
-    app = FastAPI(title="mesh-rest-bridge-multi", lifespan=lifespan)
+        drain_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await drain_task
 
+        logger.info("Shutting down all device connections…")
+        try:
+            await asyncio.wait_for(dm.stop_all(), timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.warning("Device shutdown timed out")
+
+    app = FastAPI(title="mesh-gw", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -57,21 +77,25 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def runtime_error_handler(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=500)
 
-    # -- helper: resolve node_id to bridge or 404 ----------------------------
+    _mcp_mgr.append(mount_mcp(app, dm))
 
-    def _bridge(node_id: str):
-        b = dm.get(node_id)
-        if b is None:
-            raise HTTPException(404, f"Unknown device: {node_id}")
-        return b
+    # -- helpers --------------------------------------------------------------
 
-    async def _call(node_id: str, method_name: str, params: dict):
-        bridge = _bridge(node_id)
+    def _device(addr_or_node_id: str):
+        dev = dm.get(addr_or_node_id)
+        if dev is None:
+            raise HTTPException(404, f"Unknown device: {addr_or_node_id}")
+        return dev
+
+    async def _call(addr_or_node_id: str, method_name: str, params: dict):
+        dev = _device(addr_or_node_id)
         fn = METHODS.get(method_name)
         if not fn:
             raise HTTPException(404, f"Method not found: {method_name}")
         try:
-            return await fn(bridge, params)
+            return await fn(dev, params)
+        except NotImplementedError as e:
+            raise HTTPException(503, f"Not yet implemented: {e}")
         except KeyError as e:
             raise HTTPException(400, f"Missing/invalid param: {e}")
         except TimeoutError as e:
@@ -88,8 +112,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
     # Server-level routes
     # =========================================================================
 
-    _mcp_mgr.append(mount_mcp(app, dm))
-
     @app.get("/help", response_class=PlainTextResponse)
     async def help_text():
         return HELP_TEXT
@@ -101,121 +123,195 @@ def create_app(dm: DeviceManager) -> FastAPI:
     @app.get("/status")
     async def server_status():
         return {
-            "server": "mesh-rest-bridge-multi",
+            "server": "mesh-gw",
             "devices": dm.list_devices(),
         }
 
     @app.get("/devices")
     async def list_devices():
-        return {"devices": dm.list_devices()}
+        return {
+            "devices": [
+                {
+                    **dev.snapshot,
+                    "addr": dev.addr,
+                    "node_id": dev.node_id,
+                    "state": dev.state,
+                }
+                for dev in dm.all()
+            ]
+        }
 
     @app.post("/devices")
     async def add_device(body: dict = Body(...)):
-        address = (body.get("address") or "").strip()
-        pin = (body.get("pin") or "").strip()
+        """Add a device to config and start connecting."""
+        address = (body.get("address") or "").strip().upper()
+        pin = str(body.get("pin") or "")
         if not address:
             raise HTTPException(400, "address required")
         tcp_port = body.get("tcp_port") or None
-        if tcp_port:
+        if tcp_port is not None:
             tcp_port = int(tcp_port)
+        display_name = str(body.get("display_name") or "")
+        auto_connect = bool(body.get("auto_connect", True))
+
         if body.get("persist", True):
             cfg = _bcfg.load()
             devices = cfg.get("ble_devices") or []
             addrs = [d.get("address", "").upper() for d in devices]
-            if address.upper() not in addrs:
-                entry = {"address": address, "pin": pin}
-                if tcp_port:
+            if address not in addrs:
+                entry: dict = {"address": address, "pin": pin, "auto_connect": auto_connect}
+                if tcp_port is not None:
                     entry["tcp_port"] = tcp_port
+                if display_name:
+                    entry["display_name"] = display_name
                 devices.append(entry)
                 cfg["ble_devices"] = devices
                 _bcfg.save(cfg)
-        key = await dm.connect(address, pin=pin, tcp_port=tcp_port)
-        return {"connecting": True, "key": key, "address": address, "tcp_port": tcp_port}
 
-    @app.delete("/devices/{node_id:path}")
-    async def remove_device(node_id: str):
-        asyncio.create_task(dm.disconnect(node_id))
-        return {"disconnecting": True, "node_id": node_id}
+        # Trigger reconcile so the new device is started
+        await dm.reload_config()
+        return {"connecting": auto_connect, "address": address, "tcp_port": tcp_port}
 
-    @app.post("/devices/{node_id}/retry")
-    async def retry_device(node_id: str):
-        """Reset reconnect backoff and trigger an immediate reconnect attempt."""
-        bridge = _bridge(node_id)
-        if bridge.ble:
-            bridge.ble.reconnect_attempts = 0
-        if bridge.ble_state not in ("reconnecting",):
-            asyncio.create_task(bridge._on_disconnected())
-        return {"retrying": True, "node_id": node_id}
+    @app.post("/devices/{addr}/connect")
+    async def connect_device(addr: str):
+        """Start connection on an existing device (if it has auto_connect=false)."""
+        dev = dm.get_by_ble(addr)
+        if dev is None:
+            raise HTTPException(404, f"Unknown BLE address: {addr}")
+        await dev.start()
+        return {"started": True, "addr": dev.addr, "state": dev.state}
 
-    # -- OTA firmware management -----------------------------------------------
+    @app.delete("/devices/{addr}")
+    async def remove_device(addr: str):
+        """Stop and remove a device. Removes from config if persist=true."""
+        dev = dm.get(addr)
+        if dev is None:
+            raise HTTPException(404, f"Unknown device: {addr}")
+        ble_addr = dev.addr
+        await dev.stop()
+        dm.remove(ble_addr)
+        return {"stopped": True, "addr": ble_addr}
+
+    @app.patch("/ble_devices/{address}")
+    async def patch_ble_device(address: str, body: dict = Body(...)):
+        allowed = {"auto_connect", "tcp_port"}
+        fields = {k: v for k, v in body.items() if k in allowed}
+        if "tcp_port" in fields and fields["tcp_port"] is not None:
+            fields["tcp_port"] = int(fields["tcp_port"])
+        if not fields:
+            raise HTTPException(400, f"No recognised fields. Allowed: {sorted(allowed)}")
+        return update_ble_device(address, fields)
+
+    @app.delete("/ble/known/{address}")
+    async def ble_remove(address: str):
+        """Disconnect, remove from config, and remove BlueZ bond."""
+        address = address.upper()
+        dev = dm.get_by_ble(address)
+        if dev:
+            await dev.stop()
+            dm.remove(address)
+        cfg = _bcfg.load()
+        cfg["ble_devices"] = [
+            d for d in cfg.get("ble_devices", [])
+            if d.get("address", "").upper() != address
+        ]
+        cfg["known_ble_addresses"] = [
+            a for a in cfg.get("known_ble_addresses", [])
+            if a.upper() != address
+        ]
+        _bcfg.save(cfg)
+        # Remove BlueZ bond via dbus-fast (no bluetoothctl)
+        try:
+            from dbus_fast.aio import MessageBus
+            from dbus_fast import BusType
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            introspection = await bus.introspect("org.bluez", "/")
+            proxy = bus.get_proxy_object("org.bluez", "/", introspection)
+            mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
+            objects = await mgr.call_get_managed_objects()
+            def _unwrap(v):
+                return v.value if hasattr(v, "value") else v
+            dev_path = None
+            adapter_path = None
+            for path, interfaces in objects.items():
+                d = interfaces.get("org.bluez.Device1", {})
+                a = _unwrap(d.get("Address", ""))
+                if a.upper() == address:
+                    dev_path = path
+                if "org.bluez.Adapter1" in interfaces:
+                    adapter_path = path
+            if dev_path and adapter_path:
+                adapter_intro = await bus.introspect("org.bluez", adapter_path)
+                adapter = bus.get_proxy_object("org.bluez", adapter_path, adapter_intro)
+                iface = adapter.get_interface("org.bluez.Adapter1")
+                await iface.call_remove_device(dev_path)
+                logger.info("Removed BlueZ bond for %s", address)
+            bus.disconnect()
+        except Exception as e:
+            logger.debug("BlueZ bond removal for %s: %s", address, e)
+        return {"removed": True, "address": address}
+
+    # -- OTA ------------------------------------------------------------------
 
     _releases_cache: dict = {"data": None, "ts": 0.0}
     _RELEASES_TTL = 3600.0
 
+    def _hw_dir(request, hw_model: str):
+        """Resolve firmware directory for a hw_model using typed OtaConfig."""
+        return request.app.state.ota_cfg.firmware_dir(hw_model)
+
     @app.get("/ota/firmware")
-    async def ota_list_firmware(node_id: str = Query(...)):
-        """List firmware files available for this device's hw_model.
-
-        Returns files from {ota.dir}/{hw_model}/ filtered by protocol extension.
-        """
-        import time
+    async def ota_list_firmware(request: Request, node_id: str = Query(...)):
         from pathlib import Path
-        from core.bridge_config import load as _load_cfg
-        from core.ota_esp32 import is_nrf52
-
-        ota_dir = _load_cfg().get("ota", {}).get("dir", "")
-        if not ota_dir:
-            return {"files": [], "hw_model": None, "dir": None, "configured": False}
-
-        bridge = dm.get(node_id)
-        hw_model = (bridge.state.metadata.get("hw_model") or "") if bridge else ""
+        dev = dm.get(node_id)
+        hw_model = (dev.data.hw_model or "") if dev else ""
         if not hw_model:
-            return {"files": [], "hw_model": None, "dir": None, "configured": True, "error": "hw_model not available yet"}
-
-        hw_dir = Path(ota_dir) / hw_model
-        ext = ".zip" if is_nrf52(hw_model) else ".bin"
-
+            return {"files": [], "hw_model": None, "error": "hw_model not available yet"}
+        hw_dir = _hw_dir(request, hw_model)
         if not hw_dir.exists():
-            return {"files": [], "hw_model": hw_model, "dir": str(hw_dir), "configured": True}
-
+            return {"files": [], "hw_model": hw_model, "dir": str(hw_dir)}
         files = sorted(
             [{"name": f.name, "size": f.stat().st_size, "mtime": int(f.stat().st_mtime)}
-             for f in hw_dir.iterdir() if f.is_file() and f.suffix == ext],
+             for f in hw_dir.iterdir()
+             if f.is_file() and f.suffix in {".zip", ".bin"}
+             and not f.name.endswith(".factory.bin")
+             and not f.name.startswith("littlefs-")],
             key=lambda x: x["mtime"], reverse=True,
         )
-        return {"files": files, "hw_model": hw_model, "dir": str(hw_dir), "configured": True}
+        return {"files": files, "hw_model": hw_model, "dir": str(hw_dir)}
+
+    @app.delete("/ota/firmware")
+    async def ota_delete_firmware(request: Request, node_id: str = Query(...), filename: str = Query(...)):
+        dev = dm.get(node_id)
+        hw_model = (dev.data.hw_model or "") if dev else ""
+        if not hw_model:
+            raise HTTPException(400, "hw_model not available")
+        hw_dir = _hw_dir(request, hw_model).resolve()
+        target = (hw_dir / filename).resolve()
+        if not str(target).startswith(str(hw_dir)):
+            raise HTTPException(400, "Invalid filename")
+        if not target.exists():
+            raise HTTPException(404, "File not found")
+        target.unlink()
+        return {"deleted": filename}
 
     @app.get("/ota/releases")
     async def ota_releases():
-        """Return Meshtastic firmware releases from GitHub, cached 1 h."""
-        import time
         import httpx
-
         now = time.monotonic()
         if _releases_cache["data"] and now - _releases_cache["ts"] < _RELEASES_TTL:
             return _releases_cache["data"]
-
         url = "https://api.github.com/repos/meshtastic/firmware/releases?per_page=15"
         async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.get(url, headers={
-                "Accept": "application/vnd.github.v3+json",
-                "User-Agent": "mesh-gw/1.0",
-            })
+            r = await client.get(url, headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "mesh-gw/1.0"})
             r.raise_for_status()
             raw = r.json()
-
         releases = [
-            {
-                "tag":        rel["tag_name"],
-                "name":       rel["name"],
-                "published":  rel["published_at"],
-                "prerelease": rel["prerelease"],
-                "assets": [
-                    {"name": a["name"], "url": a["browser_download_url"], "size": a["size"]}
-                    for a in rel["assets"]
-                    if a["name"].endswith((".bin", ".zip")) and "ota" not in a["name"].lower()
-                ],
-            }
+            {"tag": rel["tag_name"], "name": rel["name"], "published": rel["published_at"],
+             "prerelease": rel["prerelease"],
+             "assets": [{"name": a["name"], "url": a["browser_download_url"], "size": a["size"]}
+                        for a in rel["assets"]
+                        if a["name"].endswith((".bin", ".zip")) and "ota" not in a["name"].lower()]}
             for rel in raw
         ]
         result = {"releases": releases}
@@ -223,32 +319,33 @@ def create_app(dm: DeviceManager) -> FastAPI:
         _releases_cache["ts"] = now
         return result
 
-    @app.post("/ota/firmware/download")
-    async def ota_download_firmware(body: dict = Body(...)):
-        """Download a firmware asset from GitHub into {ota.dir}/{hw_model}/."""
-        from pathlib import Path
-        from core.bridge_config import load as _load_cfg
+    @app.post("/ota/firmware/upload")
+    async def ota_upload_firmware(request: Request, node_id: str = Form(...), file: UploadFile = File(...)):
+        dev = dm.get(node_id)
+        hw_model = (dev.data.hw_model or "") if dev else ""
+        if not hw_model:
+            raise HTTPException(400, "hw_model not available — device still syncing?")
+        hw_dir = _hw_dir(request, hw_model)
+        hw_dir.mkdir(parents=True, exist_ok=True)
+        dest = hw_dir / file.filename
+        contents = await file.read()
+        dest.write_bytes(contents)
+        return {"filename": file.filename, "size": len(contents), "hw_model": hw_model, "dir": str(hw_dir)}
 
+    @app.post("/ota/firmware/download")
+    async def ota_download_firmware(request: Request, body: dict = Body(...)):
         node_id  = body.get("node_id")
         url      = body.get("url")
         filename = body.get("filename")
-
         if not node_id or not url or not filename:
             raise HTTPException(400, "node_id, url, and filename are required")
-
-        ota_dir = _load_cfg().get("ota", {}).get("dir", "")
-        if not ota_dir:
-            raise HTTPException(400, "ota.dir not configured in bridge_config.yaml")
-
-        bridge   = dm.get(node_id)
-        hw_model = (bridge.state.metadata.get("hw_model") or "") if bridge else ""
+        dev = dm.get(node_id)
+        hw_model = (dev.data.hw_model or "") if dev else ""
         if not hw_model:
             raise HTTPException(400, "hw_model not available — device still syncing?")
-
-        hw_dir = Path(ota_dir) / hw_model
+        hw_dir = _hw_dir(request, hw_model)
         hw_dir.mkdir(parents=True, exist_ok=True)
         dest = hw_dir / filename
-
         await dm._broadcast({"type": "ota_download_start", "device": node_id, "filename": filename, "hw_model": hw_model})
 
         async def _run():
@@ -258,7 +355,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
                     async with client.stream("GET", url, headers={"User-Agent": "mesh-gw/1.0"}) as resp:
                         resp.raise_for_status()
                         total = int(resp.headers.get("content-length", 0))
-                        done  = 0
+                        done = 0
                         last_pct = -1
                         with open(dest, "wb") as f:
                             async for chunk in resp.aiter_bytes(65536):
@@ -268,7 +365,8 @@ def create_app(dm: DeviceManager) -> FastAPI:
                                     pct = round(done / total * 100)
                                     if pct != last_pct:
                                         last_pct = pct
-                                        await dm._broadcast({"type": "ota_download_progress", "device": node_id, "data": {"pct": pct, "done": done, "total": total}})
+                                        await dm._broadcast({"type": "ota_download_progress", "device": node_id,
+                                                            "data": {"pct": pct, "done": done, "total": total}})
                 await dm._broadcast({"type": "ota_download_complete", "device": node_id, "filename": filename, "size": done})
             except Exception as e:
                 logger.exception("OTA download failed for %s", node_id)
@@ -280,93 +378,111 @@ def create_app(dm: DeviceManager) -> FastAPI:
         return {"started": True, "filename": filename, "dest": str(dest)}
 
     @app.post("/ota")
-    async def ota_update(body: dict = Body(...)):
-        """Trigger a BLE OTA firmware update.
-
-        Routes automatically by hw_model:
-          nRF52 devices (RAK4631 etc.) → Nordic Legacy DFU (.zip)
-          ESP32 devices                → esp32-unified-ota (.bin)
-
-        Body: { "node_id": "!xxxx", "ble_addr": "AA:BB:CC:DD:EE:FF", "firmware": "<filename or full path>" }
-        If firmware is a bare filename (no path separator), it is resolved via ota.dir/hw_model/.
-        Streams progress via /events WS as ota_start / ota_progress / ota_complete / ota_error.
-        Returns immediately with {"started": true}.
-        """
-        from pathlib import Path
-        from core.bridge_config import load as _load_cfg
-        from core.ota_esp32 import is_nrf52
-
+    async def ota_update(request: Request, body: dict = Body(...)):
         ble_addr = (body.get("ble_addr") or body.get("ble_address") or "").strip() or None
-        fw_path  = body.get("firmware")
+        fw_name  = body.get("firmware")
         node_id  = body.get("node_id") or ble_addr
-
-        if not ble_addr or not fw_path:
-            raise HTTPException(400, "ble_addr and firmware are required")
-
-        # Auto-resolve bare filename via ota.dir/hw_model/
-        if "/" not in fw_path and "\\" not in fw_path:
-            from core.bridge_config import load as _load_cfg
-            _pre = dm.get(node_id) or (dm.get_by_ble(ble_addr) if hasattr(dm, "get_by_ble") else None)
-            _hw  = (_pre.state.metadata.get("hw_model") or "") if _pre else ""
-            _dir = _load_cfg().get("ota", {}).get("dir", "")
-            if _dir and _hw:
-                fw_path = str(Path(_dir) / _hw / fw_path)
-
-        if not Path(fw_path).is_file():
+        if not fw_name:
+            raise HTTPException(400, "firmware is required")
+        dev = dm.get(node_id) if node_id else None
+        if not dev and ble_addr:
+            dev = dm.get_by_ble(ble_addr)
+        if not dev:
+            raise HTTPException(404, f"Device not found: {node_id or ble_addr}")
+        hw_model = dev.data.hw_model or (body.get("hw_model") or "").strip()
+        if not hw_model:
+            raise HTTPException(400, "hw_model not available — pass hw_model in body or wait for device sync")
+        fw_path = _hw_dir(request, hw_model) / fw_name
+        if not fw_path.is_file():
             raise HTTPException(400, f"firmware file not found: {fw_path}")
+        await dev.trigger_ota(str(fw_path))
+        return {"started": True, "addr": dev.addr, "firmware": fw_name, "hw_model": hw_model}
 
-        bridge = dm.get_by_ble(ble_addr) if hasattr(dm, "get_by_ble") else None
-        if not bridge:
-            raise HTTPException(400, f"no connected bridge for BLE address {ble_addr} — device must be connected")
-        hw_model = bridge.state.metadata.get("hw_model") or ""
-        use_nrf  = is_nrf52(hw_model)
-        protocol = "nrf52-dfu" if use_nrf else "esp32-unified-ota"
-        logger.info("OTA %s: hw_model=%r (from device) → %s", node_id, hw_model, protocol)
+    # -- BLE scan -------------------------------------------------------------
 
-        await dm._broadcast({
-            "type": "ota_start",
-            "ble_addr": ble_addr,
-            "device": node_id,
-            "firmware": Path(fw_path).name,
-            "protocol": protocol,
-        })
+    async def _bluez_device_info() -> dict[str, dict]:
+        result = {}
+        try:
+            from dbus_fast.aio import MessageBus
+            from dbus_fast import BusType
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            introspection = await bus.introspect("org.bluez", "/")
+            proxy = bus.get_proxy_object("org.bluez", "/", introspection)
+            mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
+            objects = await mgr.call_get_managed_objects()
+            def _unwrap(v):
+                return v.value if hasattr(v, "value") else v
+            for _path, interfaces in objects.items():
+                dev = interfaces.get("org.bluez.Device1", {})
+                addr = _unwrap(dev.get("Address", ""))
+                if not addr:
+                    continue
+                connected = bool(_unwrap(dev.get("Connected", False)))
+                raw_uuids = _unwrap(dev.get("UUIDs", []))
+                uuids = [_unwrap(u).lower() for u in (raw_uuids or [])]
+                result[addr.upper()] = {"connected": connected, "uuids": uuids}
+            bus.disconnect()
+        except Exception as e:
+            logger.debug("BlueZ D-Bus query failed: %s", e)
+        return result
 
-        async def _run():
-            def _progress(pct, total, done):
-                asyncio.create_task(dm._broadcast({
-                    "type": "ota_progress",
-                    "device": node_id,
-                    "ble_addr": ble_addr,
-                    "data": {"pct": pct},
-                }))
+    @app.get("/ble/scan")
+    async def ble_scan():
+        MESHTASTIC_SVC = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
+        BLEOTA_SVC = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 
-            try:
-                if use_nrf:
-                    from core.ota import ota_update as _do_ota, DfuError as _OtaError
-                else:
-                    from core.ota_esp32 import ota_update as _do_ota, Esp32OtaError as _OtaError
+        bluez_info = await _bluez_device_info()
 
-                result = await _do_ota(bridge, node_id, fw_path, ble_addr=ble_addr, progress_cb=_progress)
-                await dm._broadcast({"type": "ota_complete", "device": node_id, "ble_addr": ble_addr, "data": result})
-            except Exception as e:
-                logger.exception("OTA failed for %s", ble_addr)
-                await dm._broadcast({"type": "ota_error", "device": node_id, "ble_addr": ble_addr, "data": {"error": str(e)}})
+        # Release stale connections
+        active_addrs = {
+            dev.addr for dev in dm.all()
+            if dev.state in ("CONNECTING", "SYNCING", "READY", "RECONNECTING")
+        }
+        stale = [addr for addr, info in bluez_info.items()
+                 if info["connected"] and addr not in active_addrs]
+        if stale:
+            for addr in stale:
+                try:
+                    client = BleakClient(addr)
+                    await asyncio.wait_for(client.disconnect(), timeout=3.0)
+                    logger.info("Scan pre-flight: released stale connection %s", addr)
+                except Exception as e:
+                    logger.debug("Stale disconnect %s: %s", addr, e)
+            await asyncio.sleep(1.5)
 
-        asyncio.create_task(_run())
-        return {"started": True, "ble_addr": ble_addr, "node_id": node_id, "firmware": fw_path, "protocol": protocol}
+        try:
+            found = await BleakScanner.discover(timeout=10.0, return_adv=True)
+        except Exception as e:
+            if "inprogress" in str(e).lower():
+                raise HTTPException(503, "Adapter busy — retry in a few seconds")
+            raise HTTPException(500, f"Scan failed: {e}")
 
-    @app.patch("/ble_devices/{address}")
-    async def patch_ble_device(address: str, body: dict = Body(...)):
-        """Update persisted settings for a BLE device (auto_connect etc.)."""
-        allowed = {"auto_connect", "tcp_port"}
-        fields = {k: v for k, v in body.items() if k in allowed}
-        if "tcp_port" in fields and fields["tcp_port"] is not None:
-            fields["tcp_port"] = int(fields["tcp_port"])
-        if not fields:
-            raise HTTPException(400, f"No recognised fields. Allowed: {sorted(allowed)}")
-        return update_ble_device(address, fields)
+        _cfg = _bcfg.load()
+        configured = {d["address"].upper() for d in _cfg.get("ble_devices", [])}
+        known = {a.upper() for a in _cfg.get("known_ble_addresses", [])}
+        result = []
+        for addr, (dev, adv) in found.items():
+            adv_uuids = [str(u).lower() for u in (adv.service_uuids or [])]
+            cached_uuids = bluez_info.get(addr.upper(), {}).get("uuids", [])
+            all_uuids = set(adv_uuids) | set(cached_uuids)
+            is_mesh = (MESHTASTIC_SVC in all_uuids or BLEOTA_SVC in all_uuids
+                       or "meshtastic" in (dev.name or "").lower()
+                       or addr.upper() in configured or addr.upper() in known)
+            if not is_mesh:
+                continue
+            result.append({
+                "name": dev.name or "Unknown",
+                "address": addr,
+                "rssi": adv.rssi if adv.rssi is not None else -100,
+                "meshtastic": is_mesh,
+                "paired": False,   # dbus lookup only — no bluetoothctl
+                "trusted": False,
+            })
 
-    # -- MQTT publisher --------------------------------------------------------
+        result.sort(key=lambda x: -x["rssi"])
+        return {"devices": result}
+
+    # -- MQTT publisher -------------------------------------------------------
 
     @app.get("/bridge_config")
     async def get_bridge_config():
@@ -394,22 +510,13 @@ def create_app(dm: DeviceManager) -> FastAPI:
         cfg = _bcfg.load()
         cfg["mqtt_publish"] = _bcfg._deep_merge(cfg.get("mqtt_publish", {}), body)
         _bcfg.save(cfg)
-        pub = dm.get_mqtt_publisher()
-        if pub:
-            enabled = cfg["mqtt_publish"].get("enabled", True)
-            if not enabled:
-                await dm.stop_mqtt_publisher()
-        else:
-            if cfg["mqtt_publish"].get("enabled"):
-                dm.start_mqtt_publisher(cfg["mqtt_publish"])
         return cfg["mqtt_publish"]
 
     @app.get("/mqtt_publish/status")
     async def mqtt_publish_status():
-        pub = dm.get_mqtt_publisher()
-        if not pub:
-            return {"running": False}
-        return {"running": True, "connected": pub.connected}
+        return {"running": False, "note": "MQTT publisher not yet wired in step 5"}
+
+    # -- Aggregated node list --------------------------------------------------
 
     @app.get("/nodes")
     async def all_nodes_aggregated(
@@ -419,7 +526,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
         has_telemetry: bool = False,
         node_roles: List[str] = Query(default=[]),
     ):
-        """Merged node list from all connected bridges."""
         params = {
             "max_age": max_age, "max_hops": max_hops,
             "named_only": named_only, "has_position": has_position,
@@ -427,129 +533,15 @@ def create_app(dm: DeviceManager) -> FastAPI:
             "has_telemetry": has_telemetry, "node_roles": node_roles,
         }
         merged: dict = {}
-        for bridge in dm._devices.values():
-            data = await get_nodes(bridge, params)
+        for dev in dm.all():
+            data = await get_nodes(dev, params)
             for k, v in (data.get("nodes") or {}).items():
                 if k not in merged or (v.get("last_heard") or 0) > (merged[k].get("last_heard") or 0):
                     merged[k] = v
         return {"total": len(merged), "count": len(merged), "nodes": merged}
 
-    def _bluez_status(address: str) -> dict:
-        """Return paired/trusted state from BlueZ for a given address."""
-        try:
-            out = subprocess.run(
-                ["bluetoothctl", "info", address],
-                capture_output=True, text=True, timeout=5,
-            ).stdout
-            return {"paired": "Paired: yes" in out, "trusted": "Trusted: yes" in out}
-        except Exception:
-            return {"paired": False, "trusted": False}
+    # -- Schema meta ----------------------------------------------------------
 
-    @app.get("/ble/scan")
-    async def ble_scan():
-        try:
-            MESHTASTIC_SVC = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
-            found = await BleakScanner.discover(timeout=5.0, return_adv=True)
-            result = []
-            for addr, (dev, adv) in found.items():
-                uuids = [str(u).lower() for u in (adv.service_uuids or [])]
-                is_mesh = MESHTASTIC_SVC in uuids or any(
-                    k in (dev.name or "").lower() for k in ("meshtastic", "ta2r", "ta2m"))
-                status = _bluez_status(addr)
-                result.append({
-                    "name": dev.name or "Unknown",
-                    "address": addr,
-                    "rssi": adv.rssi if adv.rssi is not None else -100,
-                    "meshtastic": is_mesh,
-                    "paired": status["paired"],
-                    "trusted": status["trusted"],
-                })
-            result = [r for r in result if r["meshtastic"]]
-            result.sort(key=lambda x: -x["rssi"])
-            return {"devices": result}
-        except Exception as e:
-            raise HTTPException(500, f"Scan failed: {e}")
-
-    @app.delete("/ble/known/{address}")
-    async def ble_remove(address: str):
-        """Remove a device from BlueZ bonding database."""
-        address = address.upper()
-        try:
-            subprocess.run(
-                ["bluetoothctl", "remove", address],
-                capture_output=True, text=True, timeout=10,
-            )
-        except Exception as e:
-            raise HTTPException(500, f"Remove failed: {e}")
-        return {"removed": True, "address": address}
-
-    # -- BLE pairing for dynamic-PIN devices ------------------------------------
-
-    @app.post("/ble/pair")
-    async def ble_pair(body: dict = Body(...)):
-        """Start connection to a dynamic-PIN device. The pairing process pauses
-        at the passkey prompt. Watch the device screen and call POST /ble/passkey
-        with the PIN shown."""
-        address = (body.get("address") or "").strip()
-        if not address:
-            raise HTTPException(400, "address required")
-        tcp_port = body.get("tcp_port") or None
-        if tcp_port:
-            tcp_port = int(tcp_port)
-        key = await dm.pair_device(address, tcp_port=tcp_port)
-        return {
-            "connecting": True,
-            "key": key,
-            "address": address,
-            "tcp_port": tcp_port,
-            "hint": "Watch device screen for PIN, then POST /ble/passkey",
-        }
-
-    @app.post("/ble/passkey")
-    async def ble_passkey(body: dict = Body(...)):
-        """Supply the PIN shown on the device screen to complete pairing."""
-        address = (body.get("address") or "").strip()
-        passkey = str(body.get("passkey") or "").strip()
-        if not address or not passkey:
-            raise HTTPException(400, "address and passkey required")
-        try:
-            dm.resolve_passkey(address, passkey)
-        except ValueError as e:
-            raise HTTPException(404, str(e))
-        return {"accepted": True, "address": address}
-
-    # -- Unified WebSocket: all devices, events tagged with device ID ----------
-
-    @app.websocket("/events")
-    async def ws_all(websocket: WebSocket):
-        device_filter = websocket.query_params.get("device", "")
-        await websocket.accept()
-        # Push current snapshot for every active device — no HTTP needed by subscribers
-        for node_id, bridge in dm._devices.items():
-            if device_filter and node_id != device_filter:
-                continue
-            snapshot = bridge.current_snapshot()
-            snapshot["device"] = node_id
-            await websocket.send_json(snapshot)
-        for bridge in dm._devices.values():
-            for event in bridge.state.get_cached_messages():
-                if device_filter and event.get("device") != device_filter:
-                    continue
-                await websocket.send_json(event)
-        q = dm.subscribe()
-        try:
-            while True:
-                event = await q.get()
-                if device_filter and event.get("device") != device_filter:
-                    continue
-                await websocket.send_json(event)
-        except WebSocketDisconnect:
-            pass
-        finally:
-            dm.unsubscribe(q)
-
-    # Schema meta (device-independent) — must be registered before /{node_id}/
-    # routes to avoid /{node_id}/range_test shadowing /schema/range_test etc.
     @app.get("/sections")
     async def get_sections():
         return {
@@ -577,14 +569,51 @@ def create_app(dm: DeviceManager) -> FastAPI:
         except KeyError as e:
             raise HTTPException(404, str(e))
 
+    # -- All-device WebSocket (spec § "Event queue pattern") ------------------
+
+    @app.websocket("/events")
+    async def ws_all(websocket: WebSocket):
+        device_filter = websocket.query_params.get("device", "")
+        await websocket.accept()
+
+        # Snapshot all current devices on connect (spec § "Snapshot on WebSocket connect")
+        snapshots = []
+        for dev in dm.all():
+            snap = dev.snapshot
+            if device_filter and snap["addr"] != device_filter.upper():
+                continue
+            snapshots.append(snap)
+        if snapshots:
+            await websocket.send_json({"type": "device_snapshot", "devices": snapshots})
+
+        q = dm.subscribe()
+        try:
+            while True:
+                event = await q.get()
+                if device_filter and event.get("addr", "").upper() != device_filter.upper():
+                    continue
+                await websocket.send_json(event)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            dm.unsubscribe(q)
+
     # =========================================================================
-    # Device-namespaced routes  — prefix /{node_id}/
-    # node_id is the full '!3f172791' string (the '!' is part of the path)
+    # Device-namespaced routes  /{node_id}/...
+    # node_id = BLE addr (AA:BB:CC:DD:EE:FF) or !hex node_id
     # =========================================================================
 
     @app.get("/{node_id}/status")
     async def device_status(node_id: str):
-        return await _call(node_id, "get_status", {})
+        dev = _device(node_id)
+        return {
+            "addr": dev.addr,
+            "node_id": dev.node_id,
+            "state": dev.state,
+            **dev.snapshot,
+        }
 
     @app.get("/{node_id}/info")
     async def device_info(node_id: str):
@@ -593,22 +622,18 @@ def create_app(dm: DeviceManager) -> FastAPI:
     @app.get("/{node_id}/nodes")
     async def device_nodes(
         node_id: str,
-        max_age: int = 0,
-        max_hops: int = 99,
-        named_only: bool = False,
-        has_position: bool = False,
-        hide_mqtt: bool = False,
-        has_signal: bool = False,
+        max_age: int = 0, max_hops: int = 99,
+        named_only: bool = False, has_position: bool = False,
+        hide_mqtt: bool = False, has_signal: bool = False,
         has_telemetry: bool = False,
         node_roles: List[str] = Query(default=[]),
     ):
-        params = {
+        return await _call(node_id, "get_nodes", {
             "max_age": max_age, "max_hops": max_hops,
             "named_only": named_only, "has_position": has_position,
             "hide_mqtt": hide_mqtt, "has_signal": has_signal,
             "has_telemetry": has_telemetry, "node_roles": node_roles,
-        }
-        return await _call(node_id, "get_nodes", params)
+        })
 
     @app.get("/{node_id}/nodes/{num}")
     async def device_node(node_id: str, num: int):
@@ -663,6 +688,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def device_delete_fixed_position(node_id: str):
         return await _call(node_id, "remove_fixed_position", {})
 
+    @app.get("/{node_id}/messages")
+    async def device_get_messages(node_id: str, since_id: str = Query(default=None)):
+        return await _call(node_id, "get_messages", {"since_id": since_id})
+
     @app.post("/{node_id}/messages")
     async def device_send_text(node_id: str, body: dict = Body(...)):
         return await _call(node_id, "send_text", body)
@@ -677,7 +706,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     @app.post("/{node_id}/rpc")
     async def device_rpc(node_id: str, body: dict = Body(...)):
-        bridge = _bridge(node_id)
+        dev = _device(node_id)
         fn = METHODS.get(body.get("method"))
         if not fn:
             return JSONResponse(
@@ -686,7 +715,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
                 status_code=404,
             )
         try:
-            result = await fn(bridge, body.get("params") or {})
+            result = await fn(dev, body.get("params") or {})
             return {"jsonrpc": "2.0", "id": body.get("id"), "result": result}
         except Exception as e:
             return JSONResponse(
@@ -697,80 +726,33 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     @app.get("/{node_id}/radio_backup")
     async def device_radio_backup(node_id: str):
-        """Return all cached config sections and channels as a backup snapshot."""
-        bridge = _bridge(node_id)
+        dev = _device(node_id)
         return {
             "version": 1,
             "node_id": node_id,
             "ts": int(time.time()),
-            "config": bridge.state.config,
-            "module_config": bridge.state.module_config,
-            "channels": bridge.state.channels,
+            "config": dev.config,
+            "module_config": dev.module_config,
+            "channels": dev.channels,
         }
-
-    @app.post("/{node_id}/radio_restore")
-    async def device_radio_restore(node_id: str, body: dict = Body(...)):
-        """Write all config sections and channels from a backup, then reboot once."""
-        bridge = _bridge(node_id)
-        config = body.get("config") or {}
-        module_config = body.get("module_config") or {}
-        channels = body.get("channels") or []
-
-        n_sections = len([v for v in config.values() if v]) + len([v for v in module_config.values() if v])
-
-        async def send():
-            for section, values in config.items():
-                if section not in CONFIG_SECTIONS or not isinstance(values, dict) or not values:
-                    continue
-                await bridge.send_admin({"set_config": {section: values}}, want_response=False)
-            for section, values in module_config.items():
-                if section not in MODULE_CONFIG_SECTIONS or not isinstance(values, dict) or not values:
-                    continue
-                await bridge.send_admin({"set_module_config": {section: values}}, want_response=False)
-            for ch in channels:
-                if not isinstance(ch, dict) or ch.get("index") is None:
-                    continue
-                channel = {"index": int(ch["index"])}
-                if "settings" in ch:
-                    channel["settings"] = ch["settings"]
-                if "role" in ch:
-                    channel["role"] = ch["role"]
-                await bridge.send_admin({"set_channel": channel}, want_response=False)
-
-        result = await bridge.write_and_reboot(send)
-        return {**result, "sections": n_sections, "channels": len(channels)}
 
     @app.get("/{node_id}/range_test")
     async def device_range_test(node_id: str):
-        bridge = _bridge(node_id)
-        return {"log": list(bridge.state.range_test_log), "count": len(bridge.state.range_test_log)}
-
-    @app.delete("/{node_id}/range_test")
-    async def device_clear_range_test(node_id: str):
-        bridge = _bridge(node_id)
-        bridge.state.range_test_log.clear()
-        return {"cleared": True}
-
-    # Per-device WebSocket — typed state-machine event stream
-    @app.websocket("/{node_id}/events")
-    async def ws_device(node_id: str, websocket: WebSocket):
-        bridge = _bridge(node_id)
-        await websocket.accept()
-        # Snapshot: immediate current state so subscriber is never blind on connect
-        snapshot = bridge.current_snapshot()
-        snapshot["device"] = node_id
-        await websocket.send_json(snapshot)
-        # Replay recent cached messages (text packets)
-        for event in bridge.state.get_cached_messages():
-            await websocket.send_json(event)
-        q = bridge.state.subscribe()
-        try:
-            while True:
-                event = await q.get()
-                await websocket.send_json(event)
-        except WebSocketDisconnect:
-            pass
-        finally:
-            bridge.state.unsubscribe(q)
+        dev = _device(node_id)
+        msgs = [m for m in dev.messages if m.get("type") == "range_test"]
+        return {"log": msgs, "count": len(msgs)}
 
     return app
+
+
+async def _drain_loop(dm: DeviceManager) -> None:
+    """Drain the shared BleDevice event queue and fan out to all WS subscribers."""
+    while True:
+        event = await dm.queue.get()
+        for q in list(dm._subscribers):
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "WS subscriber queue full — dropping %s event", event.get("type")
+                )

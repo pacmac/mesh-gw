@@ -142,6 +142,11 @@
               <div class="stat-value text-lg" :class="status.config_complete ? 'text-success' : 'text-warning'" x-text="status.config_complete ? 'complete' : 'syncing…'"></div>
               <div class="stat-desc" x-text="(status.node_count ?? 0) + ' nodes in db'"></div>
             </div>
+            <div class="stat">
+              <div class="stat-title">Ready Secs</div>
+              <div class="stat-value text-lg" x-text="status.ready_secs != null ? status.ready_secs + 's' : '–'"></div>
+              <div class="stat-desc">sync time</div>
+            </div>
           </div>
 
           <!-- Environment sensor stats -->
@@ -1032,7 +1037,7 @@
               <div x-show="availableDevices.length > 0" class="overflow-x-auto">
                 <table class="table table-sm">
                   <thead>
-                    <tr><th>Node ID</th><th>BLE Address</th><th>State</th><th>RSSI</th><th>Nodes</th><th>TCP</th><th></th></tr>
+                    <tr><th>Node ID</th><th>BLE Address</th><th>State</th><th>RSSI</th><th>Nodes</th><th>Ready</th><th>TCP</th><th></th></tr>
                   </thead>
                   <tbody>
                     <template x-for="d in availableDevices" :key="d.node_id">
@@ -1046,6 +1051,7 @@
                         </td>
                         <td x-text="d.ble_rssi != null ? d.ble_rssi + ' dBm (' + d.ble_rssi_pct + '%)' : '–'"></td>
                         <td x-text="d.node_count ?? '–'"></td>
+                        <td x-text="d.ready_secs != null ? d.ready_secs + 's' : '–'"></td>
                         <td x-text="d.tcp_port ? d.tcp_port + ' (' + d.tcp_clients + ')' : '–'"></td>
                         <td class="flex gap-1">
                           <button class="btn btn-xs btn-outline" :class="d.node_id===activeNodeId&&'btn-success'" :disabled="d.node_id===activeNodeId" @click="selectDevice(d.node_id)">

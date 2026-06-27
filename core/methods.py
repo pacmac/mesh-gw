@@ -1,14 +1,13 @@
 """Method registry shared by the JSON-RPC endpoint, REST wrappers, and
 (eventually) an MCP tool list -- one place defines what the bridge can do.
 
-Each method is `async def fn(bridge: MeshBridge, params: dict) -> dict`.
+Each method is `async def fn(bridge, params: dict) -> dict`.
 """
 import asyncio
 import logging
 
 from fastapi import HTTPException
 
-from .bridge import MeshBridge
 from .sections import CONFIG_SECTIONS, MODULE_CONFIG_SECTIONS, REBOOT_SECTIONS, SECTION_META, config_kind
 
 logger = logging.getLogger(__name__)
@@ -26,9 +25,9 @@ def method(name):
 # -- read-only, served from cached state (populated on connect + live) -----
 
 @method("get_messages")
-async def get_messages(bridge: MeshBridge, params: dict):
+async def get_messages(bridge, params: dict):
     """Return cached received text messages, newest last. Optional since_id to skip already-seen."""
-    msgs = bridge.state.get_cached_messages()
+    msgs = list(bridge.messages)
     since_id = params.get("since_id")
     if since_id:
         ids = [m.get("id") for m in msgs]
@@ -38,69 +37,26 @@ async def get_messages(bridge: MeshBridge, params: dict):
 
 
 @method("wait_for_message")
-async def wait_for_message(bridge: MeshBridge, params: dict):
-    """Block until a text message arrives (long-poll). Returns immediately when one comes in."""
-    import asyncio, base64
-    timeout = min(int(params.get("timeout", 55)), 55)
-    from_node = params.get("from")  # optional: only match this sender (!hex or numeric)
-
-    q = bridge.state.subscribe()
-    try:
-        deadline = asyncio.get_event_loop().time() + timeout
-        while True:
-            remaining = deadline - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                return {"arrived": False, "message": None}
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=remaining)
-            except asyncio.TimeoutError:
-                return {"arrived": False, "message": None}
-
-            pkt = event.get("data", {}).get("packet", {})
-            decoded = pkt.get("decoded", {})
-            if decoded.get("portnum") != "TEXT_MESSAGE_APP":
-                continue
-
-            sender_num = pkt.get("from")
-            if from_node:
-                # match by !hex string or numeric
-                if from_node.startswith("!"):
-                    if sender_num != int(from_node[1:], 16):
-                        continue
-                elif str(sender_num) != str(from_node):
-                    continue
-
-            text = base64.b64decode(decoded["payload"]).decode("utf-8", errors="replace")
-            return {
-                "arrived": True,
-                "message": {
-                    "id": pkt.get("id"),
-                    "from": f"!{sender_num:08x}" if sender_num else None,
-                    "text": text,
-                    "rx_time": pkt.get("rx_time"),
-                    "rssi": pkt.get("rx_rssi"),
-                    "snr": pkt.get("rx_snr"),
-                }
-            }
-    finally:
-        bridge.state.unsubscribe(q)
+async def wait_for_message(bridge, params: dict):
+    """Block until a text message arrives (long-poll)."""
+    raise NotImplementedError("wait_for_message not yet wired to shared event queue")
 
 
 @method("get_info")
-async def get_info(bridge: MeshBridge, params: dict):
-    return {"my_info": bridge.state.my_info, "metadata": bridge.state.metadata}
+async def get_info(bridge, params: dict):
+    return {"my_info": bridge.my_info, "metadata": bridge.metadata}
 
 
 @method("get_nodes")
-async def get_nodes(bridge: MeshBridge, params: dict):
+async def get_nodes(bridge, params: dict):
     import time
     if "num" in params:
-        node = bridge.state.nodes.get(str(params["num"]))
+        node = bridge.nodes.get(str(params["num"]))
         if node is None:
             raise KeyError(f"unknown node: {params['num']}")
         return {"node": node}
 
-    all_nodes = bridge.state.nodes
+    all_nodes = bridge.nodes
     total = len(all_nodes)
 
     max_age      = int(params.get("max_age", 0))
@@ -157,33 +113,36 @@ async def get_nodes(bridge: MeshBridge, params: dict):
 
 
 @method("get_channels")
-async def get_channels(bridge: MeshBridge, params: dict):
-    return {"channels": bridge.state.channels}
+async def get_channels(bridge, params: dict):
+    return {"channels": bridge.channels}
 
 
 @method("get_config")
-async def get_config(bridge: MeshBridge, params: dict):
-    return {"config": bridge.state.config, "module_config": bridge.state.module_config}
+async def get_config(bridge, params: dict):
+    return {"config": bridge.config, "module_config": bridge.module_config}
 
 
 @method("get_status")
-async def get_status(bridge: MeshBridge, params: dict):
-    snap = bridge.current_snapshot()
-    snap.pop("type", None)
-    snap.pop("ts", None)
-    return snap
+async def get_status(bridge, params: dict):
+    return {
+        "addr": bridge.addr,
+        "node_id": bridge.node_id,
+        "state": bridge.state,
+        **bridge.snapshot,
+    }
 
 
 # -- live admin reads (round-trip to the radio) ------------------------------
 
 @method("get_config_live")
-async def get_config_live(bridge: MeshBridge, params: dict):
-    """Live admin fetch of a config or module_config section by name.
-
-    __ metadata is merged from SECTION_META (sections.py) — the SSOT.
-    Never add __ field logic here; edit sections.py instead.
-    """
+async def get_config_live(bridge, params: dict):
+    """Live admin fetch — falls back to cached state if send_admin not yet implemented."""
     section = params["section"]
+    if not hasattr(bridge, "send_admin"):
+        # Return cached state with spec metadata injected
+        kind = config_kind(section)
+        cached = (bridge.module_config if kind == "module_config" else bridge.config).get(section, {})
+        return {section: {**cached, **SECTION_META.get(section, {})}}
     kind = config_kind(section)
     if kind == "config":
         resp = await bridge.send_admin({"get_config_request": CONFIG_SECTIONS[section]})
@@ -198,13 +157,25 @@ async def get_config_live(bridge: MeshBridge, params: dict):
 
 
 @method("get_channel_live")
-async def get_channel_live(bridge: MeshBridge, params: dict):
+async def get_channel_live(bridge, params: dict):
+    if not hasattr(bridge, "send_admin"):
+        idx = int(params["index"])
+        channels = bridge.channels
+        ch = channels[idx] if 0 <= idx < len(channels) else {}
+        return ch
     resp = await bridge.send_admin({"get_channel_request": int(params["index"]) + 1})
     return resp.get("get_channel_response", {})
 
 
 @method("get_owner_live")
-async def get_owner_live(bridge: MeshBridge, params: dict):
+async def get_owner_live(bridge, params: dict):
+    if not hasattr(bridge, "send_admin"):
+        d = bridge.data
+        return {
+            "short_name": d.short_name,
+            "long_name": d.long_name,
+            **SECTION_META.get("owner", {}),
+        }
     resp = await bridge.send_admin({"get_owner_request": True})
     data = resp.get("get_owner_response", {})
     return {**data, **SECTION_META.get("owner", {})}
@@ -243,7 +214,7 @@ def _merge_config(cached: dict, submitted: dict) -> dict:
     return result
 
 
-def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
+def _validate_config_keys(bridge, section: str, values: dict):
     """Reject submissions where any key from the cached section is absent.
 
     set_module_config replaces the entire section on the radio, so a partial
@@ -257,7 +228,7 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
     """
     from .schema import _HIDDEN_FIELDS
     kind = config_kind(section)
-    cached = (bridge.state.module_config if kind == "module_config" else bridge.state.config).get(section, {})
+    cached = (bridge.module_config if kind == "module_config" else bridge.config).get(section, {})
     if not cached:
         return  # no cached state yet — radio not synced, can't validate
     exempt = (
@@ -271,10 +242,12 @@ def _validate_config_keys(bridge: MeshBridge, section: str, values: dict):
         raise HTTPException(status_code=400, detail=f"Missing required fields for section '{section}': {sorted(missing)}")
 
 
-async def _write_direct(bridge: MeshBridge, send_fn) -> dict:
+async def _write_direct(bridge, send_fn) -> dict:
     """Write config and return. No reboot — change takes effect live."""
-    if bridge.ble_state != "ready":
-        raise RuntimeError(f"Device not connected (ble_state={bridge.ble_state})")
+    if not hasattr(bridge, "send_admin"):
+        raise NotImplementedError("Admin writes not yet implemented (step 5+)")
+    if bridge.state != "READY":
+        raise RuntimeError(f"Device not connected (state={bridge.state})")
     try:
         await asyncio.wait_for(send_fn(), timeout=5)
     except asyncio.TimeoutError:
@@ -285,7 +258,7 @@ async def _write_direct(bridge: MeshBridge, send_fn) -> dict:
 
 
 @method("set_config")
-async def set_config(bridge: MeshBridge, params: dict):
+async def set_config(bridge, params: dict):
     """params: {"section": "lora", "values": {...}}
 
     __ prefixed keys (e.g. __reboot) are metadata injected by get_config_live
@@ -296,7 +269,7 @@ async def set_config(bridge: MeshBridge, params: dict):
     submitted = {k: v for k, v in params["values"].items() if not k.startswith("__")}
     kind = config_kind(section)
     _validate_config_keys(bridge, section, submitted)
-    cached = (bridge.state.module_config if kind == "module_config" else bridge.state.config).get(section, {})
+    cached = (bridge.module_config if kind == "module_config" else bridge.config).get(section, {})
     values = _merge_config(cached, submitted)
     values.update(_FORCED_VALUES.get(section, {}))
     for field in _PASSWORD_FIELDS.get(section, set()):
@@ -313,7 +286,7 @@ async def set_config(bridge: MeshBridge, params: dict):
 
 
 @method("set_channel")
-async def set_channel(bridge: MeshBridge, params: dict):
+async def set_channel(bridge, params: dict):
     """params: {"index": int, "settings": {...}, "role": "..."?}"""
     channel = {"index": int(params["index"])}
     if "settings" in params:
@@ -330,7 +303,7 @@ async def set_channel(bridge: MeshBridge, params: dict):
 _OWNER_FIELDS = {"long_name", "short_name", "is_licensed", "role", "is_unmessagable"}
 
 @method("set_owner")
-async def set_owner(bridge: MeshBridge, params: dict):
+async def set_owner(bridge, params: dict):
     """params: {long_name?, short_name?, is_licensed?, role?, is_unmessagable?}
 
     role lives in DeviceConfig (not User) — route it through set_config("device")
@@ -348,7 +321,7 @@ async def set_owner(bridge: MeshBridge, params: dict):
         result = await _write_direct(bridge, send_owner)
 
     if role is not None:
-        device_cfg = bridge.state.config.get("device", {})
+        device_cfg = bridge.config.get("device", {})
         if not device_cfg:
             raise RuntimeError("Device config not synced — cannot safely update role")
         return await set_config(bridge, {"section": "device", "values": {**device_cfg, "role": role}})
@@ -359,15 +332,17 @@ async def set_owner(bridge: MeshBridge, params: dict):
 
 
 @method("get_fixed_position")
-async def get_fixed_position(bridge: MeshBridge, params: dict):
-    num = bridge.my_node_num
-    node = bridge.state.nodes.get(str(num), {}) if num is not None else {}
+async def get_fixed_position(bridge, params: dict):
+    num = bridge._own_node_num
+    node = bridge.nodes.get(str(num), {}) if num is not None else {}
     return {"position": node.get("position", {})}
 
 
 @method("set_fixed_position")
-async def set_fixed_position(bridge: MeshBridge, params: dict):
+async def set_fixed_position(bridge, params: dict):
     """params: {latitude_i, longitude_i, altitude?}"""
+    if not hasattr(bridge, "send_admin"):
+        raise NotImplementedError("set_fixed_position not yet implemented (step 5+)")
     position = {k: v for k, v in params.items() if k in ("latitude_i", "longitude_i", "altitude")}
 
     async def send():
@@ -377,7 +352,10 @@ async def set_fixed_position(bridge: MeshBridge, params: dict):
 
 
 @method("remove_fixed_position")
-async def remove_fixed_position(bridge: MeshBridge, params: dict):
+async def remove_fixed_position(bridge, params: dict):
+    if not hasattr(bridge, "send_admin"):
+        raise NotImplementedError("remove_fixed_position not yet implemented (step 5+)")
+
     async def send():
         await bridge.send_admin({"remove_fixed_position": True}, want_response=False)
 
@@ -400,8 +378,10 @@ def _parse_node_num(value, default=0xFFFFFFFF) -> int:
 
 
 @method("send_text")
-async def send_text(bridge: MeshBridge, params: dict):
-    return await bridge.send_text(
+async def send_text(bridge, params: dict):
+    if not hasattr(bridge, "send_text_message"):
+        raise NotImplementedError("send_text not yet implemented (BleDevice admin methods are step 5+)")
+    return await bridge.send_text_message(
         text=params["text"],
         to=_parse_node_num(params.get("to")),
         channel=int(params.get("channel", 0)),
@@ -410,8 +390,10 @@ async def send_text(bridge: MeshBridge, params: dict):
 
 
 @method("admin")
-async def admin(bridge: MeshBridge, params: dict):
+async def admin(bridge, params: dict):
     """Generic AdminMessage passthrough. params: {message, to?, want_response?}"""
+    if not hasattr(bridge, "send_admin"):
+        raise NotImplementedError("admin not yet implemented (step 5+)")
     return await bridge.send_admin(
         message=params["message"],
         to=params.get("to"),
@@ -420,6 +402,8 @@ async def admin(bridge: MeshBridge, params: dict):
 
 
 @method("traceroute")
-async def traceroute(bridge: MeshBridge, params: dict):
+async def traceroute(bridge, params: dict):
     """Send a traceroute request. params: {to: node_num}. Response arrives as WS TRACEROUTE_APP packet."""
+    if not hasattr(bridge, "send_traceroute"):
+        raise NotImplementedError("traceroute not yet implemented (step 5+)")
     return await bridge.send_traceroute(to=int(params["to"]))

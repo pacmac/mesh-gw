@@ -111,6 +111,11 @@
           <div class="stat-value text-lg" :class="status.config_complete ? 'text-success' : 'text-warning'" x-text="status.config_complete ? 'complete' : 'syncing…'"></div>
           <div class="stat-desc" x-text="(status.node_count ?? 0) + ' nodes in db'"></div>
         </div>
+        <div class="stat">
+          <div class="stat-title">Ready Secs</div>
+          <div class="stat-value text-lg" x-text="status.ready_secs != null ? status.ready_secs + 's' : '–'"></div>
+          <div class="stat-desc">sync time</div>
+        </div>
       </div>
 
       <!-- Environment sensor stats -->
