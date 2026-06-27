@@ -32,6 +32,7 @@ MESHTASTIC_SERVICE_UUID = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
 TORADIO_UUID            = "f75c76d2-129e-4dad-a1dd-7866124401e7"
 FROMRADIO_UUID          = "2c55e69e-4993-11ed-b878-0242ac120002"  # unchanged across all firmware
 FROMNUM_UUID            = "ed9da18c-a800-4f66-a670-aa7547e34453"  # firmware >= 2.3
+LOGRADIO_UUID           = "5a3d6e49-06e6-4423-9944-e9de8cdf9547"
 
 OTA_SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 OTA_WRITE_UUID   = "62ec0272-3ec5-11eb-b378-0242ac130005"  # client → device
@@ -1596,9 +1597,28 @@ class BleDevice:
         The subscription is torn down in the finally block so the post-sync code
         can re-subscribe for the notify loop.
         """
+        # iOS subscribes FROMRADIO + FROMNUM + LOGRADIO during characteristic discovery
+        # before sending want_config. NimBLE devices (ESP32-C3) require all three CCCDs
+        # written before arming the TORADIO write handler — without FROMRADIO subscribed,
+        # the ATT Write Request to TORADIO never receives a Write Response.
         self._fromnum_event.clear()
-        logger.debug("%s: sync — subscribing FROMNUM before want_config", self._addr)
-        await client.start_notify(FROMNUM_UUID, self._on_fromnum)
+        logger.debug("%s: sync — subscribing FROMRADIO + FROMNUM + LOGRADIO", self._addr)
+        for _uuid, _desc in (
+            (FROMRADIO_UUID, "FROMRADIO"),
+            (FROMNUM_UUID,   "FROMNUM"),
+            (LOGRADIO_UUID,  "LOGRADIO"),
+        ):
+            try:
+                if _uuid == FROMNUM_UUID:
+                    await client.start_notify(_uuid, self._on_fromnum)
+                else:
+                    # FROMRADIO notify data handled via the drain read loop below;
+                    # LOGRADIO is subscribed to match iOS connection sequence.
+                    _cb = self._on_fromnum if _uuid == FROMNUM_UUID else (lambda s, d: None)
+                    await client.start_notify(_uuid, _cb)
+                logger.debug("%s: sync — subscribed %s", self._addr, _desc)
+            except Exception as e:
+                logger.debug("%s: sync — %s notify not supported: %s", self._addr, _desc, e)
         try:
             pkt = mesh_pb2.ToRadio()
             pkt.want_config_id = self._want_config_id
@@ -1624,9 +1644,10 @@ class BleDevice:
                     if self._sync_complete.is_set():
                         return
         finally:
-            logger.debug("%s: sync — stop_notify FROMNUM", self._addr)
-            with contextlib.suppress(Exception):
-                await client.stop_notify(FROMNUM_UUID)
+            logger.debug("%s: sync — stop_notify all", self._addr)
+            for _uuid in (FROMRADIO_UUID, FROMNUM_UUID, LOGRADIO_UUID):
+                with contextlib.suppress(Exception):
+                    await client.stop_notify(_uuid)
 
     # ------------------------------------------------------------------
     # Notify loop — FROMNUM notification-driven FROMRADIO reads while READY
