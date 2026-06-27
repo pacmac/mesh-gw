@@ -235,6 +235,79 @@ async def _remove_bluez_bond(addr: str) -> None:
         logger.debug("%s: BlueZ bond removal skipped: %s", addr, e)
 
 
+async def _pair_with_pin(client: "BleakClient", addr: str, pin: str) -> None:
+    """Pair with a PIN-secured Meshtastic device via a BlueZ passkey agent.
+
+    Meshtastic devices configured with a fixed or random PIN use
+    PROPERTY_WRITE_AUTHEN | PROPERTY_WRITE_ENC on TORADIO, requiring an
+    authenticated encrypted connection before any GATT writes succeed.
+    This registers a minimal org.bluez.Agent1 passkey agent, triggers pairing,
+    then unregisters the agent.
+    """
+    try:
+        from dbus_fast.aio import MessageBus
+        from dbus_fast import BusType
+        from dbus_fast.service import ServiceInterface, method as dbus_method
+
+        AGENT_PATH = "/com/meshtastic/gw/PairingAgent"
+
+        class _PasskeyAgent(ServiceInterface):
+            def __init__(self, _pin: str) -> None:
+                super().__init__("org.bluez.Agent1")
+                self._pin = int(_pin)
+
+            @dbus_method()
+            def Release(self) -> None:
+                pass
+
+            @dbus_method()
+            def RequestPasskey(self, device: "o") -> "u":  # type: ignore[override]
+                logger.info("%s: passkey agent returning PIN", addr)
+                return self._pin
+
+            @dbus_method()
+            def DisplayPasskey(self, device: "o", passkey: "u", entered: "q") -> None:  # type: ignore[override]
+                pass
+
+            @dbus_method()
+            def RequestConfirmation(self, device: "o", passkey: "u") -> None:  # type: ignore[override]
+                logger.info("%s: passkey agent auto-confirming %d", addr, passkey)
+
+            @dbus_method()
+            def RequestAuthorization(self, device: "o") -> None:  # type: ignore[override]
+                pass
+
+            @dbus_method()
+            def AuthorizeService(self, device: "o", uuid: "s") -> None:  # type: ignore[override]
+                pass
+
+            @dbus_method()
+            def Cancel(self) -> None:
+                pass
+
+        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+        agent = _PasskeyAgent(pin)
+        bus.export(AGENT_PATH, agent)
+
+        mgr_intro = await bus.introspect("org.bluez", "/org/bluez")
+        mgr_proxy = bus.get_proxy_object("org.bluez", "/org/bluez", mgr_intro)
+        agentmgr = mgr_proxy.get_interface("org.bluez.AgentManager1")
+        await agentmgr.call_register_agent(AGENT_PATH, "KeyboardOnly")
+        await agentmgr.call_request_default_agent(AGENT_PATH)
+        logger.debug("%s: passkey agent registered — pairing", addr)
+        try:
+            await client.pair()
+            logger.info("%s: paired successfully", addr)
+        except Exception as e:
+            logger.warning("%s: pair() result: %s (may already be paired)", addr, e)
+        finally:
+            with contextlib.suppress(Exception):
+                await agentmgr.call_unregister_agent(AGENT_PATH)
+            bus.disconnect()
+    except Exception as e:
+        logger.warning("%s: passkey agent setup failed: %s", addr, e)
+
+
 def _proto_to_dict(msg) -> dict:
     return json_format.MessageToDict(msg, preserving_proto_field_name=True)
 
@@ -1382,6 +1455,11 @@ class BleDevice:
             continue
 
         await self._set_bluez_trusted()
+
+        # Pair if a PIN is configured — Meshtastic devices with a PIN require
+        # authenticated+encrypted connections before TORADIO writes are accepted.
+        if self._pin:
+            await _pair_with_pin(client, self._addr, self._pin)
 
         # Now confirmed Meshtastic — read MTU and request HIGH connection priority.
         # These are only meaningful for Meshtastic sessions; OTA bootloader sessions
