@@ -83,7 +83,7 @@ _LEGAL: dict[str, frozenset[str]] = {
     OFFLINE:                  frozenset({SCANNING}),
     SCANNING:              frozenset({CONNECTING, OFFLINE}),
     CONNECTING:            frozenset({DISCOVERING, NEED_PAIR, SCANNING, OFFLINE}),
-    NEED_PAIR:             frozenset({OFFLINE}),
+    NEED_PAIR:             frozenset({OFFLINE, DISCOVERING, CONNECTING}),
     DISCOVERING:           frozenset({SYNCING, OTA_BOOTLOADER_STUCK, FIRMWARE_INCOMPATIBLE, CONNECTING, OFFLINE}),
     SYNCING:               frozenset({READY, REGION_UNSET, CONNECTING, OFFLINE}),
     READY:                 frozenset({RECONNECTING, OTA_PENDING, OFFLINE}),
@@ -450,6 +450,114 @@ class BleDevice:
     def retry_pair(self) -> None:
         """Called by the server when the UI has just saved a PIN — wakes the pairing retry wait."""
         self._pair_retry_event.set()
+
+    async def _remove_bluez_device(self) -> None:
+        """Remove this device from BlueZ's adapter to clear stale notify/write state.
+
+        Forces a fresh discovery + re-pair on next connect() — our pairing agent
+        handles the PIN automatically.
+        """
+        try:
+            from dbus_fast.aio import MessageBus
+            from dbus_fast.constants import BusType
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            adapter_path = "/org/bluez/hci0"
+            device_path = f"/org/bluez/hci0/dev_{self._addr.replace(':', '_')}"
+            intr = await bus.introspect("org.bluez", adapter_path)
+            proxy = bus.get_proxy_object("org.bluez", adapter_path, intr)
+            adapter = proxy.get_interface("org.bluez.Adapter1")
+            await adapter.call_remove_device(device_path)
+            bus.disconnect()
+            logger.info("%s: removed from BlueZ adapter (stale state cleared)", self._addr)
+        except Exception as e:
+            logger.warning("%s: _remove_bluez_device failed: %s", self._addr, e)
+
+    async def _set_lora_region(self, client: "BleakClient", region_name: str) -> None:
+        """GET current LoRa config, patch region, SET the full config back.
+
+        Subscribes to FROMNUM temporarily to receive the get_config_response,
+        then unsubscribes before returning.
+        """
+        from meshtastic.protobuf import admin_pb2, config_pb2
+
+        LORA_CONFIG_TYPE = 5  # AdminMessage.ConfigType.LORA_CONFIG
+
+        def _make_toradio(admin_msg: "admin_pb2.AdminMessage", want_response: bool = False) -> bytes:
+            inner = mesh_pb2.MeshPacket()
+            inner.to = self._own_node_num
+            inner.decoded.portnum = PORTNUM_ADMIN_APP
+            inner.decoded.payload = admin_msg.SerializeToString()
+            inner.decoded.want_response = want_response
+            if self._data.session_passkey:
+                admin_msg.session_passkey = bytes.fromhex(self._data.session_passkey)
+                inner.decoded.payload = admin_msg.SerializeToString()
+            tr = mesh_pb2.ToRadio()
+            tr.packet.CopyFrom(inner)
+            return tr.SerializeToString()
+
+        # Subscribe FROMNUM so we know when the config response arrives
+        response_event: asyncio.Event = asyncio.Event()
+        received_lora: list = []  # mutable container for closure
+
+        def _on_fromnum(sender, data):
+            response_event.set()
+
+        await client.start_notify(FROMNUM_UUID, _on_fromnum)
+        try:
+            # Drain any stale FROMRADIO data
+            while True:
+                stale = await client.read_gatt_char(FROMRADIO_UUID)
+                if not stale:
+                    break
+
+            # Send get_config_request for LoRa
+            req = admin_pb2.AdminMessage()
+            req.get_config_request = LORA_CONFIG_TYPE
+            await asyncio.wait_for(
+                client.write_gatt_char(TORADIO_UUID, _make_toradio(req, want_response=True), response=True),
+                timeout=5.0,
+            )
+
+            # Wait for FROMNUM event then read response
+            await asyncio.wait_for(response_event.wait(), timeout=10.0)
+
+            lora_cfg = None
+            for _ in range(20):  # drain FROMRADIO until we get the config response
+                raw = await client.read_gatt_char(FROMRADIO_UUID)
+                if not raw:
+                    break
+                fr = mesh_pb2.FromRadio()
+                fr.ParseFromString(bytes(raw))
+                if fr.HasField("packet"):
+                    pkt = fr.packet
+                    if pkt.decoded.portnum == PORTNUM_ADMIN_APP:
+                        resp = admin_pb2.AdminMessage()
+                        resp.ParseFromString(pkt.decoded.payload)
+                        which = resp.WhichOneof("payload_variant")
+                        if which == "get_config_response":
+                            lora_cfg = resp.get_config_response.lora
+                            break
+
+            if lora_cfg is None:
+                raise RuntimeError("no get_config_response received for LORA_CONFIG")
+
+            logger.debug("%s: got lora config — region was %s", self._addr, lora_cfg.region)
+        finally:
+            try:
+                await client.stop_notify(FROMNUM_UUID)
+            except Exception:
+                pass
+
+        # Patch region and send set_config with the FULL lora config
+        region_num = config_pb2.Config.LoRaConfig.RegionCode.Value(region_name)
+        lora_cfg.region = region_num
+        set_req = admin_pb2.AdminMessage()
+        set_req.set_config.lora.CopyFrom(lora_cfg)
+        logger.debug("%s: setting lora config region=%s (%d)", self._addr, region_name, region_num)
+        await asyncio.wait_for(
+            client.write_gatt_char(TORADIO_UUID, _make_toradio(set_req), response=True),
+            timeout=5.0,
+        )
 
     async def _check_has_pin(self) -> bool:
         """Query node-dash for a stored ble_pin for this device's MAC address."""
@@ -1305,15 +1413,12 @@ class BleDevice:
                 return "idle"
             continue
 
-        # Now confirmed Meshtastic — read MTU and request HIGH connection priority.
-        # These are only meaningful for Meshtastic sessions; OTA bootloader sessions
-        # never reach this point and therefore never pollute DeviceData.
-        try:
-            await client._backend._acquire_mtu()
-            self._data.mtu = client.mtu_size
-            logger.debug("%s: MTU = %d", self._addr, self._data.mtu)
-        except Exception as e:
-            logger.warning("%s: _acquire_mtu() failed (%s), MTU unknown", self._addr, e)
+        # Now confirmed Meshtastic — request HIGH connection priority.
+        # We intentionally skip _acquire_mtu() here because AcquireNotify (which bleak
+        # uses internally for MTU negotiation) sends a CCCD Write Request to the device.
+        # On NimBLE/ESP32-C3 (F4:12), the CCCD ACK from the device never arrives, leaving
+        # BlueZ's ATT client stuck in InProgress — which blocks every subsequent WriteValue.
+        # Meshtastic packets are small enough that the default BLE MTU is sufficient.
 
         if self._ble_cfg.conn_priority_enabled:
             await self._request_conn_priority("high")
@@ -1386,20 +1491,7 @@ class BleDevice:
             if auto_region:
                 logger.info("%s: LoRa region unset — auto-configuring %s", self._addr, auto_region)
                 try:
-                    from meshtastic.protobuf import admin_pb2, config_pb2
-                    region_num = config_pb2.Config.LoRaConfig.RegionCode.Value(auto_region)
-                    admin = admin_pb2.AdminMessage()
-                    admin.set_config.lora.region = region_num
-                    inner = mesh_pb2.MeshPacket()
-                    inner.to = self._own_node_num
-                    inner.decoded.portnum = 68  # PORTNUM_ADMIN_APP
-                    inner.decoded.payload = admin.SerializeToString()
-                    tr = mesh_pb2.ToRadio()
-                    tr.packet.CopyFrom(inner)
-                    await asyncio.wait_for(
-                        client.write_gatt_char(TORADIO_UUID, tr.SerializeToString(), response=True),
-                        timeout=5.0,
-                    )
+                    await self._set_lora_region(client, auto_region)
                     logger.info("%s: LoRa region %s written — device will reboot", self._addr, auto_region)
                 except Exception as e:
                     logger.warning("%s: failed to write LoRa region: %s", self._addr, e)
@@ -1524,6 +1616,7 @@ class BleDevice:
         # written before arming the TORADIO write handler — without FROMRADIO subscribed,
         # the ATT Write Request to TORADIO never receives a Write Response.
         self._fromnum_event.clear()
+        _CCCD_UUID = "00002902-0000-1000-8000-00805f9b34fb"
         logger.debug("%s: sync — subscribing FROMRADIO + FROMNUM + LOGRADIO", self._addr)
         for _uuid, _desc in (
             (FROMRADIO_UUID, "FROMRADIO"),
@@ -1536,17 +1629,30 @@ class BleDevice:
                 else:
                     # FROMRADIO notify data handled via the drain read loop below;
                     # LOGRADIO is subscribed to match iOS connection sequence.
-                    _cb = self._on_fromnum if _uuid == FROMNUM_UUID else (lambda s, d: None)
-                    await client.start_notify(_uuid, _cb)
+                    await client.start_notify(_uuid, lambda s, d: None)
                 logger.debug("%s: sync — subscribed %s", self._addr, _desc)
             except Exception as e:
                 logger.debug("%s: sync — %s notify not supported: %s", self._addr, _desc, e)
+                # NimBLE (ESP32-C3) requires FROMRADIO CCCD written before it will ACK
+                # a TORADIO write.  If start_notify failed (characteristic lacks notify
+                # property in BlueZ's view), write the CCCD descriptor directly so the
+                # device's firmware sees the subscription and arms the write handler.
+                if _uuid == FROMRADIO_UUID:
+                    char = client.services.get_characteristic(_uuid)
+                    if char:
+                        cccd = next((d for d in char.descriptors if d.uuid == _CCCD_UUID), None)
+                        if cccd:
+                            try:
+                                await client.write_gatt_descriptor(cccd.handle, b"\x01\x00")
+                                logger.debug("%s: sync — FROMRADIO CCCD written directly", self._addr)
+                            except Exception as e2:
+                                logger.debug("%s: sync — FROMRADIO CCCD write failed: %s", self._addr, e2)
         try:
             pkt = mesh_pb2.ToRadio()
             pkt.want_config_id = self._want_config_id
             logger.debug("%s: sync — sending want_config_id=%d", self._addr, self._want_config_id)
             await client.write_gatt_char(TORADIO_UUID, pkt.SerializeToString(), response=True)
-            logger.debug("%s: sync — want_config GATT write ACKed", self._addr)
+            logger.debug("%s: sync — want_config sent", self._addr)
             # Trigger initial drain immediately (handles fast-responding devices like RAK4631)
             self._fromnum_event.set()
             _read_count = 0
