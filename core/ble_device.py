@@ -205,36 +205,6 @@ async def _safe_disconnect(client: BleakClient) -> None:
         await client.disconnect()
 
 
-async def _remove_bluez_bond(addr: str) -> None:
-    """Remove the BlueZ pairing bond for addr via dbus-fast."""
-    try:
-        from dbus_fast.aio import MessageBus
-        from dbus_fast import BusType
-        bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        introspection = await bus.introspect("org.bluez", "/")
-        proxy = bus.get_proxy_object("org.bluez", "/", introspection)
-        mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
-        objects = await mgr.call_get_managed_objects()
-        def _unwrap(v):
-            return v.value if hasattr(v, "value") else v
-        dev_path = adapter_path = None
-        for path, interfaces in objects.items():
-            d = interfaces.get("org.bluez.Device1", {})
-            if _unwrap(d.get("Address", "")).upper() == addr.upper():
-                dev_path = path
-            if "org.bluez.Adapter1" in interfaces:
-                adapter_path = path
-        if dev_path and adapter_path:
-            adapter_intro = await bus.introspect("org.bluez", adapter_path)
-            adapter = bus.get_proxy_object("org.bluez", adapter_path, adapter_intro)
-            iface = adapter.get_interface("org.bluez.Adapter1")
-            await iface.call_remove_device(dev_path)
-            logger.info("%s: BlueZ bond removed", addr)
-        bus.disconnect()
-    except Exception as e:
-        logger.debug("%s: BlueZ bond removal skipped: %s", addr, e)
-
-
 def _proto_to_dict(msg) -> dict:
     return json_format.MessageToDict(msg, preserving_proto_field_name=True)
 
@@ -594,93 +564,6 @@ class BleDevice:
     # Connection loop
     # ------------------------------------------------------------------
 
-    async def _release_stale_bluez_connection(self) -> bool:
-        """Disconnect any stale BlueZ connection for our address.
-
-        Returns True if the device is known to BlueZ (in its device cache), False
-        if not. A True result means BleakClient.connect() can be called directly
-        without a prior BLE scan — BlueZ will resolve the connection internally.
-
-        If the previous process was killed without a clean BleakClient.disconnect(),
-        BlueZ holds the radio link open. The device stops advertising while
-        connected, so BleakScanner never sees it. This pre-flight releases the
-        stale session before every connection attempt.
-        """
-        try:
-            from dbus_fast.aio import MessageBus
-            from dbus_fast import BusType
-            from dbus_fast.message import Message
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            try:
-                introspection = await bus.introspect("org.bluez", "/")
-                proxy = bus.get_proxy_object("org.bluez", "/", introspection)
-                mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
-                objects = await mgr.call_get_managed_objects()
-
-                def _v(val):
-                    return val.value if hasattr(val, "value") else val
-
-                for path, interfaces in objects.items():
-                    dev = interfaces.get("org.bluez.Device1", {})
-                    if _v(dev.get("Address", "")).upper() == self._addr:
-                        if bool(_v(dev.get("Connected", False))):
-                            logger.info("%s: stale BlueZ connection found — releasing", self._addr)
-                            await bus.call(Message(
-                                destination="org.bluez",
-                                path=path,
-                                interface="org.bluez.Device1",
-                                member="Disconnect",
-                            ))
-                            await asyncio.sleep(self._ble_cfg.stale_release_wait_s)
-                        return True  # device is in BlueZ cache — direct connect is safe
-                return False  # device unknown to BlueZ — scan required
-            finally:
-                bus.disconnect()
-        except Exception as e:
-            logger.warning("%s: stale-connection check failed: %s", self._addr, e)
-            return False  # assume unknown on error — fall back to scan
-
-    async def _set_bluez_trusted(self) -> None:
-        """Set Device1.Trusted=True on the BlueZ device object for our address.
-
-        BlueZ separates Paired/Bonded (crypto) from Trusted (policy). Without
-        Trusted=True a rebooted device cannot auto-reconnect inbound — BlueZ
-        would block it waiting for a pairing agent. Only needs to be called once
-        per pairing; the value persists in BlueZ's device database.
-        """
-        try:
-            from dbus_fast.aio import MessageBus
-            from dbus_fast import BusType, Variant
-            from dbus_fast.message import Message
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            try:
-                introspection = await bus.introspect("org.bluez", "/")
-                proxy = bus.get_proxy_object("org.bluez", "/", introspection)
-                mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
-                objects = await mgr.call_get_managed_objects()
-
-                def _v(val):
-                    return val.value if hasattr(val, "value") else val
-
-                for path, interfaces in objects.items():
-                    dev = interfaces.get("org.bluez.Device1", {})
-                    if _v(dev.get("Address", "")).upper() == self._addr:
-                        if not bool(_v(dev.get("Trusted", False))):
-                            await bus.call(Message(
-                                destination="org.bluez",
-                                path=path,
-                                interface="org.freedesktop.DBus.Properties",
-                                member="Set",
-                                signature="ssv",
-                                body=["org.bluez.Device1", "Trusted", Variant("b", True)],
-                            ))
-                            logger.info("%s: set BlueZ Trusted=True", self._addr)
-                        return
-            finally:
-                bus.disconnect()
-        except Exception as e:
-            logger.warning("%s: set Trusted failed: %s", self._addr, e)
-
     def _reset_session_data(self) -> None:
         """Clear per-session DeviceData fields before each new connection attempt.
 
@@ -861,39 +744,23 @@ class BleDevice:
         connect_attempts = 0
 
         while True:
-            # ── SCANNING: BlueZ cache check — no RF scan ──────────────
-            # Pre-flight also releases any stale BlueZ connection and returns
-            # True if the device is known to BlueZ (direct connect is safe).
-            in_cache = await self._release_stale_bluez_connection()
-            if not in_cache:
-                # Device not in BlueZ cache (scan may have expired). Run a short
-                # targeted discovery to re-populate the cache, then re-check.
-                logger.info(
-                    "%s: not in BlueZ cache — running targeted discovery (timeout=12s)",
-                    self._addr,
+            # ── SCANNING: discover device before connecting ────────────
+            try:
+                found = await BleakScanner.find_device_by_address(
+                    self._addr, timeout=12.0,
                 )
-                try:
-                    found = await BleakScanner.find_device_by_address(
-                        self._addr, timeout=12.0,
-                    )
-                except Exception as e:
-                    logger.warning("%s: targeted discovery failed: %s", self._addr, e)
-                    found = None
-                if found is not None:
-                    logger.info("%s: re-discovered — retrying cache check", self._addr)
-                    in_cache = await self._release_stale_bluez_connection()
-                if not in_cache:
-                    logger.warning(
-                        "%s: not in BlueZ cache after discovery — device not advertising",
-                        self._addr,
-                    )
-                    self._transition(OFFLINE)
-                    if not self._cfg.auto_connect:
-                        return
-                    await asyncio.sleep(self._ble_cfg.scan_pause_s)
-                    self._transition(SCANNING)
-                    connect_attempts = 0
-                    continue
+            except Exception as e:
+                logger.warning("%s: discovery failed: %s", self._addr, e)
+                found = None
+            if found is None:
+                logger.warning("%s: device not found — not advertising", self._addr)
+                self._transition(OFFLINE)
+                if not self._cfg.auto_connect:
+                    return
+                await asyncio.sleep(self._ble_cfg.scan_pause_s)
+                self._transition(SCANNING)
+                connect_attempts = 0
+                continue
 
             # ── CONNECTING ────────────────────────────────────────────
             self._reset_session_data()
@@ -1158,7 +1025,6 @@ class BleDevice:
 
         if result == "ok":
             self._transition(OTA_COMPLETE)
-            await _remove_bluez_bond(self._addr)
             self._transition(OFFLINE)
             return "scan_immediately"  # OTA_COMPLETE: device is alive and rebooting to Meshtastic
 
@@ -1380,8 +1246,6 @@ class BleDevice:
                 self._transition(OFFLINE)
                 return "idle"
             continue
-
-        await self._set_bluez_trusted()
 
         # Now confirmed Meshtastic — read MTU and request HIGH connection priority.
         # These are only meaningful for Meshtastic sessions; OTA bootloader sessions

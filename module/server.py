@@ -22,7 +22,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core import bridge_config as _bcfg
-from core.ble_device import _remove_bluez_bond
 from core.app_router import AppRouter
 from core.bridge_config import update_ble_device
 from core.config import load as _load_config
@@ -243,7 +242,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
             if a.upper() != address
         ]
         _bcfg.save(cfg)
-        await _remove_bluez_bond(address)
         return {"removed": True, "address": address}
 
     # -- OTA ------------------------------------------------------------------
@@ -434,55 +432,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
 
     # -- BLE scan -------------------------------------------------------------
 
-    async def _bluez_device_info() -> dict[str, dict]:
-        result = {}
-        try:
-            from dbus_fast.aio import MessageBus
-            from dbus_fast import BusType
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            introspection = await bus.introspect("org.bluez", "/")
-            proxy = bus.get_proxy_object("org.bluez", "/", introspection)
-            mgr = proxy.get_interface("org.freedesktop.DBus.ObjectManager")
-            objects = await mgr.call_get_managed_objects()
-            def _unwrap(v):
-                return v.value if hasattr(v, "value") else v
-            for _path, interfaces in objects.items():
-                dev = interfaces.get("org.bluez.Device1", {})
-                addr = _unwrap(dev.get("Address", ""))
-                if not addr:
-                    continue
-                connected = bool(_unwrap(dev.get("Connected", False)))
-                raw_uuids = _unwrap(dev.get("UUIDs", []))
-                uuids = [_unwrap(u).lower() for u in (raw_uuids or [])]
-                result[addr.upper()] = {"connected": connected, "uuids": uuids}
-            bus.disconnect()
-        except Exception as e:
-            logger.debug("BlueZ D-Bus query failed: %s", e)
-        return result
-
     @app.get("/ble/scan")
     async def ble_scan():
         MESHTASTIC_SVC = "6ba1b218-15a8-461f-9fa8-5dcae273eafd"
         BLEOTA_SVC = "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
-
-        bluez_info = await _bluez_device_info()
-
-        # Release stale connections
-        active_addrs = {
-            dev.addr for dev in dm.all()
-            if dev.state in ("CONNECTING", "SYNCING", "READY", "RECONNECTING")
-        }
-        stale = [addr for addr, info in bluez_info.items()
-                 if info["connected"] and addr not in active_addrs]
-        if stale:
-            for addr in stale:
-                try:
-                    client = BleakClient(addr)
-                    await asyncio.wait_for(client.disconnect(), timeout=3.0)
-                    logger.info("Scan pre-flight: released stale connection %s", addr)
-                except Exception as e:
-                    logger.debug("Stale disconnect %s: %s", addr, e)
-            await asyncio.sleep(1.5)
 
         try:
             found = await BleakScanner.discover(timeout=10.0, return_adv=True)
@@ -497,9 +450,7 @@ def create_app(dm: DeviceManager) -> FastAPI:
         result = []
         for addr, (dev, adv) in found.items():
             adv_uuids = [str(u).lower() for u in (adv.service_uuids or [])]
-            cached_uuids = bluez_info.get(addr.upper(), {}).get("uuids", [])
-            all_uuids = set(adv_uuids) | set(cached_uuids)
-            is_mesh = (MESHTASTIC_SVC in all_uuids or BLEOTA_SVC in all_uuids
+            is_mesh = (MESHTASTIC_SVC in adv_uuids or BLEOTA_SVC in adv_uuids
                        or "meshtastic" in (dev.name or "").lower()
                        or addr.upper() in configured or addr.upper() in known)
             if not is_mesh:
@@ -509,8 +460,6 @@ def create_app(dm: DeviceManager) -> FastAPI:
                 "address": addr,
                 "rssi": adv.rssi if adv.rssi is not None else -100,
                 "meshtastic": is_mesh,
-                "paired": False,   # dbus lookup only — no bluetoothctl
-                "trusted": False,
             })
 
         result.sort(key=lambda x: -x["rssi"])
