@@ -761,6 +761,10 @@ def create_app(dm: DeviceManager) -> FastAPI:
     async def device_admin(node_id: str, body: dict = Body(...)):
         return await _call(node_id, "admin", body)
 
+    @app.post("/{node_id}/purge_nodedb")
+    async def device_purge_nodedb(node_id: str):
+        return await _call(node_id, "purge_nodedb", {})
+
     @app.post("/{node_id}/traceroute")
     async def device_traceroute(node_id: str, body: dict = Body(...)):
         return await _call(node_id, "traceroute", body)

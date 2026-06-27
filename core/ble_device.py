@@ -429,6 +429,69 @@ class BleDevice:
             return
         await self._client.write_gatt_char(TORADIO_UUID, data, response=True)
 
+    async def send_admin(self, message: dict, to: Optional[int] = None, want_response: bool = False) -> None:
+        """Send an arbitrary AdminMessage to the device.
+
+        message: dict mapping AdminMessage field name to value (e.g. {"nodedb_reset": True}).
+        Injects session_passkey automatically if one is available.
+        """
+        from meshtastic.protobuf import admin_pb2
+        if self._own_node_num is None:
+            raise RuntimeError(f"{self._addr}: own_node_num not yet known — device not fully synced")
+        if self._state != READY:
+            raise RuntimeError(f"{self._addr}: send_admin called in state {self._state}")
+
+        admin = json_format.ParseDict(message, admin_pb2.AdminMessage())
+        if self._data.session_passkey:
+            admin.session_passkey = bytes.fromhex(self._data.session_passkey)
+
+        inner = mesh_pb2.MeshPacket()
+        inner.to = to if to is not None else self._own_node_num
+        inner.decoded.portnum = PORTNUM_ADMIN_APP
+        inner.decoded.payload = admin.SerializeToString()
+        inner.decoded.want_response = want_response
+
+        toradio = mesh_pb2.ToRadio()
+        toradio.packet.CopyFrom(inner)
+        await self.send_toradio(toradio.SerializeToString())
+        logger.debug("%s: send_admin sent: %s", self._addr, list(message.keys()))
+
+    async def purge_nodedb(self) -> dict:
+        """Reset the device node database and wait for the reboot cycle to complete.
+
+        Sends nodedb_reset AdminMessage (with session passkey). The firmware calls
+        disableBluetooth() then reboots after 7s — the gateway sees RECONNECTING
+        (not OFFLINE) as the BLE link drops. Polls for not-READY (≤15 s) then for
+        READY again (≤45 s). Returns {"node_count": N} from the post-reboot sync.
+        Raises RuntimeError or TimeoutError on failure.
+        """
+        if self._state != READY:
+            raise RuntimeError(f"{self._addr}: purge_nodedb called in state {self._state}")
+
+        logger.info("%s: purge_nodedb — sending nodedb_reset", self._addr)
+        await self.send_admin({"nodedb_reset": True}, want_response=False)
+
+        # Firmware calls disableBluetooth() → BLE drops → gateway transitions to
+        # RECONNECTING. Wait for device to leave READY state.
+        deadline = asyncio.get_event_loop().time() + 15
+        while self._state == READY:
+            if asyncio.get_event_loop().time() > deadline:
+                raise TimeoutError(f"{self._addr}: device did not leave READY within 15s after nodedb_reset")
+            await asyncio.sleep(0.5)
+        logger.info("%s: purge_nodedb — device left READY (state=%s), waiting for recovery", self._addr, self._state)
+
+        # Wait for reconnect and READY.
+        deadline = asyncio.get_event_loop().time() + 45
+        while self._state != READY:
+            if asyncio.get_event_loop().time() > deadline:
+                raise TimeoutError(f"{self._addr}: device did not reach READY within 45s after nodedb_reset")
+            await asyncio.sleep(1)
+
+        # node_count from sync data reflects device's view after reboot (own node only).
+        node_count = self._data.node_count
+        logger.info("%s: purge_nodedb — complete, node_count=%d", self._addr, node_count)
+        return {"node_count": node_count}
+
     async def update_config(self, cfg: BleDeviceConfig) -> None:
         """Hot-reload per-device config. Preserves the BLE connection."""
         self._cfg = cfg

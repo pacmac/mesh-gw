@@ -392,13 +392,17 @@ async def send_text(bridge, params: dict):
 @method("admin")
 async def admin(bridge, params: dict):
     """Generic AdminMessage passthrough. params: {message, to?, want_response?}"""
-    if not hasattr(bridge, "send_admin"):
-        raise NotImplementedError("admin not yet implemented (step 5+)")
     return await bridge.send_admin(
         message=params["message"],
         to=params.get("to"),
         want_response=params.get("want_response", True),
     )
+
+
+@method("purge_nodedb")
+async def purge_nodedb(bridge, params: dict):
+    """Reset device nodedb and wait for reboot + READY. Returns {node_count}."""
+    return await bridge.purge_nodedb()
 
 
 @method("traceroute")
